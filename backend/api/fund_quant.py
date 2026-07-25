@@ -456,7 +456,6 @@ def _run_backtest_sync(config_dict: dict) -> str:
         BacktestEngine, BacktestConfig as CoreConfig, EventBus,
         FundNavPoint, MetricsCalculator,
     )
-    from core.backtest import T1ExecutionEngine
     from fund_quant.adapter import FundDomainAdapter
 
     adapter = FundDomainAdapter()
@@ -523,10 +522,15 @@ def _run_backtest_sync(config_dict: dict) -> str:
     cfg = CoreConfig(
         initial_capital=config_dict.get("initial_capital", 100000),
     )
+    from core import RiskPipeline
     engine = BacktestEngine(cfg)
     engine.set_event_bus(EventBus())
     engine.set_strategy(strategy)
-    engine.set_executor(T1ExecutionEngine(confirmation_delay=1))
+    engine.set_executor(adapter.create_executor({"confirmation_delay": 1}))
+    pipeline = RiskPipeline()
+    for c in adapter.default_risk_checks():
+        pipeline.add(c)
+    engine.set_risk(pipeline)
     engine.set_data(navs)
 
     try:

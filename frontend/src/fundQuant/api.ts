@@ -206,8 +206,13 @@ export const fundQuantApi = {
     post<{ success: boolean; data: { rankings: FundRanking[] } }>('/selection/screen', { fund_type, top_n }),
 
   // Backtest
-  runBacktest: (req: any) => post<{ success: boolean; data: { backtest_id: string } }>('/backtest/run', req),
+  runBacktest: (req: any) => post<{ success: boolean; data: { backtest_id: string; status: string } }>('/backtest/run', req),
   getBacktest: (id: string) => get<{ success: boolean; data: BacktestResult }>(`/backtest/result/${id}`),
+  getBacktestList: (strategy_name?: string, limit = 20) => {
+    const params = new URLSearchParams({ limit: String(limit) })
+    if (strategy_name) params.set('strategy_name', strategy_name)
+    return get<{ success: boolean; data: BacktestResult[]; total: number }>(`/backtest/list?${params}`)
+  },
 
   // — 新增接口 —
   getAttribution: (fund_codes: string[], start: string, end: string, method = 'brinson') =>
