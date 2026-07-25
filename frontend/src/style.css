@@ -4324,3 +4324,103 @@ tr[data-code]:hover {
   border-top: 1px solid var(--border-light);
   margin-top: 8px;
 }
+
+/* ═══════════════════════════════════════
+   FundQuant Dashboard 面板样式 (v0.3)
+   ═══════════════════════════════════════ */
+
+.fq-dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  padding: 8px 0;
+}
+.fq-dashboard-grid > * {
+  background: var(--bg-primary);
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+  min-height: 0;
+}
+
+/* 选基排名面板 */
+.panel-ranking .rank-body {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: 8px;
+}
+.panel-ranking .rank-table-wrapper {
+  overflow-y: auto;
+  max-height: 220px;
+}
+.panel-ranking .rank-radar {
+  height: 220px;
+}
+
+/* 月度收益面板 */
+.panel-monthly .monthly-table-wrapper {
+  overflow-x: auto;
+}
+.panel-monthly .monthly-up {
+  color: var(--danger-color);
+}
+.panel-monthly .monthly-down {
+  color: var(--success-color);
+}
+.panel-monthly .monthly-stats {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-light);
+  margin-top: 8px;
+}
+
+/* 归因分析面板 */
+.panel-attribution .attr-chart {
+  height: 160px;
+}
+.panel-attribution .attr-summary {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-light);
+  margin-top: 8px;
+}
+
+/* 详情面板 */
+.panel-detail .detail-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+  min-height: 200px;
+}
+.panel-detail .detail-section h4 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+}
+.panel-detail .detail-section table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.panel-detail .detail-section th {
+  padding: 4px 6px;
+  text-align: left;
+  color: var(--text-tertiary);
+}
+.panel-detail .detail-section td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-primary);
+}
+
+/* 响应式 */
+@media (max-width: 1200px) {
+  .fq-dashboard-grid { grid-template-columns: 1fr 1fr !important; }
+}
+@media (max-width: 768px) {
+  .fq-dashboard-grid { grid-template-columns: 1fr !important; }
+}

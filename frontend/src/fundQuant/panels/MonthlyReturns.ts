@@ -59,7 +59,6 @@ export class MonthlyReturns extends PanelBase {
         if (ret == null) {
           html += `<td style="padding:4px 6px;text-align:right;color:var(--text-tertiary);">--</td>`
         } else {
-          const cls = ret >= 0 ? 'monthly-up' : 'monthly-down'
           const intensity = Math.min(Math.abs(ret) / 5, 1) // 5% 为最深
           const bgColor = ret >= 0
             ? `rgba(239,68,68,${intensity * 0.3})`

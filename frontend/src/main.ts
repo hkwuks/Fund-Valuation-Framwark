@@ -6,6 +6,8 @@ import { goldTradingUI } from './goldTradingUI'
 import { FundQuantUI } from './fundQuantUI'
 import { QuantEngineUI } from './quantEngineUI'
 
+let fundQuantUI: FundQuantUI | undefined
+
 toast.init();
 
 // 主题管理
@@ -120,7 +122,7 @@ async function initApp() {
 
   // 初始化基金量化界面
   const fundQuantContainer = document.querySelector<HTMLDivElement>('#fund-quant-container')!
-  const fundQuantUI = new FundQuantUI()
+  fundQuantUI = new FundQuantUI()
   fundQuantUI.init(fundQuantContainer)
 
   // 初始化量化引擎界面
@@ -165,6 +167,13 @@ function setupTabSwitching() {
       content.style.display = 'none'
     })
 
+    // 切离时通知当前活跃 Tab 暂停
+    const currentActiveTab = document.querySelector<HTMLButtonElement>('.tab-button.active')
+    if (currentActiveTab) {
+      const prevTabId = currentActiveTab.dataset.tab
+      if (prevTabId === 'fund-quant') fundQuantUI.onDeactivated?.()
+    }
+
     targetContent.classList.add('active')
     targetContent.style.display = 'block'
 
@@ -176,6 +185,11 @@ function setupTabSwitching() {
     // 通知市场数据Tab加载数据（标签保持刷新时使用）
     if (tabId === 'market-data') {
       marketDataUI.onActivated()
+    }
+
+    // 通知基金量化Tab恢复刷新
+    if (tabId === 'fund-quant') {
+      fundQuantUI.onActivated?.()
     }
 
     // 添加动画效果
