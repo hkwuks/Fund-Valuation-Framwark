@@ -24,6 +24,13 @@ class GoldMomentumStrategy(FundStrategyBase):
         "vol_regime_lookback": 252,
         "vol_high_percentile": 0.8,
     }
+    param_ranges = {
+        "buy_threshold": {"min": 0.005, "max": 0.05},
+        "sell_threshold": {"min": -0.05, "max": -0.005},
+        "skip_days": {"min": 0, "max": 10},
+        "vol_high_percentile": {"min": 0.5, "max": 0.95},
+    }
+    formula_description = "黄金基金多周期动量+COT信号择时策略"
     applicable_fund_types = ["commodity"]
     min_history_days = 60
 

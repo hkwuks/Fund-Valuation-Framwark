@@ -22,8 +22,12 @@ class ValuationDeviationStrategy(FundStrategyBase):
     param_ranges = {
         "z_threshold": {"min": 1.0, "max": 3.0},
         "lookback_days": {"min": 20, "max": 126},
+        "confidence_min": {"min": 0, "max": 1},
+        "momentum_confirm_days": {"min": 1, "max": 10},
+        "cooldown_days": {"min": 0, "max": 20},
     }
-    applicable_fund_types = ["equity", "index", "balanced", "qdii"]
+    formula_description = "基于净值偏离历史均值标准差程度的估值偏差择时策略"
+    applicable_fund_types = ["stock", "hybrid", "index"]
     min_history_days = 60
 
     def on_evaluate(self, portfolio: Optional[Portfolio],
@@ -84,11 +88,7 @@ class ValuationDeviationStrategy(FundStrategyBase):
             SignalType.TIMING, fund_code, direction,
             confidence=confidence, reason=reason,
             valuation_deviation=float(z_score),
-            suggested_pct=self.calc_suggested_pct(
-                z_score, buy_threshold=-z_threshold,
-                sell_threshold=z_threshold, max_pct=0.15,
-                nav_values=nav_values,
-            ),
+            suggested_pct=0.1 if direction == Direction.BUY else -0.1,
         )]
 
 

@@ -55,6 +55,13 @@ export interface LoadingState {
   errors: Record<string, string | null>
 }
 
+export interface ResearchState {
+  visible: boolean
+  activeTab: 'timing' | 'exposure'
+  fundCode: string | null
+  signal?: SignalSummary | null
+}
+
 export interface GlobalState {
   fundPool: FundInfo[]
   selectedFund: string | null
@@ -65,6 +72,8 @@ export interface GlobalState {
   layout: LayoutConfig
   settings: Record<string, any>
   loading: LoadingState
+  researchPanel: ResearchState
+  customParams: Record<string, Record<string, any>>
 }
 
 type StateKey = keyof GlobalState
@@ -111,10 +120,10 @@ const DEFAULT_LAYOUT: LayoutConfig = {
     kpi: { visible: true, order: 0 },
     nav_chart: { visible: true, order: 1, grid_pos: { x: 0, y: 1, w: 2, h: 1 } },
     signal_list: { visible: true, order: 2, grid_pos: { x: 0, y: 2, w: 1, h: 1 } },
-    allocation: { visible: true, order: 3, grid_pos: { x: 1, y: 2, w: 1, h: 2 } },
-    fund_ranking: { visible: false, order: 4, grid_pos: { x: 2, y: 1, w: 1, h: 1 } },
+    allocation: { visible: true, order: 3, grid_pos: { x: 1, y: 2, w: 1, h: 1 } },
+    fund_ranking: { visible: false, order: 4, grid_pos: { x: 1, y: 0, w: 1, h: 1 } },
     attribution: { visible: false, order: 5, grid_pos: { x: 0, y: 3, w: 1, h: 1 } },
-    monthly_returns: { visible: false, order: 6, grid_pos: { x: 2, y: 2, w: 1, h: 2 } },
+    monthly_returns: { visible: false, order: 6, grid_pos: { x: 1, y: 3, w: 1, h: 1 } },
   },
 }
 
@@ -129,4 +138,6 @@ export const state = new EventEmitter({
   layout: DEFAULT_LAYOUT,
   settings: {},
   loading: { isRefreshing: false, lastRefreshTime: null, errors: {} },
+  researchPanel: { visible: false, activeTab: 'timing', fundCode: null, signal: null },
+  customParams: {},
 })

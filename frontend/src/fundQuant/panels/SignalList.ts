@@ -37,6 +37,7 @@ export class SignalList extends PanelBase {
               <th class="text-right">置信度</th>
               <th>策略</th>
               <th class="text-right">时间</th>
+              <th style="width:40px;"></th>
             </tr>
           </thead>
           <tbody class="sig-tbody"></tbody>
@@ -54,6 +55,24 @@ export class SignalList extends PanelBase {
 
     // 行点击 → 选中基金
     this.el?.querySelector('.sig-tbody')?.addEventListener('click', (e) => {
+      const studyBtn = (e.target as HTMLElement).closest('.sig-study-btn')
+      if (studyBtn) {
+        // 研究按钮 → 打开研究区
+        const btn = studyBtn as HTMLElement
+        const code = btn.dataset.code || ''
+        const signal = {
+          direction: btn.dataset.direction || 'hold',
+          confidence: parseFloat(btn.dataset.confidence || '0'),
+          strategy_name: btn.dataset.strategy || '',
+          timestamp: btn.dataset.timestamp || '',
+          fund_code: code,
+          fund_name: '',
+        } as any
+        const fundName = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || ''
+        signal.fund_name = fundName
+        state.set('researchPanel', { visible: true, activeTab: 'timing', fundCode: code, signal })
+        return
+      }
       const row = (e.target as HTMLElement).closest<HTMLElement>('[data-code]')
       if (row) state.set('selectedFund', row.dataset.code || null)
     })
@@ -126,8 +145,15 @@ export class SignalList extends PanelBase {
         return
       }
 
-      tbody.innerHTML = signals.slice(0, 30).map(s => `
-        <tr data-code="${s.fund_code}">
+      // 生成行html，如果是新数据则标记 glow class
+      const existingRows = tbody.querySelectorAll('tr[data-code]')
+      const existingKeys = new Set<string>()
+      existingRows.forEach(r => existingKeys.add(r.getAttribute('data-key') || ''))
+
+      tbody.innerHTML = signals.slice(0, 30).map(s => {
+        const key = `${s.fund_code}|${s.direction}|${s.confidence}`
+        const isNew = existingRows.length > 0 && !existingKeys.has(key)
+        return `<tr data-code="${s.fund_code}" data-key="${key}" class="${isNew ? 'sig-row-new' : ''}">
           <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);">
             <span style="font-weight:600;color:var(--text-primary);">${s.fund_name || s.fund_code}</span>
             <span style="font-size:11px;color:var(--text-tertiary);margin-left:4px;">${s.fund_code}</span>
@@ -136,15 +162,20 @@ export class SignalList extends PanelBase {
             <span class="${DIR_CLASS[s.direction] || ''}" style="font-weight:600;">${DIR_LABEL[s.direction] || s.direction}</span>
           </td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:right;">
-            <span style="color:var(--text-primary);font-weight:600;">${(s.confidence * 100).toFixed(0)}%</span>
-            <span style="display:inline-block;width:40px;height:4px;background:var(--bg-tertiary);border-radius:2px;vertical-align:middle;margin-left:4px;">
-              <span style="display:block;height:100%;width:${s.confidence * 100}%;background:${s.confidence > 0.7 ? '#10b981' : s.confidence > 0.5 ? '#f59e0b' : '#94a3b8'};border-radius:2px;"></span>
-            </span>
+            <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;">
+              <span style="color:var(--text-primary);font-weight:600;">${(s.confidence * 100).toFixed(0)}%</span>
+              <div style="width:50px;height:6px;background:var(--bg-tertiary);border-radius:3px;">
+                <div style="height:100%;width:${s.confidence * 100}%;background:${s.confidence > 0.7 ? '#10b981' : s.confidence > 0.5 ? '#f59e0b' : '#94a3b8'};border-radius:3px;transition:width 0.3s;"></div>
+              </div>
+            </div>
           </td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);font-size:12px;">${s.strategy_name || '-'}</td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:right;color:var(--text-tertiary);font-size:11px;">${(s.created_at || '').slice(5, 16)}</td>
-        </tr>
-      `).join('')
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:center;">
+            <button class="btn btn-sm btn-ghost sig-study-btn" data-code="${s.fund_code}" data-direction="${s.direction}" data-confidence="${s.confidence}" data-strategy="${s.strategy_name || ''}" data-timestamp="${s.created_at || ''}" title="研究此信号" style="font-size:11px;padding:1px 4px;">🔍</button>
+          </td>
+        </tr>`
+      }).join('')
 
       state.set('signals', signals.map(s => ({
         direction: s.direction as any,

@@ -3,6 +3,8 @@ import { fundQuantApi, type PortfolioStatus } from '../api'
 import { state } from '../state'
 
 export class KPIBar extends PanelBase {
+  private popupEl: HTMLElement | null = null
+
   constructor() {
     super({ id: 'kpi', title: '组合概览', defaultGridPos: { x: 0, y: 0, w: 3, h: 0 } })
   }
@@ -36,7 +38,7 @@ export class KPIBar extends PanelBase {
         <span class="kpi-value">--</span>
         <span class="kpi-sub"></span>
       </div>
-      <div class="kpi-card kpi-signal" data-key="signals">
+      <div class="kpi-card kpi-signal" data-key="signals" title="点击查看信号详情">
         <span class="kpi-label">信号汇总</span>
         <span class="kpi-value">--</span>
         <span class="kpi-sub"></span>
@@ -46,8 +48,38 @@ export class KPIBar extends PanelBase {
 
   protected afterMount(): void {
     this.el?.querySelector('.kpi-signal')?.addEventListener('click', () => {
-      state.set('showSignalPopup', true)
+      const signals = state.get('signals')
+      if (!signals.length) return
+      this.showSignalPopup(signals)
     })
+  }
+
+  private showSignalPopup(signals: any[]): void {
+    this.popupEl?.remove()
+    const overlay = document.createElement('div')
+    overlay.className = 'signal-popup-overlay'
+    const dirLabel: Record<string, string> = { buy: '↑买入', sell: '↓卖出', hold: '→持有' }
+    overlay.innerHTML = `
+      <div class="signal-popup-modal">
+        <div class="signal-popup-header">
+          <h3>信号详情</h3>
+          <button class="popup-close" style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text-secondary);">×</button>
+        </div>
+        <div class="signal-popup-body">
+          ${signals.map(s => `
+            <div class="signal-popup-row">
+              <span style="font-weight:600;">${s.fund_name || s.fund_code}</span>
+              <span style="color:${s.direction === 'buy' ? 'var(--danger-color)' : s.direction === 'sell' ? 'var(--success-color)' : 'var(--text-secondary)'}">${dirLabel[s.direction] || s.direction}</span>
+              <span style="color:var(--text-secondary);font-size:12px;">${s.strategy_name}</span>
+              <span style="color:var(--text-tertiary);font-size:11px;">${(s.timestamp || '').slice(5, 16)}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>`
+    document.body.appendChild(overlay)
+    this.popupEl = overlay
+    overlay.querySelector('.popup-close')?.addEventListener('click', () => overlay.remove())
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove() })
   }
 
   async refresh(): Promise<void> {
@@ -72,8 +104,9 @@ export class KPIBar extends PanelBase {
   }
 
   private hasRealData(d: PortfolioStatus): boolean {
-    // 判断是否有真实数据（非初始空状态）
-    return d.total_value > 100000 || d.return_pct !== 0 || d.position_count > 0
+    // 判断是否有真实数据：有持仓、有收益变化、或有信号记录
+    return d.position_count > 0 || d.return_pct !== 0 || d.total_value > 100000
+      || (d.signal_count && (d.signal_count.buy > 0 || d.signal_count.sell > 0))
   }
 
   private updateCards(d: PortfolioStatus): void {

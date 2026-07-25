@@ -146,6 +146,8 @@ class StrategyRegistry:
                 "description": cls.description,
                 "default_params": cls.default_params,
                 "applicable_fund_types": cls.applicable_fund_types,
+                "param_ranges": getattr(cls, "param_ranges", {}),
+                "formula_description": getattr(cls, "formula_description", ""),
             }
             for cls in self._strategies.values()
         ]

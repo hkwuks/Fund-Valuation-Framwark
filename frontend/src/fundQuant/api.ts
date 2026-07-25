@@ -134,6 +134,48 @@ export interface MonthlyReturnResult {
   }
 }
 
+export interface SignalExplain {
+  strategy_name: string
+  strategy_display_name: string
+  formula_description: string
+  verdict: string
+  key_values: Record<string, { value: number; label: string; format?: string; highlight?: string }>
+}
+
+export interface StrategyInfo {
+  name: string
+  display_name: string
+  type: string
+  description: string
+  applicable_fund_types: string[]
+  param_ranges?: StrategyParam[]
+}
+
+export interface StrategyParam {
+  name: string
+  label: string
+  type: 'int' | 'float' | 'select'
+  default: number | string
+  min?: number
+  max?: number
+  step?: number
+  options?: { label: string; value: string }[]
+  description: string
+}
+
+export interface FactorExposureData {
+  fund_code: string
+  fund_name: string
+  factors: Record<string, { value: number; weight: number; rank_pct: number }>
+  total_score: number
+  n_funds_in_category: number
+}
+
+export interface FactorExposureResult {
+  success: boolean
+  data: FactorExposureData
+}
+
 export const fundQuantApi = {
   // Portfolio KPI
   getPortfolioKPI: () => get<{ success: boolean; data: PortfolioStatus }>('/portfolio/status'),
@@ -144,8 +186,8 @@ export const fundQuantApi = {
     post<{ success: boolean; data: { fund_code: string; status: string; count: number }[] }>('/data/collect', { fund_codes: fundCodes, years }),
 
   // Timing
-  evaluateTiming: (fund_code: string, params?: any) =>
-    post<{ success: boolean; data: TimingResult }>('/timing/evaluate', { fund_code, params: params || {} }),
+  evaluateTiming: (fund_code: string, params?: any, strategy_name?: string) =>
+    post<{ success: boolean; data: TimingResult }>('/timing/evaluate', { fund_code, strategy_name: strategy_name || '', params: params || {} }),
 
   // Signals
   getSignals: (fund_code?: string, limit = 20) => {
@@ -175,4 +217,15 @@ export const fundQuantApi = {
 
   getMonthlyReturns: (fund_code: string) =>
     get<{ success: boolean; data: MonthlyReturnResult }>(`/portfolio/monthly-returns?code=${fund_code}`),
+
+  // — 新增：择时研究接口 —
+  explainTiming: (fund_code: string, strategy_name: string, params?: any) =>
+    post<{ success: boolean; data: SignalExplain }>('/timing/explain', { fund_code, strategy_name, params: params || {} }),
+
+  getStrategyList: () =>
+    get<{ success: boolean; data: StrategyInfo[] }>('/strategy/list'),
+
+  // — 新增：因子暴露接口 —
+  getFactorExposure: (fund_code: string) =>
+    get<FactorExposureResult>(`/factors/exposure/${fund_code}`),
 }

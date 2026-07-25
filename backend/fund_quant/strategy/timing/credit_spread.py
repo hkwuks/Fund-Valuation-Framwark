@@ -24,6 +24,13 @@ class CreditSpreadStrategy(FundStrategyBase):
         "curve_buy_threshold": -0.05,    # 曲线平坦化超过 5% → 加久期
         "curve_sell_threshold": 0.05,    # 曲线陡峭化超过 5% → 减久期
     }
+    param_ranges = {
+        "spread_lookback": {"min": 10, "max": 60},
+        "spread_buy_threshold": {"min": -0.1, "max": 0},
+        "spread_sell_threshold": {"min": 0, "max": 0.1},
+        "curve_lookback": {"min": 10, "max": 60},
+    }
+    formula_description = "基于信用利差和收益率曲线的债券择时策略"
     applicable_fund_types = ["bond"]
     min_history_days = 20
 

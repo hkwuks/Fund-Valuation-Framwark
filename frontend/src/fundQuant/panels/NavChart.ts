@@ -8,16 +8,17 @@ interface FundCache {
   navData: any[]
   buySignals: { date: string; nav: number }[]
   sellSignals: { date: string; nav: number }[]
+  benchmarkData?: { date: string; value: number }[]
 }
+
+/** 沪深300近似代码（用于基准对比） */
+const BENCHMARK_CODE = '000300'
 
 export class NavChart extends PanelBase {
   private chart: echarts.ECharts | null = null
   private unsub: (() => void) | null = null
-  /** 当前显示的基金代码 */
   private currentCode: string = ''
-  /** 按基金代码缓存净值+信号 */
   private fundCache: Map<string, FundCache> = new Map()
-  /** 已经尝试过收集数据的基金（避免无限循环） */
   private collectedFunds: Set<string> = new Set()
   private activeDays: number = 90
 
@@ -41,6 +42,10 @@ export class NavChart extends PanelBase {
             <button class="period-btn" data-days="365">1年</button>
             <button class="period-btn" data-days="1095">3年</button>
           </div>
+          <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:4px;">
+            <input type="checkbox" class="nav-toggle-benchmark" checked> 基准
+          </label>
+          <button class="btn btn-sm btn-outline nav-research-btn" title="择时研究" style="font-size:11px;">🔬 研究</button>
         </div>
       </div>
       <div class="panel-chart skeleton"></div>`
@@ -69,6 +74,23 @@ export class NavChart extends PanelBase {
         this.renderChartWithFilter()
       }
     })
+
+    this.el?.querySelector('.nav-toggle-benchmark')?.addEventListener('change', () => {
+      if (this.currentCode) this.renderChartWithFilter()
+    })
+
+    // 研究按钮 → 展开研究区
+    this.el?.querySelector('.nav-research-btn')?.addEventListener('click', () => {
+      const code = this.currentCode || state.get('selectedFund')
+      console.log('[NavChart] 研究按钮点击, fundCode:', code)
+      if (code) {
+        const fundName = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || ''
+        state.set('researchPanel', {
+          visible: true, activeTab: 'timing', fundCode: code,
+          signal: { direction: 'hold' as any, confidence: 0, strategy_name: '', timestamp: '', fund_code: code, fund_name: fundName } as any,
+        })
+      }
+    })
   }
 
   async refresh(): Promise<void> {
@@ -76,7 +98,6 @@ export class NavChart extends PanelBase {
     const select = this.el.querySelector<HTMLSelectElement>('.nav-fund-select')
     const pool = state.get('fundPool')
 
-    // 更新下拉列表
     if (select) {
       const currentVal = select.value
       select.innerHTML = pool.map(f =>
@@ -95,47 +116,43 @@ export class NavChart extends PanelBase {
     }
     if (select) select.value = code
 
-    // 有缓存 → 直接渲染，不重新请求
     const cached = this.fundCache.get(code)
     if (cached) {
       this.currentCode = code
-      this.clearECharts()
       this.renderChartWithFilter()
       return
     }
 
-    // 无缓存 → 展示加载中，开始获取
     this.showLoading()
     this.currentCode = code
-
     await this.fetchAndRender(code)
   }
 
-  /** 获取净值数据并渲染（带数据收集兜底） */
   private async fetchAndRender(code: string, retried = false): Promise<void> {
     try {
       const navRes = await fundQuantApi.getNav(code)
       if (code !== this.currentCode) return
       const navData = navRes.data?.nav_history || []
       if (!navData.length) {
-        // 没有净值数据：尝试收集一次
         if (!retried && !this.collectedFunds.has(code)) {
           this.collectedFunds.add(code)
           const name = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || code
           this.showCollecting(name)
-          try {
-            await fundQuantApi.collectNavData([code], 5)
-          } catch { /* 收集失败仍尝试获取 */ }
-          // 收集完再试一次
+          try { await fundQuantApi.collectNavData([code], 5) } catch { /* ignore */ }
           await this.fetchAndRender(code, true)
           return
         }
-        // 收集过后依然没有数据
         this.showNoData(code)
         return
       }
 
-      // 缓存数据
+      // 获取基准数据（沪深300）
+      const benchRes = await fundQuantApi.getNav(BENCHMARK_CODE).catch(() => null)
+      const benchmarkData = benchRes?.data?.nav_history?.map((d: any) => ({
+        date: (d.date || '').slice(0, 10),
+        value: d.nav || d.adjusted_nav || 0,
+      })) || undefined
+
       const sigRes = await fundQuantApi.getSignals(code, 50)
       if (code !== this.currentCode) return
       const signals = (sigRes.data || []).filter(s => s.direction === 'buy' || s.direction === 'sell')
@@ -152,11 +169,10 @@ export class NavChart extends PanelBase {
       }
 
       if (code !== this.currentCode) return
-      this.fundCache.set(code, { navData, buySignals, sellSignals })
+      this.fundCache.set(code, { navData, buySignals, sellSignals, benchmarkData })
       this.renderChartWithFilter()
     } catch {
       if (!retried && !this.collectedFunds.has(code)) {
-        // 请求异常（404 等）：尝试收集一次
         this.collectedFunds.add(code)
         const name = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || code
         this.showCollecting(name)
@@ -164,44 +180,32 @@ export class NavChart extends PanelBase {
         await this.fetchAndRender(code, true)
         return
       }
-      if (this.currentCode === code) {
-        this.fundCache.delete(code)
-      }
+      if (this.currentCode === code) this.fundCache.delete(code)
       this.showNoData(code)
     }
   }
 
-  private clearECharts(): void {
-    this.chart?.dispose()
-    this.chart = null
+  private showLoading(): void {
+    this.setChartContent('<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">加载中...</div>')
   }
 
-  /** 显示加载中状态 */
-  private showLoading(): void {
+  private showCollecting(name: string): void {
+    this.setChartContent(`<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">正在收集 ${name} 数据...</div>`)
+  }
+
+  private showNoData(fundCode: string): void {
+    const name = state.get('fundPool').find(f => f.fund_code === fundCode)?.fund_name || fundCode
+    this.setChartContent(`<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">${name} 暂无净值数据</div>`)
+  }
+
+  private setChartContent(html: string): void {
     if (!this.el) return
     const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
     if (!chartEl) return
     this.chart?.dispose()
     this.chart = null
     chartEl.classList.remove('skeleton')
-    chartEl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">加载中...</div>'
-  }
-
-  /** 显示数据收集中 */
-  private showCollecting(name: string): void {
-    if (!this.el) return
-    const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
-    if (!chartEl) return
-    chartEl.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">正在收集 ${name} 数据...</div>`
-  }
-
-  /** 显示无数据提示 */
-  private showNoData(fundCode: string): void {
-    if (!this.el) return
-    const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
-    if (!chartEl) return
-    const name = state.get('fundPool').find(f => f.fund_code === fundCode)?.fund_name || fundCode
-    chartEl.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">${name} 暂无净值数据</div>`
+    chartEl.innerHTML = html
   }
 
   private filterData<T extends { date: string }>(data: T[], days: number): T[] {
@@ -216,10 +220,12 @@ export class NavChart extends PanelBase {
     if (!cached || !cached.navData.length) return
     const filtered = this.filterData(cached.navData, this.activeDays)
     const validDates = new Set(filtered.map((d: any) => (d.date || '').slice(0, 10)))
+    const showBenchmark = (this.el?.querySelector('.nav-toggle-benchmark') as HTMLInputElement)?.checked ?? true
     this.renderChart(
       filtered,
       cached.buySignals.filter(s => validDates.has(s.date)),
       cached.sellSignals.filter(s => validDates.has(s.date)),
+      showBenchmark ? cached.benchmarkData : undefined,
     )
   }
 
@@ -227,20 +233,47 @@ export class NavChart extends PanelBase {
     navData: any[],
     buySignals: { date: string; nav: number }[],
     sellSignals: { date: string; nav: number }[],
+    benchmarkData?: { date: string; value: number }[],
   ): void {
     if (!this.el) return
     const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
     if (!chartEl) return
 
     chartEl.classList.remove('skeleton')
-    this.clearECharts()
+    this.chart?.dispose()
+    this.chart = null
+
+    const dates = navData.map((d: any) => (d.date || '').slice(0, 10))
+    const navValues = navData.map((d: any) => d.nav || d.adjusted_nav)
 
     let peak = -Infinity
     const drawdown = navData.map((d: any) => {
       const nav = d.nav || d.adjusted_nav || 0
       peak = Math.max(peak, nav)
-      return { date: (d.date || '').slice(0, 10), value: (nav / peak - 1) * 100 }
+      return (nav / peak - 1) * 100
     })
+
+    // 基准归一化（以基金日期范围内的第一个值为基准）
+    let benchmarkSeries: any = undefined
+    if (benchmarkData && benchmarkData.length > 2) {
+      const benchMap = new Map(benchmarkData.map(d => [d.date, d.value]))
+      const aligned = dates.map(date => benchMap.get(date) ?? null).filter(v => v !== null) as number[]
+      if (aligned.length > 5) {
+        const base = aligned[0]
+        const benchNormalized = dates.map(d => {
+          const v = benchMap.get(d)
+          return v != null ? (v / base) * navValues[0] : null
+        })
+        benchmarkSeries = {
+          name: '沪深300',
+          type: 'line',
+          data: benchNormalized,
+          smooth: true,
+          lineStyle: { width: 1, color: '#94a3b8', type: 'dashed' },
+          symbol: 'none',
+        }
+      }
+    }
 
     const isDark = document.body.classList.contains('dark-mode')
     this.chart = echarts.init(chartEl)
@@ -249,21 +282,37 @@ export class NavChart extends PanelBase {
     const option: echarts.EChartsOption = {
       ...theme,
       tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
-      legend: { data: ['净值', '买入信号', '卖出信号', '回撤'], bottom: 0 },
-      grid: { left: '3%', right: '4%', bottom: '15%', containLabel: true },
+      legend: {
+        data: ['净值', '沪深300', '买入信号', '卖出信号', '回撤'],
+        bottom: 0,
+        textStyle: { fontSize: 11 },
+      },
+      grid: { left: '3%', right: '4%', bottom: '18%', containLabel: true },
       xAxis: {
         type: 'category',
-        data: navData.map((d: any) => (d.date || '').slice(0, 10)),
+        data: dates,
         axisLabel: { rotate: 45, fontSize: 11 },
       },
       yAxis: [
         { type: 'value', scale: true, name: '净值' },
         { type: 'value', scale: true, name: '回撤%', min: -30, max: 5, axisLabel: { formatter: '{value}%' } },
       ],
+      // 框选放大
+      dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'none' }],
+      brush: { toolbox: ['rect', 'keep', 'clear'], xAxisIndex: 0 },
+      toolbox: {
+        feature: {
+          brush: { type: ['rect', 'keep', 'clear'] },
+          restore: {},
+          dataZoom: { yAxisIndex: 'none' },
+        },
+        right: 10,
+        top: 4,
+      },
       series: [
         {
           name: '净值', type: 'line',
-          data: navData.map((d: any) => d.nav || d.adjusted_nav),
+          data: navValues,
           smooth: true,
           lineStyle: { width: 2, color: '#3b82f6' },
           areaStyle: {
@@ -273,6 +322,7 @@ export class NavChart extends PanelBase {
             ]),
           },
         },
+        ...(benchmarkSeries ? [benchmarkSeries] : []),
         {
           name: '买入信号', type: 'scatter',
           data: buySignals.map(d => [d.date, d.nav]),
@@ -285,7 +335,7 @@ export class NavChart extends PanelBase {
         },
         {
           name: '回撤', type: 'line',
-          data: drawdown.map(d => d.value),
+          data: drawdown,
           smooth: true, yAxisIndex: 1,
           lineStyle: { width: 1, color: '#f59e0b', type: 'dashed' },
           areaStyle: { color: 'rgba(245,158,11,0.1)' },
@@ -293,6 +343,24 @@ export class NavChart extends PanelBase {
       ],
     }
     this.chart.setOption(option)
+
+    // 点击信号点 → 打开研究区
+    this.chart.on('click', (params: any) => {
+      if (params.componentType !== 'series') return
+      const seriesName = params.seriesName || ''
+      if (seriesName !== '买入信号' && seriesName !== '卖出信号') return
+      const direction = seriesName === '买入信号' ? 'buy' : 'sell'
+      const date = params.data?.[0] || params.name || ''
+      const cached = this.fundCache.get(this.currentCode)
+      const sig = cached?.buySignals.concat(cached?.sellSignals || []).find(s => s.date === date)
+      if (sig && this.currentCode) {
+        const fundName = state.get('fundPool').find(f => f.fund_code === this.currentCode)?.fund_name || ''
+        state.set('researchPanel', {
+          visible: true, activeTab: 'timing', fundCode: this.currentCode,
+          signal: { direction: direction, confidence: 0, strategy_name: '', timestamp: date, fund_code: this.currentCode, fund_name: fundName } as any,
+        })
+      }
+    })
   }
 
   destroy(): void {
@@ -301,7 +369,6 @@ export class NavChart extends PanelBase {
     super.destroy()
   }
 
-  /** Tab 激活时修复 ECharts 尺寸 */
   onActivated(): void {
     this.chart?.resize()
   }

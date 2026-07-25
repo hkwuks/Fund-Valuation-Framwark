@@ -15,10 +15,12 @@ import { FundRanking } from './panels/FundRanking'
 import { MonthlyReturns } from './panels/MonthlyReturns'
 import { Attribution } from './panels/Attribution'
 import { DetailPanel } from './panels/DetailPanel'
+import { ResearchPanel } from './research-panel'
 
 export class FundQuantDashboard {
   private layout: LayoutManager | null = null
   private refreshTimer: ReturnType<typeof setInterval> | null = null
+  private researchPanel: ResearchPanel | null = null
 
   init(container: HTMLElement): void {
     const grid = document.createElement('div')
@@ -36,6 +38,13 @@ export class FundQuantDashboard {
     this.layout.register(new MonthlyReturns())
     this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
+
+    // L3 研究区容器（在 grid 下方）
+    const researchContainer = document.createElement('div')
+    researchContainer.className = 'fq-research-container'
+    container.appendChild(researchContainer)
+    this.researchPanel = new ResearchPanel()
+    this.researchPanel.init(researchContainer)
 
     this.loadFundPool().then(() => {
       // 后台预加载全部基金的净值数据
@@ -96,6 +105,7 @@ export class FundQuantDashboard {
 
   destroy(): void {
     this.stopRefreshTimer()
+    this.researchPanel?.destroy()
     this.layout?.destroy()
   }
 }

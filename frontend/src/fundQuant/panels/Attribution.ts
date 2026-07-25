@@ -19,10 +19,9 @@ export class Attribution extends PanelBase {
         <div class="panel-toolbar">
           <select class="attr-method" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:4px;font-size:12px;background:var(--bg-primary);color:var(--text-primary);">
             <option value="brinson">Brinson</option>
+            <option value="carino">Carino 链接</option>
           </select>
-          <select class="attr-period" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:4px;font-size:12px;background:var(--bg-primary);color:var(--text-primary);">
-            <option value="2026H1">2026 H1</option>
-          </select>
+          <button class="btn btn-sm btn-outline attr-export" style="font-size:11px;">导出</button>
         </div>
       </div>
       <div class="attr-chart" style="height:160px;"></div>
@@ -32,6 +31,16 @@ export class Attribution extends PanelBase {
 
   protected afterMount(): void {
     this.el?.querySelector('.attr-method, .attr-period')?.addEventListener('change', () => this.refresh())
+    this.el?.querySelector('.attr-export')?.addEventListener('click', () => this.exportChart())
+  }
+
+  private exportChart(): void {
+    if (!this.chart) return
+    const url = this.chart.getDataURL({ type: 'png', pixelRatio: 2 })
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `attribution-${new Date().toISOString().slice(0, 10)}.png`
+    a.click()
   }
 
   async refresh(): Promise<void> {

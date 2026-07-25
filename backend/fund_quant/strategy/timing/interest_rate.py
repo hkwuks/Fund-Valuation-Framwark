@@ -17,7 +17,12 @@ class InterestRateStrategy(FundStrategyBase):
         "momentum_threshold": 0.05,
         "yield_source": "10y_cgb",
     }
-    applicable_fund_types = ["bond", "balanced", "qdii"]
+    param_ranges = {
+        "lookback_days": {"min": 5, "max": 60},
+        "momentum_threshold": {"min": 0.01, "max": 0.2},
+    }
+    formula_description = "基于国债收益率变化的债券型基金久期调整策略"
+    applicable_fund_types = ["bond"]
     min_history_days = 60
 
     def on_evaluate(self, portfolio: Optional[Portfolio],

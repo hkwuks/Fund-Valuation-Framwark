@@ -30,7 +30,15 @@ class MultiFactorSelection(FundStrategyBase):
         "custom_weights": None,
         "min_factor_verdict": "usable",
     }
-    applicable_fund_types = ["equity", "index", "balanced", "bond", "qdii"]
+    param_ranges = {
+        "lookback_years": {"min": 1, "max": 5},
+        "top_n": {"min": 3, "max": 20},
+        "min_factor_verdict": {"options": [{"label": "可用", "value": "usable"}, {"label": "强信号", "value": "strong"}]},
+        "weight_method": {"options": [{"label": "IC加权", "value": "ic_weighted"}, {"label": "等权", "value": "equal"}]},
+        "min_history_years": {"min": 0.5, "max": 3},
+    }
+    formula_description = "基于IC_IR加权动态权重的多因子评分选基策略"
+    applicable_fund_types = ["stock", "hybrid", "bond", "index"]
     min_history_days = 365
 
     def on_evaluate(self, portfolio: Optional[Portfolio],
@@ -43,7 +51,6 @@ class MultiFactorSelection(FundStrategyBase):
         from backend.core.factor import (
             FactorRegistry, EvaluationEngine, EvalConfig,
         )
-        from ...core.models import TYPE_COMPAT
         from ...data.storage import get_all_fund_codes, get_fund_meta, get_nav_history
 
         if params:
@@ -56,7 +63,7 @@ class MultiFactorSelection(FundStrategyBase):
                     "top_n": top_n, "rankings": [], "total_candidates": 0}
 
         # 1. 获取因子评价结果
-        active = self._load_active_factors(candidates, fund_type=fund_type)
+        active = self._load_active_factors(candidates)
         if not active:
             logger.warning("没有通过评价的可用因子，回退等权")
             return self._fallback_screen(fund_type, top_n)
@@ -67,14 +74,11 @@ class MultiFactorSelection(FundStrategyBase):
             weights = self._compute_weights(active)
 
         # 3. 计算每只基金评分
-        filter_type = TYPE_COMPAT.get(fund_type, fund_type)  # 新/旧值统一
         fund_scores = []
         for code in candidates:
             meta = get_fund_meta(code)
-            if meta and filter_type != "all":
-                mt = TYPE_COMPAT.get(meta.get("fund_type", ""), meta.get("fund_type", ""))
-                if mt != filter_type:
-                    continue
+            if meta and meta.get("fund_type") != fund_type and fund_type != "all":
+                continue
 
             navs = get_nav_history(code)
             if len(navs) < 60:
@@ -137,9 +141,8 @@ class MultiFactorSelection(FundStrategyBase):
             "rankings": rankings,
         }
 
-    def _load_active_factors(self, symbols: list[str],
-                              fund_type: str | None = None) -> list[tuple]:
-        """加载经过IC评价的可用因子，支持按基金类型过滤"""
+    def _load_active_factors(self, symbols: list[str]) -> list[tuple]:
+        """加载经过IC评价的可用因子"""
         from backend.core.factor import FactorRegistry, EvaluationEngine, EvalConfig
 
         from datetime import date, timedelta
@@ -156,10 +159,6 @@ class MultiFactorSelection(FundStrategyBase):
 
         active = []
         for meta in FactorRegistry.list(domain="fund"):
-            # 按基金类型过滤因子
-            if fund_type and meta.fund_types:
-                if fund_type not in meta.fund_types:
-                    continue
             try:
                 f_cls = FactorRegistry.get(meta.name)
                 f = f_cls()

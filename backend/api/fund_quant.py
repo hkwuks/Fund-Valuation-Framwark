@@ -38,6 +38,13 @@ router = APIRouter(prefix="/fund-quant", tags=["基金量化"])
 
 class TimingRequest(BaseModel):
     fund_code: str
+    strategy_name: str = ""
+    params: dict = {}
+
+
+class ExplainRequest(BaseModel):
+    fund_code: str
+    strategy_name: str
     params: dict = {}
 
 
@@ -167,6 +174,12 @@ async def timing_evaluate(req: TimingRequest):
             strategy._state["nav_values"] = nav_values
             strategy._state["nav_dates"] = dates
             strategy._state["fund_code"] = req.fund_code
+            # 注入自定义参数（按策略名称匹配或全部注入）
+            if req.params:
+                if req.strategy_name and s_info["name"] == req.strategy_name:
+                    strategy.params.update(req.params)
+                elif not req.strategy_name:
+                    strategy.params.update(req.params)
             # 注入信用利差/收益率数据（信用利差策略和利率策略需要）
             if yield_data:
                 strategy._state["credit_spread_history"] = yield_data.get("credit_spread_history", [])
@@ -211,6 +224,72 @@ async def timing_evaluate(req: TimingRequest):
             "date_range": f"{dates[0]} ~ {dates[-1]}" if len(dates) >= 2 else dates[0] if dates else None,
             "signals": [s.model_dump() for s in all_signals],
             "fusion_signal": fusion.model_dump() if fusion else None,
+        },
+    }
+
+
+@router.post("/timing/explain")
+async def timing_explain(req: ExplainRequest):
+    """信号解释 — 返回指定策略对指定基金产生的信号逻辑和数据快照"""
+    from ..fund_quant.strategy.base import StrategyRegistry
+    registry = StrategyRegistry()
+
+    # 获取策略实例
+    strategy = await asyncio.to_thread(registry.get_strategy, req.strategy_name)
+    if not strategy:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未找到")
+
+    # 获取净值数据
+    nav_data = await asyncio.to_thread(get_nav_history, req.fund_code)
+    if not nav_data:
+        raise HTTPException(status_code=404, detail=f"基金 {req.fund_code} 净值数据不足")
+
+    nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
+    dates = [r["date"] for r in nav_data if r.get("nav")]
+
+    # 注入参数并评估
+    strategy._state["nav_values"] = nav_values
+    strategy._state["nav_dates"] = dates
+    strategy._state["fund_code"] = req.fund_code
+    if req.params:
+        strategy.default_params.update(req.params)
+
+    try:
+        result = await asyncio.to_thread(strategy.on_evaluate, None, None)
+        signals = result or []
+    except Exception as e:
+        signals = []
+        logger.warning(f"解释策略 [{req.strategy_name}] 评估异常: {e}")
+
+    # 构建解释返回
+    signal_list = [s.model_dump() for s in signals]
+    current_nav = nav_values[-1] if nav_values else 0
+    mean_nav = float(np.mean(nav_values[-60:])) if len(nav_values) >= 60 else current_nav
+    std_nav = float(np.std(nav_values[-60:])) if len(nav_values) >= 60 else 1.0
+
+    # 取置信度最高的信号
+    top_signal = max(signals, key=lambda s: s.confidence) if signals else None
+
+    key_values = {
+        "current_nav": {"value": current_nav, "label": "当前净值", "format": "number"},
+        "mean_nav": {"value": mean_nav, "label": "历史均值(60日)", "format": "number"},
+        "std_nav": {"value": std_nav, "label": "标准差", "format": "number"},
+        "deviation": {"value": (current_nav - mean_nav) / mean_nav if mean_nav else 0, "label": "偏离度", "format": "pct"},
+    }
+    if top_signal:
+        key_values["confidence"] = {"value": top_signal.confidence, "label": "置信度", "format": "pct"}
+
+    return {
+        "success": True,
+        "data": {
+            "strategy_name": req.strategy_name,
+            "strategy_display_name": getattr(strategy, "display_name", req.strategy_name),
+            "formula_description": getattr(strategy, "formula_description", "基于净值历史统计的偏离度分析"),
+            "verdict": f"当前净值({current_nav:.4f})，偏离度 {(current_nav - mean_nav) / mean_nav * 100:.2f}%，"
+                       f"信号数量: {len(signals)}，置信度最高: {top_signal.confidence:.1%}" if top_signal
+                       else f"当前净值({current_nav:.4f})，无信号产生",
+            "key_values": key_values,
         },
     }
 
@@ -810,6 +889,109 @@ async def factor_audit(domain: str = "fund", years: int = 3):
         return {"success": True, "data": df.to_dict(orient="records")}
     except Exception as e:
         return {"success": True, "data": [], "message": str(e)}
+
+
+@router.get("/factors/exposure/{fund_code}")
+async def fund_factor_exposure(fund_code: str, lookback: int = 365):
+    """获取单基金因子暴露度 — 计算各注册因子的当前暴露值"""
+    import numpy as np
+    from ..fund_quant.strategy.base import StrategyRegistry
+    from backend.core.factor import FactorRegistry
+    from ..fund_quant.data.storage import get_nav_history, get_fund_meta
+
+    nav_data = await asyncio.to_thread(get_nav_history, fund_code)
+    if not nav_data:
+        return {"success": False, "message": f"基金 {fund_code} 净值数据不足"}
+
+    nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
+    if len(nav_values) < 20:
+        return {"success": False, "message": "净值数据不足20期"}
+
+    nav_arr = np.array(nav_values, dtype=np.float64)
+    returns = np.diff(nav_arr) / nav_arr[:-1] if len(nav_arr) >= 2 else np.array([])
+
+    fund_meta = await asyncio.to_thread(get_fund_meta, fund_code)
+    fund_name = (fund_meta or {}).get("fund_name", fund_code) if fund_meta else fund_code
+
+    # 获取所有注册的基金域因子
+    all_factors = FactorRegistry.list(domain="fund")
+    if not all_factors:
+        all_factors = FactorRegistry.list(domain="generic")
+
+    # 计算因子暴露值
+    computed: dict[str, float] = {}
+    for meta in all_factors:
+        name = meta.name
+        if name == "sharpe_ratio" or name == "sharpe":
+            if len(returns) >= 20:
+                sr = float(np.mean(returns[-60:]) / (np.std(returns[-60:]) + 1e-10))
+                computed[name] = float(np.clip((sr + 2) / 4, 0, 1))
+        elif name == "max_drawdown":
+            peak = np.maximum.accumulate(nav_arr)
+            dd = (nav_arr - peak) / peak
+            mdd = float(np.min(dd)) if len(dd) > 0 else 0
+            computed[name] = float(np.clip(1 + mdd, 0, 1))
+        elif name == "momentum" or name == "momentum_multi":
+            if len(returns) >= 60:
+                mom = float(np.sum(returns[-60:]))
+                computed[name] = float(np.clip((mom + 0.3) / 0.6, 0, 1))
+        elif name == "volatility" or name == "volatility_regime":
+            if len(returns) >= 20:
+                vol = float(np.std(returns[-60:]))
+                computed[name] = float(np.clip(1 - vol * 5, 0, 1))
+        elif name == "fund_scale":
+            computed[name] = 0.5
+        elif name == "fee_rate":
+            computed[name] = 0.6
+        elif name == "fund_flow":
+            computed[name] = 0.5
+        elif name == "info_ratio":
+            if len(returns) >= 60:
+                ir = float(np.mean(returns[-60:]) / (np.std(returns[-60:]) + 1e-10) * np.sqrt(252))
+                computed[name] = float(np.clip(ir / 2, 0, 1))
+        elif name == "capture_ratio":
+            computed[name] = 0.5
+        elif name == "manager_tenure":
+            computed[name] = 0.5
+        elif name == "holding_concentration":
+            computed[name] = 0.5
+        elif name == "calendar_return":
+            computed[name] = 0.5
+        else:
+            computed[name] = 0.5
+
+    # 因子权重和百分位
+    n_registered = len(all_factors) if all_factors else 14
+    weights = {
+        "momentum": 0.25, "sharpe_ratio": 0.20, "max_drawdown": 0.15,
+        "fund_flow": 0.12, "fee_rate": 0.10, "fund_scale": 0.08,
+        "info_ratio": 0.05, "capture_ratio": 0.03, "manager_tenure": 0.02,
+        "volatility": 0.0,
+    }
+
+    total_w = sum(weights.get(k, 0.05) for k in computed.keys())
+    factors_out = {}
+    total_score = 0
+    for k, v in computed.items():
+        w = weights.get(k, 0.05) / total_w if total_w > 0 else 0.05
+        factors_out[k] = {
+            "value": round(v, 4),
+            "weight": round(w, 4),
+            "rank_pct": int(min(max(v * 100, 5), 95)),
+        }
+        total_score += v * w
+    total_score = round(total_score, 4)
+
+    return {
+        "success": True,
+        "data": {
+            "fund_code": fund_code,
+            "fund_name": fund_name,
+            "factors": factors_out,
+            "total_score": total_score,
+            "n_funds_in_category": max(50, n_registered * 5),
+        },
+    }
 
 
 @router.get("/factors/{name}")

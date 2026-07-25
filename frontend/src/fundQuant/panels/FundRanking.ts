@@ -5,9 +5,12 @@ import { state } from '../state'
 
 export class FundRanking extends PanelBase {
   private chart: echarts.ECharts | null = null
+  private rankings: FundRankingItem[] = []
+  private sortKey: string = 'total_score'
+  private sortAsc: boolean = false
 
   constructor() {
-    super({ id: 'fund_ranking', title: '选基排名', defaultGridPos: { x: 2, y: 1, w: 1, h: 1 } })
+    super({ id: 'fund_ranking', title: '选基排名', defaultGridPos: { x: 1, y: 0, w: 1, h: 1 } })
   }
 
   render(): HTMLElement {
@@ -41,28 +44,68 @@ export class FundRanking extends PanelBase {
     const fundType = (this.el.querySelector('.rank-type-select') as HTMLSelectElement)?.value || 'stock'
     try {
       const res = await fundQuantApi.screenFunds(fundType, 10)
-      const rankings = res.data?.rankings || []
-      this.renderTable(rankings)
-      if (rankings.length) this.renderRadar(rankings[0])
+      this.rankings = res.data?.rankings || []
+      this.renderTable()
+      if (this.rankings.length) this.renderRadar(this.rankings[0])
     } catch { /* silent keep old data */ }
   }
 
-  private renderTable(rankings: FundRankingItem[]): void {
+  private sortBy(key: string): void {
+    if (this.sortKey === key) {
+      this.sortAsc = !this.sortAsc
+    } else {
+      this.sortKey = key
+      this.sortAsc = key === 'total_score' ? false : true
+    }
+    this.renderTable()
+  }
+
+  private renderTable(): void {
     const el = this.el?.querySelector('.rank-table-wrapper')
     if (!el) return
+
+    // 排序
+    const sorted = [...this.rankings].sort((a, b) => {
+      const av = a[this.sortKey as keyof FundRankingItem] ?? 0
+      const bv = b[this.sortKey as keyof FundRankingItem] ?? 0
+      if (typeof av === 'string' && typeof bv === 'string') {
+        return this.sortAsc ? av.localeCompare(bv) : bv.localeCompare(av)
+      }
+      return this.sortAsc ? (av as number) - (bv as number) : (bv as number) - (av as number)
+    })
+
+    const sortDir = (k: string) => this.sortKey === k ? (this.sortAsc ? 'sorted-asc' : 'sorted-desc') : ''
+
     el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
       <thead><tr>
         <th style="padding:4px 6px;color:var(--text-secondary);font-weight:600;">#</th>
-        <th style="padding:4px 6px;color:var(--text-secondary);font-weight:600;text-align:left;">名称</th>
-        <th style="padding:4px 6px;color:var(--text-secondary);font-weight:600;text-align:right;">总分</th>
+        <th class="sortable ${sortDir('fund_name')}" data-sort="fund_name" style="padding:4px 6px;color:var(--text-secondary);font-weight:600;text-align:left;">名称</th>
+        <th class="sortable ${sortDir('total_score')}" data-sort="total_score" style="padding:4px 6px;color:var(--text-secondary);font-weight:600;text-align:right;">总分</th>
+        <th style="padding:4px 6px;"></th>
       </tr></thead>
-      <tbody>${rankings.map((r, i) => `
+      <tbody>${sorted.map((r, i) => `
         <tr data-code="${r.fund_code}" style="cursor:pointer;">
           <td style="padding:4px 6px;border-bottom:1px solid var(--border-light);text-align:center;color:var(--text-tertiary);">${i + 1}</td>
           <td style="padding:4px 6px;border-bottom:1px solid var(--border-light);color:var(--text-primary);font-weight:500;">${r.fund_name || r.fund_code}</td>
           <td style="padding:4px 6px;border-bottom:1px solid var(--border-light);text-align:right;font-weight:600;color:${r.total_score >= 0 ? 'var(--danger-color)' : 'var(--success-color)'}">${r.total_score.toFixed(4)}</td>
+          <td style="padding:4px 6px;border-bottom:1px solid var(--border-light);text-align:right;">
+            <button class="btn btn-sm btn-outline rank-add-btn" data-code="${r.fund_code}" style="font-size:11px;padding:2px 6px;">+组合</button>
+          </td>
         </tr>
-      `).join('')}</tbody></table>`
+      `).join('')}</tbody></table>
+      <div class="rank-actions">
+        <button class="btn btn-sm btn-outline rank-backtest-btn" style="font-size:11px;">回测选中</button>
+      </div>`
+
+    // 排序
+    el.querySelectorAll('th.sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const key = (th as HTMLElement).dataset.sort || 'total_score'
+        this.sortBy(key)
+      })
+    })
+
+    // 点击行→选基金
     el.querySelector('tbody')?.addEventListener('dblclick', (e: Event) => {
       const target = e.target as HTMLElement
       const tr = target.closest('tr')
@@ -70,6 +113,19 @@ export class FundRanking extends PanelBase {
         const code = tr.getAttribute('data-code')
         if (code) state.set('selectedFund', code)
       }
+    })
+
+    // 加入组合
+    el.querySelectorAll('.rank-add-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation()
+        alert('基金已添加到组合（待后端实现组合管理）')
+      })
+    })
+
+    // 回测按钮
+    el.querySelector('.rank-backtest-btn')?.addEventListener('click', () => {
+      alert('回测功能请在回测面板使用（待实现）')
     })
   }
 
