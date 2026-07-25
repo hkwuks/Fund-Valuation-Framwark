@@ -12,6 +12,7 @@ import { SignalList } from './panels/SignalList'
 import { Allocation } from './panels/Allocation'
 import { FundRanking } from './panels/FundRanking'
 import { MonthlyReturns } from './panels/MonthlyReturns'
+import { Attribution } from './panels/Attribution'
 import { DetailPanel } from './panels/DetailPanel'
 
 export class FundQuantDashboard {
@@ -32,6 +33,7 @@ export class FundQuantDashboard {
     this.layout.register(new Allocation())
     this.layout.register(new FundRanking())
     this.layout.register(new MonthlyReturns())
+    this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
 
     this.loadFundPool()
