@@ -8,6 +8,10 @@ export class NavChart extends PanelBase {
   private chart: echarts.ECharts | null = null
   private unsub: (() => void) | null = null
   private currentCode: string = ''
+  private cachedNavData: any[] = []
+  private cachedBuySignals: { date: string; nav: number }[] = []
+  private cachedSellSignals: { date: string; nav: number }[] = []
+  private activeDays: number = 90
 
   constructor() {
     super({ id: 'nav_chart', title: '净值走势', defaultGridPos: { x: 0, y: 1, w: 2, h: 1 } })
@@ -51,6 +55,11 @@ export class NavChart extends PanelBase {
       if (!btn) return
       this.el?.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'))
       btn.classList.add('active')
+      const days = parseInt(btn.dataset.days || '90', 10)
+      if (days !== this.activeDays && this.cachedNavData.length) {
+        this.activeDays = days
+        this.renderChartWithFilter()
+      }
     })
   }
 
@@ -77,22 +86,41 @@ export class NavChart extends PanelBase {
       const navData = navRes.data?.nav_history || []
       if (!navData.length) return
 
+      this.cachedNavData = navData
+
       const sigRes = await fundQuantApi.getSignals(code, 50)
       const signals = (sigRes.data || []).filter(s => s.direction === 'buy' || s.direction === 'sell')
-      const buyPoints = signals.filter(s => s.direction === 'buy').map(s => ({
+      this.cachedBuySignals = signals.filter(s => s.direction === 'buy').map(s => ({
         date: (s.created_at || '').slice(0, 10), nav: 0,
       }))
-      const sellPoints = signals.filter(s => s.direction === 'sell').map(s => ({
+      this.cachedSellSignals = signals.filter(s => s.direction === 'sell').map(s => ({
         date: (s.created_at || '').slice(0, 10), nav: 0,
       }))
 
-      for (const pt of [...buyPoints, ...sellPoints]) {
+      for (const pt of [...this.cachedBuySignals, ...this.cachedSellSignals]) {
         const match = navData.find((d: any) => (d.date || '').slice(0, 10) === pt.date)
         pt.nav = match ? (match.nav || (match.adjusted_nav ?? 0)) : 0
       }
 
-      this.renderChart(navData, buyPoints, sellPoints)
+      this.renderChartWithFilter()
     } catch { /* ignore */ }
+  }
+
+  private filterData<T extends { date: string }>(data: T[], days: number): T[] {
+    if (days >= 9999) return data
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - days)
+    return data.filter(d => new Date(d.date) >= cutoff)
+  }
+
+  private renderChartWithFilter(): void {
+    const filtered = this.filterData(this.cachedNavData, this.activeDays)
+    const validDates = new Set(filtered.map((d: any) => (d.date || '').slice(0, 10)))
+    this.renderChart(
+      filtered,
+      this.cachedBuySignals.filter(s => validDates.has(s.date)),
+      this.cachedSellSignals.filter(s => validDates.has(s.date)),
+    )
   }
 
   private renderChart(
