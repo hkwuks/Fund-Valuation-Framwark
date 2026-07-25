@@ -4111,3 +4111,146 @@ body::after {
 .qe-method-card { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:16px; }
 .qe-method-title { font-weight:600; margin-bottom:4px; }
 .qe-method-desc { font-size:.85em; color:var(--text-secondary); }
+
+/* ── 信号列表面板 ── */
+.panel-signallist {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+}
+.panel-signallist .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+.panel-signallist .panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+.panel-signallist .panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sig-filter {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 12px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.sig-table-wrapper {
+  overflow-y: auto;
+  max-height: 280px;
+}
+.sig-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.sig-table th {
+  padding: 6px 8px;
+  text-align: left;
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-color);
+}
+.sig-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+tr[data-code] {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+tr[data-code]:hover {
+  background: var(--bg-secondary);
+}
+.sig-sse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  background: #10b981;
+}
+.sig-footer {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  text-align: center;
+  border-top: 1px solid var(--border-light);
+}
+
+/* ── 净值走势面板 ── */
+.panel-navchart {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+}
+.panel-navchart .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border-light);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.panel-navchart .panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+.panel-navchart .panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.panel-navchart .nav-fund-select {
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.panel-navchart .nav-periods {
+  display: flex;
+  gap: 4px;
+}
+.panel-navchart .period-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+.panel-navchart .period-btn:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+}
+.panel-navchart .period-btn.active {
+  background: var(--primary-gradient);
+  color: var(--text-inverse);
+  border-color: transparent;
+}
+.panel-navchart .panel-chart {
+  height: 300px;
+  width: 100%;
+}
