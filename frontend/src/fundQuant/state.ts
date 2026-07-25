@@ -49,6 +49,12 @@ export interface LayoutConfig {
   panels: Record<string, PanelLayout>
 }
 
+export interface LoadingState {
+  isRefreshing: boolean
+  lastRefreshTime: number | null
+  errors: Record<string, string | null>
+}
+
 export interface GlobalState {
   fundPool: FundInfo[]
   selectedFund: string | null
@@ -58,6 +64,7 @@ export interface GlobalState {
   allocation: PortfolioAllocation | null
   layout: LayoutConfig
   settings: Record<string, any>
+  loading: LoadingState
 }
 
 type StateKey = keyof GlobalState
@@ -121,4 +128,5 @@ export const state = new EventEmitter({
   allocation: null,
   layout: DEFAULT_LAYOUT,
   settings: {},
+  loading: { isRefreshing: false, lastRefreshTime: null, errors: {} },
 })
