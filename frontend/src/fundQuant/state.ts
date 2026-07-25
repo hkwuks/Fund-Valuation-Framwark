@@ -112,7 +112,7 @@ const DEFAULT_LAYOUT: LayoutConfig = {
     nav_chart: { visible: true, order: 1, grid_pos: { x: 0, y: 0, w: 2, h: 1 } },
     signal_list: { visible: true, order: 2, grid_pos: { x: 0, y: 1, w: 1, h: 1 } },
     allocation: { visible: true, order: 3, grid_pos: { x: 1, y: 1, w: 1, h: 1 } },
-    fund_ranking: { visible: true, order: 4, grid_pos: { x: 2, y: 0, w: 1, h: 1 } },
+    fund_ranking: { visible: false, order: 4, grid_pos: { x: 2, y: 0, w: 1, h: 1 } },
     attribution: { visible: false, order: 5 },
     monthly_returns: { visible: false, order: 6 },
   },
