@@ -10,7 +10,7 @@
 import * as echarts from 'echarts'
 import { fundQuantApi } from '../api'
 import { state, type SignalSummary } from '../state'
-import { getChartTheme } from '../../fundQuantCharts'
+import { getChartTheme, DARK_SERIES, LIGHT_SERIES } from '../../fundQuantCharts'
 
 interface ParamSchema {
   name: string
@@ -340,30 +340,36 @@ export class TimingResearch {
 
     const isDark = document.body.classList.contains('dark-mode')
     const theme = getChartTheme(isDark)
+    const C = isDark ? DARK_SERIES : LIGHT_SERIES
+    const axColor = isDark ? '#94a3b8' : '#64748b'
+    const gridColor = isDark ? '#334155' : '#e2e8f0'
 
     this.chart.setOption({
       ...theme,
       tooltip: { trigger: 'axis' },
       grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
-      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, rotate: 30 } },
-      yAxis: { type: 'value', scale: true },
+      xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, rotate: 30, color: axColor },
+        axisLine: { lineStyle: { color: isDark ? '#475569' : '#cbd5e1' } },
+        splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } } },
+      yAxis: { type: 'value', scale: true, axisLabel: { color: axColor },
+        splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } } },
       series: [
         {
           name: '净值', type: 'line', data: navValues,
-          smooth: true, lineStyle: { width: 1.5, color: '#3b82f6' },
+          smooth: true, lineStyle: { width: 1.5, color: C.nav },
           symbol: 'none',
         },
         {
           name: '买入信号', type: 'scatter',
           data: buyData,
           symbol: 'circle', symbolSize: 8,
-          itemStyle: { color: '#ef4444' },
+          itemStyle: { color: C.buy },
         },
         {
           name: '卖出信号', type: 'scatter',
           data: sellData,
           symbol: 'circle', symbolSize: 8,
-          itemStyle: { color: '#10b981' },
+          itemStyle: { color: C.sell },
         },
       ],
     })

@@ -4,14 +4,46 @@ import * as echarts from 'echarts'
 
 // ── 图表主题 ──
 
+/** 黄金量化风格：浅色/深色通用图层面板 */
 export function getChartTheme(isDark: boolean) {
   return {
     backgroundColor: 'transparent',
-    textStyle: { color: isDark ? '#e2e8f0' : '#334155' },
+    textStyle: { color: isDark ? '#f1f5f9' : '#334155' },
     grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-    tooltip: { trigger: 'axis' as const, axisPointer: { type: 'cross' as const } },
-    legend: { textStyle: { color: isDark ? '#e2e8f0' : '#334155' } },
+    tooltip: {
+      trigger: 'axis' as const,
+      axisPointer: { type: 'cross' as const },
+      backgroundColor: isDark ? '#273549' : '#ffffff',
+      borderColor: isDark ? '#475569' : '#e2e8f0',
+      textStyle: { color: isDark ? '#f1f5f9' : '#334155' },
+    },
+    legend: {
+      textStyle: { color: isDark ? '#cbd5e1' : '#475569', fontSize: 11 },
+      pageTextStyle: { color: isDark ? '#94a3b8' : '#64748b' },
+    },
   }
+}
+
+/** 深色模式颜色映射表 — 系列颜色 */
+export const DARK_SERIES = {
+  nav: '#60a5fa',       // 净值亮蓝
+  navArea: 'rgba(96,165,250,0.2)',
+  benchmark: '#475569', // 基准灰
+  drawdown: '#fbbf24',  // 回撤亮琥珀
+  drawdownArea: 'rgba(251,191,36,0.1)',
+  buy: '#ef4444',       // 买入红
+  sell: '#10b981',      // 卖出绿
+}
+
+/** 浅色模式颜色映射表 */
+export const LIGHT_SERIES = {
+  nav: '#3b82f6',
+  navArea: 'rgba(59,130,246,0.15)',
+  benchmark: '#94a3b8',
+  drawdown: '#f59e0b',
+  drawdownArea: 'rgba(245,158,11,0.1)',
+  buy: '#ef4444',
+  sell: '#10b981',
 }
 
 // ── 择时: 净值曲线 + 买卖信号 ──
@@ -24,33 +56,44 @@ export function renderTimingChart(
   const isDark = document.body.classList.contains('dark-mode')
   const chart = echarts.init(container, undefined, { renderer: 'canvas' })
   const theme = getChartTheme(isDark)
+  const C = isDark ? DARK_SERIES : LIGHT_SERIES
+  const axColor = isDark ? '#94a3b8' : '#64748b'
+  const axLineColor = isDark ? '#475569' : '#cbd5e1'
+  const gridColor = isDark ? '#334155' : '#e2e8f0'
 
   const option: echarts.EChartsOption = {
     ...theme,
-    title: { text: '净值走势', left: 'center', textStyle: { fontSize: 14 } },
-    xAxis: { type: 'category', data: navData.map(d => d.date), axisLabel: { rotate: 45 } },
-    yAxis: { type: 'value', scale: true },
+    title: { text: '净值走势', left: 'center', textStyle: { fontSize: 14, color: isDark ? '#f1f5f9' : '#334155' } },
+    xAxis: {
+      type: 'category', data: navData.map(d => d.date),
+      axisLabel: { rotate: 45, color: axColor }, axisLine: { lineStyle: { color: axLineColor } },
+      splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+    },
+    yAxis: {
+      type: 'value', scale: true,
+      axisLabel: { color: axColor }, splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+    },
     series: [
       {
         name: '净值',
         type: 'line',
         data: navData.map(d => d.nav),
         smooth: true,
-        lineStyle: { width: 2, color: isDark ? '#60a5fa' : '#3b82f6' },
+        lineStyle: { width: 2, color: C.nav },
         areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: isDark ? 'rgba(96,165,250,0.3)' : 'rgba(59,130,246,0.15)' },
-          { offset: 1, color: 'rgba(96,165,250,0)' },
+          { offset: 0, color: C.navArea },
+          { offset: 1, color: isDark ? 'rgba(96,165,250,0)' : 'rgba(59,130,246,0)' },
         ]) },
       },
       ...(buySignals?.length ? [{
         name: '买入信号', type: 'scatter' as const,
         data: buySignals.map(d => [d.date, d.nav]),
-        symbolSize: 12, itemStyle: { color: '#10b981' },
+        symbolSize: 12, itemStyle: { color: C.buy },
       }] : []),
       ...(sellSignals?.length ? [{
         name: '卖出信号', type: 'scatter' as const,
         data: sellSignals.map(d => [d.date, d.nav]),
-        symbolSize: 12, itemStyle: { color: '#ef4444' },
+        symbolSize: 12, itemStyle: { color: C.sell },
       }] : []),
     ],
     tooltip: { ...theme.tooltip, trigger: 'axis' },
@@ -136,35 +179,42 @@ export function renderBacktestChart(
   const isDark = document.body.classList.contains('dark-mode')
   const chart = echarts.init(container, undefined, { renderer: 'canvas' })
   const theme = getChartTheme(isDark)
+  const C = isDark ? DARK_SERIES : LIGHT_SERIES
+  const axColor = isDark ? '#94a3b8' : '#64748b'
+  const gridColor = isDark ? '#334155' : '#e2e8f0'
 
   const dates = equity.map(d => d.date)
   const series: echarts.EChartsOption['series'] = [
     {
       name: '权益曲线', type: 'line', data: equity.map(d => d.value),
-      smooth: true, lineStyle: { width: 2, color: '#3b82f6' },
+      smooth: true, lineStyle: { width: 2, color: C.nav },
       areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-        { offset: 0, color: 'rgba(59,130,246,0.2)' }, { offset: 1, color: 'rgba(59,130,246,0)' }]) },
+        { offset: 0, color: C.navArea }, { offset: 1, color: isDark ? 'rgba(96,165,250,0)' : 'rgba(59,130,246,0)' }]) },
     },
     ...(benchmark ? [{
       name: '基准', type: 'line' as const, data: benchmark.map(d => d.value),
-      smooth: true, lineStyle: { width: 1.5, color: '#94a3b8', type: 'dashed' as const },
+      smooth: true, lineStyle: { width: 1.5, color: C.benchmark, type: 'dashed' as const },
     }] : []),
     {
       name: '回撤', type: 'line' as const, data: drawdown.map(d => d.value),
       smooth: true, yAxisIndex: 1,
-      lineStyle: { width: 1.5, color: '#ef4444' },
-      areaStyle: { color: 'rgba(239,68,68,0.1)' },
+      lineStyle: { width: 1.5, color: C.drawdown },
+      areaStyle: { color: C.drawdownArea },
     },
   ]
 
   const option: echarts.EChartsOption = {
     ...theme,
-    title: { text: '回测业绩', left: 'center', textStyle: { fontSize: 14 } },
-    xAxis: { type: 'category', data: dates, axisLabel: { rotate: 45 } },
+    title: { text: '回测业绩', left: 'center', textStyle: { fontSize: 14, color: isDark ? '#f1f5f9' : '#334155' } },
+    xAxis: {
+      type: 'category', data: dates, axisLabel: { rotate: 45, color: axColor },
+      axisLine: { lineStyle: { color: isDark ? '#475569' : '#cbd5e1' } },
+      splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+    },
     yAxis: [
-      { type: 'value', scale: true, splitLine: { show: true } },
+      { type: 'value', scale: true, splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: axColor } },
       { type: 'value', scale: true, splitLine: { show: false }, min: -0.3, max: 0.05,
-        axisLabel: { formatter: '{value}%' } },
+        axisLabel: { formatter: '{value}%', color: axColor } },
     ],
     series,
     tooltip: { ...theme.tooltip, trigger: 'axis' },

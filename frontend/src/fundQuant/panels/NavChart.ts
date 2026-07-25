@@ -2,7 +2,7 @@ import * as echarts from 'echarts'
 import { PanelBase } from '../layout'
 import { fundQuantApi } from '../api'
 import { state } from '../state'
-import { getChartTheme } from '../../fundQuantCharts'
+import { getChartTheme, DARK_SERIES, LIGHT_SERIES } from '../../fundQuantCharts'
 
 interface FundCache {
   navData: any[]
@@ -254,6 +254,8 @@ export class NavChart extends PanelBase {
     })
 
     // 基准归一化（以基金日期范围内的第一个值为基准）
+    const isDark = document.body.classList.contains('dark-mode')
+    const C = isDark ? DARK_SERIES : LIGHT_SERIES
     let benchmarkSeries: any = undefined
     if (benchmarkData && benchmarkData.length > 2) {
       const benchMap = new Map(benchmarkData.map(d => [d.date, d.value]))
@@ -269,15 +271,18 @@ export class NavChart extends PanelBase {
           type: 'line',
           data: benchNormalized,
           smooth: true,
-          lineStyle: { width: 1, color: '#94a3b8', type: 'dashed' },
+          lineStyle: { width: 1.5, color: C.benchmark, type: 'dashed' },
           symbol: 'none',
         }
       }
     }
 
-    const isDark = document.body.classList.contains('dark-mode')
     this.chart = echarts.init(chartEl)
     const theme = getChartTheme(isDark)
+
+    const axColor = isDark ? '#94a3b8' : '#64748b'
+    const axLineColor = isDark ? '#475569' : '#cbd5e1'
+    const gridColor = isDark ? '#334155' : '#e2e8f0'
 
     const option: echarts.EChartsOption = {
       ...theme,
@@ -287,15 +292,28 @@ export class NavChart extends PanelBase {
         bottom: 0,
         textStyle: { fontSize: 11 },
       },
-      grid: { left: '3%', right: '4%', bottom: '18%', containLabel: true },
+      grid: { left: '3%', right: '4%', bottom: '18%', top: '4%', containLabel: true },
       xAxis: {
         type: 'category',
         data: dates,
-        axisLabel: { rotate: 45, fontSize: 11 },
+        axisLabel: { rotate: 45, fontSize: 11, color: axColor },
+        axisLine: { lineStyle: { color: axLineColor } },
+        axisTick: { lineStyle: { color: axLineColor } },
+        splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
       },
       yAxis: [
-        { type: 'value', scale: true, name: '净值' },
-        { type: 'value', scale: true, name: '回撤%', min: -30, max: 5, axisLabel: { formatter: '{value}%' } },
+        {
+          type: 'value', scale: true, name: '净值',
+          axisLabel: { color: axColor },
+          nameTextStyle: { color: axColor },
+          splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+        },
+        {
+          type: 'value', scale: true, name: '回撤%', min: -30, max: 5,
+          axisLabel: { formatter: '{value}%', color: axColor },
+          nameTextStyle: { color: axColor },
+          splitLine: { show: false },
+        },
       ],
       // 框选放大
       dataZoom: [{ type: 'inside', xAxisIndex: 0, filterMode: 'none' }],
@@ -314,11 +332,11 @@ export class NavChart extends PanelBase {
           name: '净值', type: 'line',
           data: navValues,
           smooth: true,
-          lineStyle: { width: 2, color: '#3b82f6' },
+          lineStyle: { width: 2, color: C.nav },
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: 'rgba(59,130,246,0.2)' },
-              { offset: 1, color: 'rgba(59,130,246,0)' },
+              { offset: 0, color: C.navArea },
+              { offset: 1, color: isDark ? 'rgba(96,165,250,0)' : 'rgba(59,130,246,0)' },
             ]),
           },
         },
@@ -326,19 +344,19 @@ export class NavChart extends PanelBase {
         {
           name: '买入信号', type: 'scatter',
           data: buySignals.map(d => [d.date, d.nav]),
-          symbolSize: 12, itemStyle: { color: '#ef4444' },
+          symbolSize: 12, itemStyle: { color: C.buy },
         },
         {
           name: '卖出信号', type: 'scatter',
           data: sellSignals.map(d => [d.date, d.nav]),
-          symbolSize: 12, itemStyle: { color: '#10b981' },
+          symbolSize: 12, itemStyle: { color: C.sell },
         },
         {
           name: '回撤', type: 'line',
           data: drawdown,
           smooth: true, yAxisIndex: 1,
-          lineStyle: { width: 1, color: '#f59e0b', type: 'dashed' },
-          areaStyle: { color: 'rgba(245,158,11,0.1)' },
+          lineStyle: { width: 1.5, color: C.drawdown, type: 'dashed' as const },
+          areaStyle: { color: C.drawdownArea },
         },
       ],
     }
