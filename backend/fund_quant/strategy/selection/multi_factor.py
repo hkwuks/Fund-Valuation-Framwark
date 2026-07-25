@@ -30,6 +30,14 @@ class MultiFactorSelection(FundStrategyBase):
         "custom_weights": None,
         "min_factor_verdict": "usable",
     }
+    param_ranges = {
+        "lookback_years": {"min": 1, "max": 5},
+        "top_n": {"min": 3, "max": 20},
+        "min_factor_verdict": {"options": [{"label": "可用", "value": "usable"}, {"label": "强信号", "value": "strong"}]},
+        "weight_method": {"options": [{"label": "IC加权", "value": "ic_weighted"}, {"label": "等权", "value": "equal"}]},
+        "min_history_years": {"min": 0.5, "max": 3},
+    }
+    formula_description = "基于IC_IR加权动态权重的多因子评分选基策略"
     applicable_fund_types = ["stock", "hybrid", "bond", "index"]
     min_history_days = 365
 

@@ -37,7 +37,7 @@ class TestEnums:
 
     def test_fund_type_coverage(self):
         types = {e.value for e in FundType}
-        required = {"stock", "hybrid", "bond", "index", "qdii", "money", "fof", "etf"}
+        required = {"equity", "index", "balanced", "bond", "money", "qdii", "commodity", "fof"}
         assert required.issubset(types), f"缺少基金类型: {required - types}"
 
 

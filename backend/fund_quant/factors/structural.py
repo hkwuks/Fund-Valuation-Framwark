@@ -15,6 +15,7 @@ class FundScaleFactor(Factor):
         description="对数规模（小规模基金有流动性溢价）",
         direction=1, params={"lookback": 1},
         formula="log10(scale / 1e7) / 3",
+        fund_types=["equity", "index", "balanced", "bond", "qdii", "fof", "commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):
@@ -38,6 +39,7 @@ class FeeRateFactor(Factor):
         description="管理费+托管费（越低越好）",
         direction=-1, params={"lookback": 1},
         formula="management_fee + custody_fee",
+        fund_types=["equity", "index", "balanced", "bond", "qdii", "fof"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

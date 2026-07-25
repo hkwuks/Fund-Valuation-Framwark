@@ -11,6 +11,7 @@ class ManagerTenureFactor(Factor):
         description="当前基金经理任职年数",
         direction=1, params={"lookback": 1},
         formula="years_since_appointment",
+        fund_types=["equity", "balanced", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

@@ -25,6 +25,12 @@ class FxMomentumStrategy(FundStrategyBase):
         "momentum_threshold": 0.02,
         "fx_vol_alert": 0.05,
     }
+    param_ranges = {
+        "lookback_days": {"min": 10, "max": 60},
+        "momentum_threshold": {"min": 0.005, "max": 0.1},
+        "fx_vol_alert": {"min": 0.02, "max": 0.15},
+    }
+    formula_description = "基于多币种汇率动量的QDII仓位调整策略"
     applicable_fund_types = ["qdii"]
     min_history_days = 60
 

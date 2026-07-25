@@ -19,6 +19,7 @@ class FactorMeta:
     formula: str = ""
     min_history_days: int = 60
     reference: str = ""
+    fund_types: list[str] = field(default_factory=list)  # 空=全部适用
 
 
 @dataclass

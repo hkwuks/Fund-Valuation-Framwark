@@ -14,6 +14,7 @@ class InventoryChangeFactor(Factor):
         description="SHFE 金交所库存增减",
         direction=-1, params={"lookback": 60},
         formula="(current_inventory - avg_60d) / avg_60d",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

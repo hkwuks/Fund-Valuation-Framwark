@@ -352,7 +352,7 @@ class BondDrawdownCheck(RiskCheck):
     def check(self, ctx: RiskContext, signal: Signal | None = None) -> RiskVerdict:
         if signal is None:
             return RiskVerdict(passed=True, check_name=self.name)
-        if self._get_fund_type(signal.symbol) != "bond":
+        if self._get_fund_type(signal.symbol) not in ("bond", "balanced"):
             return RiskVerdict(passed=True, check_name=self.name)
         dd = ctx.max_drawdown
         if dd < self._limit:
@@ -437,7 +437,7 @@ class ClosedEndCheck(RiskCheck):
         if signal.direction in ("long", "buy", "BUY", Direction.LONG):
             return RiskVerdict(passed=True, check_name=self.name)
         fund_type = self._get_fund_type(signal.symbol)
-        if fund_type not in ("closed_end", "fof", "bond"):
+        if fund_type not in ("fof", "bond"):
             return RiskVerdict(passed=True, check_name=self.name)
         try:
             from backend.fund_quant.data.storage import get_fund_meta

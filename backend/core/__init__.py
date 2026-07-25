@@ -5,7 +5,7 @@ from .data import Bar, FundNavPoint, DataFeed
 from .strategy import Strategy, StrategyContext, StrategyRegistry
 from .backtest import (
     BacktestEngine, BacktestReport,
-    ExecutionEngine, SimExecutionEngine, T1ExecutionEngine,
+    ExecutionEngine, SimExecutionEngine, T1ExecutionEngine, FuturesExecutionEngine,
     SlippageModel, NoSlippage, PercentageSlippage,
     CostModel, NoCost,
 )

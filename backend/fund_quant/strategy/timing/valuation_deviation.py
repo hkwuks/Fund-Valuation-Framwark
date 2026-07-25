@@ -22,7 +22,11 @@ class ValuationDeviationStrategy(FundStrategyBase):
     param_ranges = {
         "z_threshold": {"min": 1.0, "max": 3.0},
         "lookback_days": {"min": 20, "max": 126},
+        "confidence_min": {"min": 0, "max": 1},
+        "momentum_confirm_days": {"min": 1, "max": 10},
+        "cooldown_days": {"min": 0, "max": 20},
     }
+    formula_description = "基于净值偏离历史均值标准差程度的估值偏差择时策略"
     applicable_fund_types = ["stock", "hybrid", "index"]
     min_history_days = 60
 

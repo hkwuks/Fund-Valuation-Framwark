@@ -1,9 +1,19 @@
 """FundQuant 数据模型"""
 
+from __future__ import annotations
+
 from datetime import datetime, date
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Tuple
 from pydantic import BaseModel, Field
 from .enums import SignalType, Direction, FundType, StrategyType
+
+# 新旧 FundType 兼容映射：前端/K线/DB 数据可能传旧值
+TYPE_COMPAT = {
+    "stock": "equity",
+    "hybrid": "equity",
+    "etf": "index",
+    "etf_link": "index",
+}
 
 
 # ═══════════════════════════════════════════
@@ -32,6 +42,7 @@ class FundDataPoint(BaseModel):
 class InformationSet(BaseModel):
     """可用信息集（前视偏差防护）"""
     nav_available_up_to: date
+    qdii_nav_available_up_to: Optional[date] = None  # None = 同 nav_available_up_to
     intraday_quotes_available: date
     holdings_disclosed_up_to: date
     holdings_effective_date: date
@@ -115,8 +126,8 @@ class RiskCheckResult(BaseModel):
 
 class CostModelConfig(BaseModel):
     """费率模型配置"""
-    fund_type: str = "stock"
-    subscription_fee_tiers: Dict[str, float] = Field(
+    fund_type: str = "equity"
+    subscription_fee_tiers: Union[Dict[str, float], Dict[str, List[Tuple[str, float]]]] = Field(
         default_factory=lambda: {
             "stock": 0.015,
             "hybrid": 0.015,
@@ -136,7 +147,7 @@ class CostModelConfig(BaseModel):
             9999: 0.0,
         }
     )
-    management_fee_rate: Dict[str, float] = Field(
+    management_fee_rate: Union[Dict[str, float], Dict[str, List[Tuple[str, float]]]] = Field(
         default_factory=lambda: {
             "stock": 0.015,
             "hybrid": 0.012,
@@ -155,7 +166,7 @@ class CostModelConfig(BaseModel):
     dividend_tax_holding_over_1y: float = 0.0   # ≥1年分红税
     max_subscription_amount: Optional[float] = None  # 大额申购限制
     max_redemption_amount: Optional[float] = None   # 大额赎回限制
-    custody_fee_rate: Dict[str, float] = Field(
+    custody_fee_rate: Union[Dict[str, float], Dict[str, List[Tuple[str, float]]]] = Field(
         default_factory=lambda: {
             "stock": 0.0025,
             "hybrid": 0.0020,
@@ -177,6 +188,12 @@ class BacktestConfig(BaseModel):
     initial_capital: float = 100000.0
     rebalance_freq: str = "monthly"
     cost_model: CostModelConfig = Field(default_factory=CostModelConfig)
+    subscription_discount: float = Field(default=0.10, ge=0.0, le=1.0)
+    dividend_policy: str = "reinvest"  # "reinvest" or "cash"
+    dividend_calendar: Dict[str, Dict[str, float]] = Field(default_factory=dict)  # {date_str: {fund_code: div_per_share}}
+    nav_gap_policy: str = "forward_fill"  # forward_fill / skip / interpolate / raise
+    min_nav_records_pct: float = 0.8  # 低于此比例时标记低数据质量
+    qdii_fund_codes: List[str] = Field(default_factory=list)
     params: dict = Field(default_factory=dict)
 
 

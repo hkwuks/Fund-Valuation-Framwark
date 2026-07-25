@@ -14,6 +14,7 @@ class FundFlowFactor(Factor):
         description="(规模变化 - NAV增长) / 上期规模",
         direction=1, params={"lookback": 90},
         formula="(scale_t - scale_{t-1}) / scale_{t-1} - NAV_growth",
+        fund_types=["equity", "index", "balanced", "bond", "qdii", "fof"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

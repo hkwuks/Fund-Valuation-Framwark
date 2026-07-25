@@ -22,6 +22,19 @@ class TestFactorMeta:
         assert meta.min_history_days == 60
         assert meta.params == {}
 
+    def test_factor_meta_fund_types_default(self):
+        """fund_types 默认空列表"""
+        m = FactorMeta(name="test", display_name="test", category="a",
+                       domain="fund", direction=1, description="test")
+        assert m.fund_types == []
+
+    def test_factor_meta_fund_types_set(self):
+        """fund_types 可以指定"""
+        m = FactorMeta(name="test", display_name="test", category="a",
+                       domain="fund", direction=1, description="test",
+                       fund_types=["equity", "qdii"])
+        assert m.fund_types == ["equity", "qdii"]
+
 
 class TestICSnapshot:
     def test_defaults(self):

@@ -15,6 +15,7 @@ class MaxDrawdownFactor(Factor):
         description="历史最大回撤幅度（越小越好，direction=-1）",
         direction=-1, params={"lookback": 252},
         formula="min((cumprod(1+returns) - peak) / peak)",
+        fund_types=["equity", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

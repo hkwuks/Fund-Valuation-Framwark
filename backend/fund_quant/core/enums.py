@@ -20,16 +20,15 @@ class Direction(str, Enum):
 
 
 class FundType(str, Enum):
-    """基金类型"""
-    STOCK = "stock"
-    HYBRID = "hybrid"
-    BOND = "bond"
-    INDEX = "index"
-    QDII = "qdii"
-    MONEY = "money"
-    FOF = "fof"
-    ETF = "etf"
-    ETF_LINK = "etf_link"
+    """基金量化分类"""
+    EQUITY = "equity"           # 主动股票型（含偏股混合，股≥60%）
+    INDEX = "index"             # 指数型（ETF/联接/被动/增强）
+    BALANCED = "balanced"       # 平衡混合型（含二级债基/灵活配置）
+    BOND = "bond"               # 债券型（纯债/长债/短债/一级债基）
+    MONEY = "money"             # 货币型
+    QDII = "qdii"               # 海外型
+    COMMODITY = "commodity"     # 商品型（黄金等）
+    FOF = "fof"                 # FOF型
 
 
 class StrategyType(str, Enum):

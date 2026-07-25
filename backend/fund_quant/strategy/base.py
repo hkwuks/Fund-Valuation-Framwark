@@ -53,6 +53,48 @@ class FundStrategyBase(ABC):
             **kwargs,
         )
 
+    def calc_suggested_pct(self, signal_strength: float,
+                            buy_threshold: float = 0.02,
+                            sell_threshold: float = -0.02,
+                            max_pct: float = 0.3,
+                            nav_values: Optional[list] = None) -> float:
+        """根据信号强度计算建议仓位比例（波动率目标法）
+
+        信号越强 → 仓位越高；信号中性 → 最低仓位。
+        若提供净值数据，用波动率调节上限避免过度冒险。
+
+        Args:
+            signal_strength: 信号强度（动量得分等）
+            buy_threshold: 买入阈值（超过此值开始建仓）
+            sell_threshold: 卖出阈值（低于此值开始减仓）
+            max_pct: 最大仓位比例
+            nav_values: 净值序列（用于波动率调节）
+
+        Returns:
+            float: [-max_pct, max_pct] 范围的仓位建议
+        """
+        if signal_strength > buy_threshold:
+            # 买入：信号越强仓位越高
+            raw_pct = (signal_strength - buy_threshold) / buy_threshold * max_pct
+        elif signal_strength < sell_threshold:
+            # 卖出：信号越负减仓越多
+            raw_pct = (signal_strength - sell_threshold) / abs(sell_threshold) * -max_pct
+        else:
+            # 中性：最低仓位
+            raw_pct = max_pct * 0.25 if signal_strength >= 0 else -max_pct * 0.25
+
+        # 波动率调节：高波动时降低仓位
+        if nav_values and len(nav_values) >= 20:
+            import numpy as np
+            arr = np.array(nav_values, dtype=np.float64)
+            returns = np.diff(arr) / arr[:-1]
+            vol = float(np.std(returns[-20:])) * np.sqrt(252)
+            target_vol = 0.15  # 目标年化波动率 15%
+            vol_mult = min(target_vol / max(vol, 0.01), 1.0)
+            raw_pct *= vol_mult
+
+        return float(np.clip(raw_pct, -max_pct, max_pct))
+
     def save_state(self) -> dict:
         return self._state.copy()
 
@@ -104,6 +146,8 @@ class StrategyRegistry:
                 "description": cls.description,
                 "default_params": cls.default_params,
                 "applicable_fund_types": cls.applicable_fund_types,
+                "param_ranges": getattr(cls, "param_ranges", {}),
+                "formula_description": getattr(cls, "formula_description", ""),
             }
             for cls in self._strategies.values()
         ]

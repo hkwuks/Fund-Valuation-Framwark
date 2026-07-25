@@ -1,7 +1,7 @@
 """信号融合机制"""
 
 from typing import List, Optional
-from ..core.enums import Direction
+from ..core.enums import Direction, SignalType
 from ..core.models import FundSignal, FusionSignal
 
 
@@ -16,8 +16,16 @@ class SignalFusion:
     CONFLICT_ALLOCATION_BOOST = 1.5
     TIMING_OVERRIDE_CONFIDENCE = 0.9
 
-    def fuse(self, signals: List[FundSignal]) -> Optional[FusionSignal]:
-        """融合同一基金的所有信号"""
+    def fuse(self, signals: List[FundSignal], fund_type: str = "",
+             position_weights: Optional[dict] = None) -> Optional[FusionSignal]:
+        """融合同一基金的所有信号
+
+        Args:
+            signals: 待融合信号列表
+            fund_type: 基金类型（用于 balanced 加权）
+            position_weights: 仓位权重 {"equity_ratio": float, "bond_ratio": float}
+                            仅 balanced 基金使用时生效
+        """
         if not signals:
             return None
 
@@ -32,6 +40,18 @@ class SignalFusion:
             key = s.signal_type.value if hasattr(s.signal_type, 'value') else str(s.signal_type)
             grouped.setdefault(key, []).append(s)
 
+        # balanced 基金：按估算仓位比例加权择时信号置信度（不修改原始信号）
+        if fund_type == "balanced" and position_weights:
+            eq_w = position_weights.get("equity_ratio", 0.5)
+            bd_w = position_weights.get("bond_ratio", 0.5)
+            for sig in fund_signals:
+                st = sig.signal_type.value if hasattr(sig.signal_type, 'value') else str(sig.signal_type)
+                if st == "timing":
+                    if sig.strategy_name in ("momentum", "valuation_deviation"):
+                        sig._balanced_weight = eq_w
+                    elif sig.strategy_name == "interest_rate":
+                        sig._balanced_weight = bd_w
+
         # 计算加权综合得分
         total_weight = 0.0
         weighted_score = 0.0
@@ -44,13 +64,16 @@ class SignalFusion:
                 if sig.direction == Direction.HOLD:
                     continue
                 dir_score = 1.0 if sig.direction in (Direction.BUY, Direction.REBALANCE) else -1.0
-                weighted_score += weight * dir_score * sig.confidence
-                weight_sum_confidence += weight * sig.confidence
+                # balanced 基金仓位加权：应用 _balanced_weight（若已设置）
+                effective_conf = sig.confidence * getattr(sig, '_balanced_weight', 1.0)
+                weighted_score += weight * dir_score * effective_conf
+                weight_sum_confidence += weight * effective_conf
                 contributors.append({
                     "strategy": sig.strategy_name,
                     "type": s_type,
                     "direction": sig.direction.value,
                     "confidence": sig.confidence,
+                    "balanced_weight": getattr(sig, '_balanced_weight', 1.0),
                     "reason": sig.reason,
                 })
 
@@ -84,12 +107,14 @@ class SignalFusion:
 
         override_reason = None
         if has_conflict:
-            # 择时高置信度覆盖
+            # 择时高置信度覆盖（balanced 基金用加权后的 effective 置信度）
             timing_sigs = grouped.get("timing", [])
             for ts in timing_sigs:
-                if ts.confidence >= self.TIMING_OVERRIDE_CONFIDENCE and ts.direction != direction:
+                ts_eff_conf = ts.confidence * getattr(ts, '_balanced_weight', 1.0)
+                if ts_eff_conf >= self.TIMING_OVERRIDE_CONFIDENCE and ts.direction != direction:
                     direction = ts.direction
-                    override_reason = f"择时信号置信度 {ts.confidence:.2f} >= 0.9，覆盖融合方向"
+                    override_reason = (f"择时信号置信度 {ts.confidence:.2f} "
+                                       f"(加权 {ts_eff_conf:.2f}) >= 0.9，覆盖融合方向")
                     break
 
         import uuid

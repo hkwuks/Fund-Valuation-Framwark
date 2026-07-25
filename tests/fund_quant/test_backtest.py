@@ -149,6 +149,7 @@ class TestPendingOrder:
 class TestCostModel:
     def setup_method(self):
         self.model = FundCostModel()
+        self.model.set_discount(1.0)  # 全额费率测试
 
     def test_subscription_fee_stock(self):
         fee = self.model.get_subscription_fee("stock", 100000)
@@ -287,6 +288,7 @@ class TestCostModelEnhanced:
         self.config = CostModelConfig()
         from backend.fund_quant.backtest.cost_model import FundCostModel
         self.model = FundCostModel(self.config)
+        self.model.set_discount(1.0)  # 全额费率
 
     def test_c_class_service_fee(self):
         fee = self.model.get_c_class_service_fee(180)

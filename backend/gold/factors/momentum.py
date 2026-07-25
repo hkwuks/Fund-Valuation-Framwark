@@ -15,6 +15,7 @@ class MomentumMultiFactor(Factor):
         description="sign(MA5-MA20) + sign(MA20-MA60)",
         direction=1, params={"lookback": 60},
         formula="sign(MA5-MA20) + sign(MA20-MA60)",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

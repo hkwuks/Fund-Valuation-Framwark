@@ -23,7 +23,10 @@ class MomentumStrategy(FundStrategyBase):
     param_ranges = {
         "buy_threshold": {"min": 0.01, "max": 0.1},
         "skip_days": {"min": 0, "max": 10},
+        "sell_threshold": {"min": -0.1, "max": -0.005},
+        "reversal_threshold": {"min": 0.01, "max": 0.1},
     }
+    formula_description = "基于时间序列动量(TSMOM)多周期加权+反转修正的择时策略"
     applicable_fund_types = ["stock", "hybrid", "index"]
     min_history_days = 120
 

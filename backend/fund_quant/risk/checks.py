@@ -311,7 +311,7 @@ class FundRiskChecker:
     def _check_bond_drawdown(self, signal: FundSignal, portfolio: Optional[Portfolio] = None) -> RiskCheckResult:
         """债券基金: 回撤阈值更严(5%), 久期偏离监测"""
         fund_type = self._get_fund_type(signal.fund_code)
-        if fund_type != "bond":
+        if fund_type not in ("bond", "balanced"):
             return RiskCheckResult(passed=True, check_name="债券回撤阈值")
         if not portfolio:
             return RiskCheckResult(passed=True, check_name="债券回撤阈值")

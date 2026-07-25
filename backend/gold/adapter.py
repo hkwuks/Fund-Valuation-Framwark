@@ -7,17 +7,19 @@ from datetime import datetime
 from core import (
     DomainAdapter, ExecutionEngine, CostModel,
     RiskCheck, Strategy, StrategyRegistry,
-    SimExecutionEngine, PercentageSlippage,
+    FuturesExecutionEngine, PercentageSlippage,
     Signal, Direction, Fill,
     DataFeed, Bar,
 )
 
 
 class FuturesCostModel(CostModel):
-    """期货手续费模型 — 仿 gold.backtest.cost_model.CostModel
+    """期货手续费模型 — 区分开/平/平今
 
     开仓10元/手，平仓10元/手，平今免费（SHFE AU）。
-    滑点由 SlippageModel 独立处理，此处只算手续费。
+    滑点由 FuturesExecutionEngine 独立处理，此处只算手续费。
+
+    平今判定：通过 signal.extra["is_close_today"] 传递（由 FuturesExecutionEngine 设置）。
     """
 
     def __init__(self, open_commission: float = 10.0,
@@ -31,18 +33,16 @@ class FuturesCostModel(CostModel):
         """按手数计算手续费
 
         开仓: open_commission × volume
-        平仓: close/today_commission × volume
+        平仓: close_commission × volume（默认）
+        平今: close_today_commission × volume（signal.extra.is_close_today=True 时）
         """
         vol = fill.volume
-        if signal.direction == Direction.LONG:
+        if signal.direction in (Direction.LONG, Direction.SHORT):
             return round(self._open * vol, 4)
-        elif signal.direction == Direction.CLOSE_LONG:
-            return round(self._close * vol, 4)
-        elif signal.direction == Direction.SHORT:
-            return round(self._open * vol, 4)
-        elif signal.direction == Direction.CLOSE_SHORT:
-            return round(self._close * vol, 4)
-        return 0.0
+
+        is_close_today = signal.extra.get("is_close_today", False)
+        rate = self._close_today if is_close_today else self._close
+        return round(rate * vol, 4)
 
 
 # ── 旧策略通用包装器 ──
@@ -130,15 +130,21 @@ class GoldDomainAdapter(DomainAdapter):
         raise NotImplementedError("使用 gold 现有数据层，Phase 3 迁移")
 
     def create_executor(self, config: dict) -> ExecutionEngine:
-        return SimExecutionEngine(
-            slippage=PercentageSlippage(pct=config.get("slippage_pct", 0.001)),
+        return FuturesExecutionEngine(
+            multiplier=config.get("multiplier", 1000),
+            margin_rate=config.get("margin_rate", 0.08),
             fill_ratio=config.get("fill_ratio", 1.0),
+            execution_delay=config.get("execution_delay", 0),
+            slippage_per_lot=config.get("slippage_per_lot", 20.0),
+            dynamic_slippage=config.get("dynamic_slippage", True),
+            slippage_atr_ratio=config.get("slippage_atr_ratio", 0.5),
         )
 
     def create_cost_model(self, config: dict) -> CostModel:
         return FuturesCostModel(
             open_commission=config.get("open_commission", 10.0),
             close_commission=config.get("close_commission", 10.0),
+            close_today_commission=config.get("close_today_commission", 0.0),
         )
 
     def default_risk_checks(self) -> list[RiskCheck]:
@@ -147,6 +153,7 @@ class GoldDomainAdapter(DomainAdapter):
             GoldConsecutiveLossCheck, GoldVarCheck,
             AtrVolatilityCheck, GoldPositionLimitCheck,
         )
+        from core.risk import SignalFrequencyCheck
         return [
             GoldDrawdownCheck(drawdown_limit=0.25),
             GoldDailyLossCheck(max_loss_pct=0.03),
@@ -207,6 +214,7 @@ def _make_wrapper(name: str) -> type:
             "strategy_type": getattr(old_cls, "strategy_type", ""),
             "description": getattr(old_cls, "description", ""),
             "default_params": getattr(old_cls, "default_params", {}),
+            "param_ranges": getattr(old_cls, "param_ranges", {}),
             "__init__": lambda self, oc=old_cls: [
                 GoldStrategyAdapter.__init__(self),
                 setattr(self, '_old', oc()),
@@ -234,6 +242,14 @@ class AdaptedTrendFollowing(Strategy):
         "donchian_entry": 20,
         "donchian_exit": 10,
         "position_size": 1,
+    }
+    param_ranges = {
+        "ma_periods": [[3, 5, 8, 10], [5, 10, 20, 30], [5, 20, 60], [10, 20, 50, 100]],
+        "atr_period": [7, 10, 14, 20, 30],
+        "atr_stop_multiplier": [1.0, 1.5, 2.0, 2.5, 3.0, 4.0],
+        "donchian_entry": [10, 15, 20, 25, 30],
+        "donchian_exit": [5, 10, 15, 20],
+        "position_size": [1, 2, 3, 5],
     }
 
     def __init__(self):
@@ -353,6 +369,32 @@ def demo():
     strategies = adapter.get_available_strategies()
     assert "trend_following" in strategies
     print("[gold_adapter] ✅ GoldDomainAdapter 接口通过")
+
+    # ── FuturesExecutionEngine 集成自检 ──
+    executor = adapter.create_executor({
+        "multiplier": 1000, "margin_rate": 0.08, "fill_ratio": 1.0,
+        "slippage_per_lot": 20.0, "dynamic_slippage": True, "slippage_atr_ratio": 0.5,
+    })
+    executor.set_capital(1_000_000)
+    executor.set_atr(5.0)  # ATR=5 元/克
+    sig = Signal(id="s1", strategy="test", symbol="AU0",
+                 direction=Direction.LONG, price=600, volume=2)
+    executor.submit(sig)
+
+    from core import Bar
+    from datetime import datetime
+    bar = Bar(symbol="AU0", exchange="SHFE", timeframe="1d",
+              datetime=datetime(2026, 7, 17), open=600, high=605,
+              low=598, close=602, volume=10000)
+    fills = executor.on_bar(bar)
+    assert len(fills) > 0, "FuturesExecutionEngine 应成交"
+    pos = executor.get_position("AU0")
+    assert pos is not None, "应有持仓"
+    assert pos.volume == 2, f"持仓量应为2，got {pos.volume}"
+    assert pos.avg_price > 600, f"成交价应含滑点 >600, got {pos.avg_price}"
+    assert executor.portfolio_value < 1_000_000, "占用保证金后总权益应减少"
+    print(f"[gold_adapter] ✅ FuturesExecutionEngine 集成通过 — "
+          f"开仓价={pos.avg_price:.2f}, 占用保证金={1_000_000 - executor.portfolio_value:.0f}")
 
 
 if __name__ == "__main__":

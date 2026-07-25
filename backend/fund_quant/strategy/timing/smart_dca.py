@@ -19,6 +19,12 @@ class SmartDcaStrategy(FundStrategyBase):
         "profit_take_threshold": 0.30,
         "profit_take_ratio": 0.5,
     }
+    param_ranges = {
+        "z_max": {"min": 1.0, "max": 5.0},
+        "profit_take_threshold": {"min": 0.1, "max": 0.5},
+        "profit_take_ratio": {"min": 0.1, "max": 1.0},
+    }
+    formula_description = "基于估值偏差动态调整定投金额的智能定投策略"
     applicable_fund_types = []
     min_history_days = 60
 

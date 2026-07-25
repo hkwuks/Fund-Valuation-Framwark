@@ -15,6 +15,7 @@ class OpenInterestChangeFactor(Factor):
         description="持仓量增减反映资金参与度",
         direction=1, params={"lookback": 60},
         formula="(current_oi - avg_oi) / avg_oi",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):
@@ -40,6 +41,7 @@ class COTSignalFactor(Factor):
         description="商业(套保) vs 投机(基金)持仓比变化",
         direction=1, params={"lookback": 1},
         formula="(commercial_long - commercial_short) / total",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

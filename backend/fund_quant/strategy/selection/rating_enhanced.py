@@ -22,6 +22,14 @@ class RatingEnhancedSelection(FundStrategyBase):
         "z_deviation_threshold": 1.5,
         "min_history_days": 60,
     }
+    param_ranges = {
+        "rating_weight": {"min": 0, "max": 1},
+        "quant_weight": {"min": 0, "max": 1},
+        "deviation_weight": {"min": 0, "max": 1},
+        "top_n": {"min": 3, "max": 20},
+        "z_deviation_threshold": {"min": 0.5, "max": 3.0},
+    }
+    formula_description = "晨星评级+量化因子+估值偏差综合基金评分策略"
     applicable_fund_types = ["stock", "hybrid", "bond", "index"]
     min_history_days = 365
 

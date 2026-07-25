@@ -15,6 +15,7 @@ class RollYieldFactor(Factor):
         direction=1, params={"lookback": 20},
         formula="(near_price - far_price) / near_price",
         reference="商品期货展期收益率的因子定义和测试, 2021",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):
@@ -40,6 +41,7 @@ class BasisFactor(Factor):
         description="(期货价 - 现货价) / 现货价, 极端基差有均值回归",
         direction=1, params={"lookback": 1},
         formula="(futures_price - spot_price) / spot_price",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

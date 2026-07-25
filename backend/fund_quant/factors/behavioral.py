@@ -15,6 +15,7 @@ class CalendarReturnFactor(Factor):
         description="过去同月的平均收益",
         direction=1, params={"lookback": 365 * 3},
         formula="mean(returns[month==current_month])",
+        fund_types=["equity", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

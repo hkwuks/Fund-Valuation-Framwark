@@ -11,6 +11,7 @@ class HoldingConcentrationFactor(Factor):
         description="前10大重仓股占净值比，集中度高→波动大",
         direction=1, params={"lookback": 1},
         formula="top10_holdings_pct",
+        fund_types=["equity", "balanced", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

@@ -15,6 +15,7 @@ class VolatilityRegimeFactor(Factor):
         description="当前波动率百分位",
         direction=1, params={"lookback": 252},
         formula="percentile(current_vol, hist_vol_252d)",
+        fund_types=["commodity"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

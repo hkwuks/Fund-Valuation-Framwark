@@ -15,6 +15,7 @@ class SharpeRatioFactor(Factor):
         description="年化超额收益 / 年化波动率",
         direction=1, params={"lookback": 252, "risk_free": 0.02},
         formula="(mean(returns)*252 - r_f) / (std(returns)*sqrt(252))",
+        fund_types=["equity", "qdii"],
     )
 
     def compute(self, symbols: list[str], as_of: date,
@@ -49,6 +50,7 @@ class InfoRatioFactor(Factor):
         description="超额收益 / 跟踪误差",
         direction=1, params={"lookback": 252},
         formula="超额收益均值 / 超额收益标准差 × sqrt(252)",
+        fund_types=["equity", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):
@@ -65,6 +67,7 @@ class CaptureRatioFactor(Factor):
         description="牛市捕获率 / 熊市捕获率",
         direction=1, params={"lookback": 504},
         formula="up_capture / down_capture",
+        fund_types=["equity", "qdii"],
     )
 
     def compute(self, symbols, as_of, lookback, data):

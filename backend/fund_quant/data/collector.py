@@ -9,6 +9,7 @@ from loguru import logger
 from ..core.errors import DataCollectionError
 from ..core.models import NavPoint, FundHolding, HoldingItem, FundMeta
 from ..core.config import fund_quant_settings
+from ..data.classifier import classify_fund_for_quant
 
 
 class FundDataCollector:
@@ -31,11 +32,12 @@ class FundDataCollector:
         self._last_request_time = time.time()
 
     async def _with_retry(self, fn: Callable, *args, **kwargs) -> Any:
-        """带重试机制的采集调用"""
+        """带重试机制的采集调用（在线程池运行同步采集函数）"""
+        await self._rate_limit_wait()
         last_exc = None
         for attempt in range(self.MAX_RETRIES):
             try:
-                return await fn(*args, **kwargs)
+                return await asyncio.to_thread(fn, *args, **kwargs)
             except Exception as e:
                 last_exc = e
                 if attempt < self.MAX_RETRIES - 1:
@@ -54,10 +56,9 @@ class FundDataCollector:
         """采集基金历史净值"""
         return await self._with_retry(self._fetch_nav_history_impl, fund_code, start_date, end_date)
 
-    async def _fetch_nav_history_impl(self, fund_code: str,
+    def _fetch_nav_history_impl(self, fund_code: str,
                                        start_date: Optional[str] = None,
                                        end_date: Optional[str] = None) -> List[NavPoint]:
-        await self._rate_limit_wait()
         import akshare as ak
         import os as _os
         # 绕过系统代理 — eastmoney API 需要直连
@@ -106,7 +107,8 @@ class FundDataCollector:
         await self._rate_limit_wait()
         try:
             import akshare as ak
-            df = ak.fund_etf_hist_em(
+            df = await asyncio.to_thread(
+                ak.fund_etf_hist_em,
                 symbol=fund_code,
                 start_date=start_date or "20000101",
                 end_date=end_date or date.today().strftime("%Y%m%d"),
@@ -140,7 +142,7 @@ class FundDataCollector:
         await self._rate_limit_wait()
         try:
             import akshare as ak
-            df = ak.fund_portfolio_hold_em(symbol=fund_code, date="")
+            df = await asyncio.to_thread(ak.fund_portfolio_hold_em, symbol=fund_code, date="")
             if df is None or df.empty:
                 return []
 
@@ -185,8 +187,7 @@ class FundDataCollector:
         """
         return await self._with_retry(self._fetch_rating_impl, fund_code)
 
-    async def _fetch_rating_impl(self, fund_code: str) -> Optional[int]:
-        await self._rate_limit_wait()
+    def _fetch_rating_impl(self, fund_code: str) -> Optional[int]:
         try:
             import akshare as ak
             # 使用 ak.fund_info_em 获取包含评级的元数据
@@ -219,8 +220,7 @@ class FundDataCollector:
         """
         return await self._with_retry(self._fetch_dividend_impl, fund_code)
 
-    async def _fetch_dividend_impl(self, fund_code: str) -> List[dict]:
-        await self._rate_limit_wait()
+    def _fetch_dividend_impl(self, fund_code: str) -> List[dict]:
         try:
             import akshare as ak
             # 基金分红数据
@@ -275,7 +275,7 @@ class FundDataCollector:
         await self._rate_limit_wait()
         try:
             import akshare as ak
-            info = ak.fund_info_em(symbol=fund_code)
+            info = await asyncio.to_thread(ak.fund_info_em, symbol=fund_code)
             if info is None or info.empty:
                 return None
 
@@ -283,7 +283,7 @@ class FundDataCollector:
             info_dict = info.set_index("item")["value"].to_dict() if "item" in info.columns else {}
 
             meta.fund_name = info_dict.get("基金简称", "")
-            meta.fund_type = self._classify_fund_type(info_dict.get("基金类型", ""))
+            meta.fund_type = classify_fund_for_quant(info_dict.get("基金类型", ""), info_dict.get("基金简称", "")).value
 
             fee_str = info_dict.get("管理费率", "0")
             try:
@@ -314,25 +314,13 @@ class FundDataCollector:
         except Exception as e:
             raise DataCollectionError(str(e), fund_code)
 
-    @staticmethod
-    def _classify_fund_type(raw_type: str) -> str:
-        mapping = {
-            "股票": "stock", "混合": "hybrid", "债券": "bond",
-            "货币": "money", "指数": "index", "ETF": "etf",
-            "联接": "etf_link", "QDII": "qdii", "FOF": "fof",
-        }
-        for key, value in mapping.items():
-            if key in raw_type:
-                return value
-        return "hybrid"
-
     # ── 汇率数据采集 ──
 
     async def fetch_fx_rates(self) -> Dict[str, float]:
         await self._rate_limit_wait()
         try:
             import akshare as ak
-            df = ak.currency_boc_sina(symbol="美元人民币")
+            df = await asyncio.to_thread(ak.currency_boc_sina, symbol="美元人民币")
             rates = {"USD/CNY": float(df["买入价"].iloc[0]) if not df.empty else 7.0}
             return rates
         except Exception:
@@ -345,7 +333,7 @@ class FundDataCollector:
         await self._rate_limit_wait()
         try:
             import akshare as ak
-            df = ak.bond_china_yield(start_date="20200101")
+            df = await asyncio.to_thread(ak.bond_china_yield, start_date="20200101")
             if df is not None and not df.empty and "10年" in df.columns:
                 return float(df["10年"].iloc[-1]) / 100.0
             return None
