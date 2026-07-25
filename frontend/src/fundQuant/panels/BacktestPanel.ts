@@ -99,13 +99,6 @@ export class BacktestPanel extends PanelBase {
       const id = res.data?.backtest_id
       if (!id) throw new Error('no backtest id')
 
-      this.pending.unshift({
-        backtestId: id,
-        strategy,
-        label: `${fundCode} ${start}~${end}`,
-        createdAt: Date.now(),
-      })
-
       // 开始轮询结果
       this.pollResult(id)
     } catch {
@@ -133,7 +126,6 @@ export class BacktestPanel extends PanelBase {
         }
 
         // 成功 → 渲染结果
-        this.result = data
         this.renderResult(data)
       } catch {
         // result not ready yet, keep polling
@@ -187,7 +179,7 @@ export class BacktestPanel extends PanelBase {
   private renderEquityChart(chartEl: HTMLElement, equity: { date?: string; total_value?: number; equity?: number }[]): void {
     this.chart?.dispose()
     this.chart = echarts.init(chartEl)
-    const dates = equity.map(e => (e.date || '').slice(5, 10) || String(e.bar || ''))
+    const dates = equity.map((e: any) => (e.date || '').slice(5, 10))
     const values = equity.map(e => e.total_value ?? e.equity ?? 0)
     const base = values[0] || 1
     const pct = values.map(v => ((v - base) / base * 100))

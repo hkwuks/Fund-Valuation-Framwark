@@ -2,7 +2,6 @@ import * as echarts from 'echarts'
 import { PanelBase } from '../layout'
 import { fundQuantApi } from '../api'
 import { state } from '../state'
-import { getChartTheme } from '../../fundQuantCharts'
 
 export class Allocation extends PanelBase {
   private chart: echarts.ECharts | null = null
