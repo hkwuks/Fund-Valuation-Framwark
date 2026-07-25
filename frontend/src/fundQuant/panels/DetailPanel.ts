@@ -7,7 +7,7 @@ export class DetailPanel extends PanelBase {
   private unsub: (() => void) | null = null
 
   constructor() {
-    super({ id: 'detail', title: '基金详情', defaultGridPos: { x: 0, y: 3, w: 3, h: 1 } })
+    super({ id: 'detail', title: '基金详情', defaultGridPos: { x: 0, y: 4, w: 3, h: 1 } })
   }
 
   render(): HTMLElement {

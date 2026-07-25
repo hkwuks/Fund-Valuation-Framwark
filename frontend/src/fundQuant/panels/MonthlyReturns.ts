@@ -5,7 +5,7 @@ import { state } from '../state'
 
 export class MonthlyReturns extends PanelBase {
   constructor() {
-    super({ id: 'monthly_returns', title: '月度收益', defaultGridPos: { x: 2, y: 3, w: 1, h: 2 } })
+    super({ id: 'monthly_returns', title: '月度收益', defaultGridPos: { x: 2, y: 2, w: 1, h: 2 } })
   }
 
   render(): HTMLElement {

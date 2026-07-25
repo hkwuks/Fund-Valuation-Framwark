@@ -7,7 +7,7 @@ export class Attribution extends PanelBase {
   private chart: echarts.ECharts | null = null
 
   constructor() {
-    super({ id: 'attribution', title: '归因分析', defaultGridPos: { x: 1, y: 0, w: 1, h: 1 } })
+    super({ id: 'attribution', title: '归因分析', defaultGridPos: { x: 0, y: 3, w: 1, h: 1 } })
   }
 
   render(): HTMLElement {
@@ -74,5 +74,9 @@ export class Attribution extends PanelBase {
   destroy(): void {
     this.chart?.dispose()
     super.destroy()
+  }
+
+  onActivated(): void {
+    this.chart?.resize()
   }
 }

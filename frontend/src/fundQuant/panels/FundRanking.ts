@@ -94,4 +94,8 @@ export class FundRanking extends PanelBase {
     this.chart?.dispose()
     super.destroy()
   }
+
+  onActivated(): void {
+    this.chart?.resize()
+  }
 }

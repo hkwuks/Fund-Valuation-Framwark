@@ -140,6 +140,8 @@ export const fundQuantApi = {
 
   // Nav
   getNav: (code: string) => get<{ success: boolean; data: { nav_history: NavPoint[] } }>(`/nav/${code}`),
+  collectNavData: (fundCodes: string[], years = 5) =>
+    post<{ success: boolean; data: { fund_code: string; status: string; count: number }[] }>('/data/collect', { fund_codes: fundCodes, years }),
 
   // Timing
   evaluateTiming: (fund_code: string, params?: any) =>

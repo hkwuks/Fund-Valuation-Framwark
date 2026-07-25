@@ -6,6 +6,7 @@
 
 import { state } from './state'
 import { LayoutManager } from './layout'
+import { fundQuantApi } from './api'
 import { KPIBar } from './panels/KPIBar'
 import { NavChart } from './panels/NavChart'
 import { SignalList } from './panels/SignalList'
@@ -36,15 +37,22 @@ export class FundQuantDashboard {
     this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
 
-    this.loadFundPool()
-    this.layout.refreshAll()
-    this.startRefreshTimer()
+    this.loadFundPool().then(() => {
+      // 后台预加载全部基金的净值数据
+      const codes = state.get('fundPool').map(f => f.fund_code)
+      if (codes.length) {
+        fundQuantApi.collectNavData(codes, 5).catch(() => {})
+      }
+      this.layout!.refreshAll()
+      this.startRefreshTimer()
+    })
   }
 
   /** 当 tab 切换到基金量化时调用 */
   onActivated(): void {
     this.startRefreshTimer()
     this.layout?.refreshAll()
+    this.layout?.activateAll()
   }
 
   /** 当 tab 切离基金量化时调用 */
@@ -67,7 +75,14 @@ export class FundQuantDashboard {
   private async loadFundPool(): Promise<void> {
     try {
       const { fundManager } = await import('../fundManager')
-      const funds = fundManager.getFunds()
+      // 等待基金数据加载完成（重试直到有数据或超时）
+      let funds: any[] = []
+      for (let retry = 0; retry < 10; retry++) {
+        if (fundManager.getFunds().length > 0) break
+        await new Promise(r => setTimeout(r, 200))
+        if (retry === 0) await fundManager.loadFunds()
+      }
+      funds = fundManager.getFunds()
       state.set('fundPool', funds.map((f: any) => ({
         fund_code: f.fund_code,
         fund_name: f.fund_name || '',

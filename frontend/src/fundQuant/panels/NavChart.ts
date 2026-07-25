@@ -4,13 +4,21 @@ import { fundQuantApi } from '../api'
 import { state } from '../state'
 import { getChartTheme } from '../../fundQuantCharts'
 
+interface FundCache {
+  navData: any[]
+  buySignals: { date: string; nav: number }[]
+  sellSignals: { date: string; nav: number }[]
+}
+
 export class NavChart extends PanelBase {
   private chart: echarts.ECharts | null = null
   private unsub: (() => void) | null = null
+  /** 当前显示的基金代码 */
   private currentCode: string = ''
-  private cachedNavData: any[] = []
-  private cachedBuySignals: { date: string; nav: number }[] = []
-  private cachedSellSignals: { date: string; nav: number }[] = []
+  /** 按基金代码缓存净值+信号 */
+  private fundCache: Map<string, FundCache> = new Map()
+  /** 已经尝试过收集数据的基金（避免无限循环） */
+  private collectedFunds: Set<string> = new Set()
   private activeDays: number = 90
 
   constructor() {
@@ -56,7 +64,7 @@ export class NavChart extends PanelBase {
       this.el?.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'))
       btn.classList.add('active')
       const days = parseInt(btn.dataset.days || '90', 10)
-      if (days !== this.activeDays && this.cachedNavData.length) {
+      if (days !== this.activeDays && this.fundCache.size) {
         this.activeDays = days
         this.renderChartWithFilter()
       }
@@ -68,6 +76,7 @@ export class NavChart extends PanelBase {
     const select = this.el.querySelector<HTMLSelectElement>('.nav-fund-select')
     const pool = state.get('fundPool')
 
+    // 更新下拉列表
     if (select) {
       const currentVal = select.value
       select.innerHTML = pool.map(f =>
@@ -76,34 +85,123 @@ export class NavChart extends PanelBase {
     }
 
     const code = state.get('selectedFund') || pool[0]?.fund_code
-    if (!code) return
-    if (code === this.currentCode) return
-    this.currentCode = code
+    if (!code) {
+      const chartEl = this.el?.querySelector<HTMLElement>('.panel-chart')
+      if (chartEl) {
+        chartEl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">暂无基金数据，请先在"基金管理"中添加基金</div>'
+        chartEl.classList.remove('skeleton')
+      }
+      return
+    }
     if (select) select.value = code
 
+    // 有缓存 → 直接渲染，不重新请求
+    const cached = this.fundCache.get(code)
+    if (cached) {
+      this.currentCode = code
+      this.clearECharts()
+      this.renderChartWithFilter()
+      return
+    }
+
+    // 无缓存 → 展示加载中，开始获取
+    this.showLoading()
+    this.currentCode = code
+
+    await this.fetchAndRender(code)
+  }
+
+  /** 获取净值数据并渲染（带数据收集兜底） */
+  private async fetchAndRender(code: string, retried = false): Promise<void> {
     try {
       const navRes = await fundQuantApi.getNav(code)
+      if (code !== this.currentCode) return
       const navData = navRes.data?.nav_history || []
-      if (!navData.length) return
+      if (!navData.length) {
+        // 没有净值数据：尝试收集一次
+        if (!retried && !this.collectedFunds.has(code)) {
+          this.collectedFunds.add(code)
+          const name = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || code
+          this.showCollecting(name)
+          try {
+            await fundQuantApi.collectNavData([code], 5)
+          } catch { /* 收集失败仍尝试获取 */ }
+          // 收集完再试一次
+          await this.fetchAndRender(code, true)
+          return
+        }
+        // 收集过后依然没有数据
+        this.showNoData(code)
+        return
+      }
 
-      this.cachedNavData = navData
-
+      // 缓存数据
       const sigRes = await fundQuantApi.getSignals(code, 50)
+      if (code !== this.currentCode) return
       const signals = (sigRes.data || []).filter(s => s.direction === 'buy' || s.direction === 'sell')
-      this.cachedBuySignals = signals.filter(s => s.direction === 'buy').map(s => ({
+      const buySignals = signals.filter(s => s.direction === 'buy').map(s => ({
         date: (s.created_at || '').slice(0, 10), nav: 0,
       }))
-      this.cachedSellSignals = signals.filter(s => s.direction === 'sell').map(s => ({
+      const sellSignals = signals.filter(s => s.direction === 'sell').map(s => ({
         date: (s.created_at || '').slice(0, 10), nav: 0,
       }))
 
-      for (const pt of [...this.cachedBuySignals, ...this.cachedSellSignals]) {
+      for (const pt of [...buySignals, ...sellSignals]) {
         const match = navData.find((d: any) => (d.date || '').slice(0, 10) === pt.date)
         pt.nav = match ? (match.nav || (match.adjusted_nav ?? 0)) : 0
       }
 
+      if (code !== this.currentCode) return
+      this.fundCache.set(code, { navData, buySignals, sellSignals })
       this.renderChartWithFilter()
-    } catch { /* ignore */ }
+    } catch {
+      if (!retried && !this.collectedFunds.has(code)) {
+        // 请求异常（404 等）：尝试收集一次
+        this.collectedFunds.add(code)
+        const name = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || code
+        this.showCollecting(name)
+        try { await fundQuantApi.collectNavData([code], 5) } catch { /* ignore */ }
+        await this.fetchAndRender(code, true)
+        return
+      }
+      if (this.currentCode === code) {
+        this.fundCache.delete(code)
+      }
+      this.showNoData(code)
+    }
+  }
+
+  private clearECharts(): void {
+    this.chart?.dispose()
+    this.chart = null
+  }
+
+  /** 显示加载中状态 */
+  private showLoading(): void {
+    if (!this.el) return
+    const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
+    if (!chartEl) return
+    this.chart?.dispose()
+    this.chart = null
+    chartEl.classList.remove('skeleton')
+    chartEl.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">加载中...</div>'
+  }
+
+  /** 显示数据收集中 */
+  private showCollecting(name: string): void {
+    if (!this.el) return
+    const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
+    if (!chartEl) return
+    chartEl.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">正在收集 ${name} 数据...</div>`
+  }
+
+  /** 显示无数据提示 */
+  private showNoData(fundCode: string): void {
+    if (!this.el) return
+    const chartEl = this.el.querySelector<HTMLElement>('.panel-chart')
+    if (!chartEl) return
+    const name = state.get('fundPool').find(f => f.fund_code === fundCode)?.fund_name || fundCode
+    chartEl.innerHTML = `<div style="padding:40px;text-align:center;color:var(--text-tertiary);font-size:13px;">${name} 暂无净值数据</div>`
   }
 
   private filterData<T extends { date: string }>(data: T[], days: number): T[] {
@@ -114,12 +212,14 @@ export class NavChart extends PanelBase {
   }
 
   private renderChartWithFilter(): void {
-    const filtered = this.filterData(this.cachedNavData, this.activeDays)
+    const cached = this.fundCache.get(this.currentCode)
+    if (!cached || !cached.navData.length) return
+    const filtered = this.filterData(cached.navData, this.activeDays)
     const validDates = new Set(filtered.map((d: any) => (d.date || '').slice(0, 10)))
     this.renderChart(
       filtered,
-      this.cachedBuySignals.filter(s => validDates.has(s.date)),
-      this.cachedSellSignals.filter(s => validDates.has(s.date)),
+      cached.buySignals.filter(s => validDates.has(s.date)),
+      cached.sellSignals.filter(s => validDates.has(s.date)),
     )
   }
 
@@ -133,6 +233,7 @@ export class NavChart extends PanelBase {
     if (!chartEl) return
 
     chartEl.classList.remove('skeleton')
+    this.clearECharts()
 
     let peak = -Infinity
     const drawdown = navData.map((d: any) => {
@@ -142,7 +243,6 @@ export class NavChart extends PanelBase {
     })
 
     const isDark = document.body.classList.contains('dark-mode')
-    if (this.chart) { this.chart.dispose(); this.chart = null }
     this.chart = echarts.init(chartEl)
     const theme = getChartTheme(isDark)
 
@@ -199,5 +299,10 @@ export class NavChart extends PanelBase {
     this.unsub?.()
     this.chart?.dispose()
     super.destroy()
+  }
+
+  /** Tab 激活时修复 ECharts 尺寸 */
+  onActivated(): void {
+    this.chart?.resize()
   }
 }

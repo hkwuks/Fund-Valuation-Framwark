@@ -9,7 +9,7 @@ export class KPIBar extends PanelBase {
 
   render(): HTMLElement {
     const el = document.createElement('div')
-    el.className = 'kpi-bar skeleton'
+    el.className = 'kpi-bar'
     el.innerHTML = `
       <div class="kpi-card" data-key="total_return">
         <span class="kpi-label">总收益</span>
@@ -59,7 +59,7 @@ export class KPIBar extends PanelBase {
       this.el?.classList.remove('skeleton')
       state.set('portfolio', {
         total_return: d.return_pct,
-        annual_return: d.annual_return ?? 0,
+        annual_return: d.annual_return ?? d.return_pct,
         max_drawdown: d.max_drawdown ?? 0,
         sharpe_ratio: d.sharpe_ratio ?? 0,
         volatility: d.volatility ?? 0,
@@ -71,9 +71,15 @@ export class KPIBar extends PanelBase {
     }
   }
 
+  private hasRealData(d: PortfolioStatus): boolean {
+    // 判断是否有真实数据（非初始空状态）
+    return d.total_value > 100000 || d.return_pct !== 0 || d.position_count > 0
+  }
+
   private updateCards(d: PortfolioStatus): void {
     if (!this.el) return
     const cards = this.el.querySelectorAll<HTMLElement>('.kpi-card[data-key]')
+    const hasData = this.hasRealData(d)
     const fmtPct = (v: number) => `${v >= 0 ? '+' : ''}${(v).toFixed(2)}%`
     const cls = (v: number) => v >= 0 ? 'kpi-up' : 'kpi-down'
 
@@ -83,6 +89,13 @@ export class KPIBar extends PanelBase {
       const valEl = card.querySelector('.kpi-value')
       const subEl = card.querySelector('.kpi-sub')
       if (!valEl) return
+
+      if (!hasData) {
+        valEl.textContent = '--'
+        valEl.className = 'kpi-value'
+        if (subEl) subEl.textContent = ''
+        return
+      }
 
       switch (key) {
         case 'total_return':

@@ -38,6 +38,9 @@ export abstract class PanelBase {
   /** 挂载后的钩子（绑定事件、初始化数据） */
   protected afterMount(): void { /* override */ }
 
+  /** Tab 激活时调用（子类可覆盖，用于 ECharts resize 等） */
+  onActivated(): void { /* override */ }
+
   /** 刷新面板数据 */
   abstract refresh(): Promise<void>
 
@@ -64,9 +67,31 @@ export class LayoutManager {
 
   private findFreeSlot(panel: PanelBase): { x: number; y: number } {
     let { x, y, w, h } = panel.gridPos
-    while (this.occupied.has(`${x}-${y}`)) {
-      y += 1  // 向下平移
+    // h=0 means flex row (like KPIBar), no grid collision needed
+    if (h === 0) {
+      for (let dx = 0; dx < w; dx++) {
+        this.occupied.add(`${x + dx}-${y}`)
+      }
+      return { x, y }
     }
+
+    // 检查 w×h 整个区域是否全部空闲
+    for (let attempt = 0; attempt < 50; attempt++) {
+      let conflict = false
+      outer:
+      for (let dy = 0; dy < h; dy++) {
+        for (let dx = 0; dx < w; dx++) {
+          if (this.occupied.has(`${x + dx}-${y + dy}`)) {
+            conflict = true
+            break outer
+          }
+        }
+      }
+      if (!conflict) break
+      y += 1
+    }
+
+    // 标记占位
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         this.occupied.add(`${x + dx}-${y + dy}`)
@@ -101,6 +126,14 @@ export class LayoutManager {
       if (cfg?.visible !== false) promises.push(p.refresh())
     })
     await Promise.allSettled(promises)
+  }
+
+  /** 通知所有面板 Tab 已激活（用于 ECharts resize 等） */
+  activateAll(): void {
+    this.panels.forEach(p => {
+      const cfg = state.get('layout').panels[p.id]
+      if (cfg?.visible !== false) p.onActivated()
+    })
   }
 
   getPanel(id: string): PanelBase | undefined {

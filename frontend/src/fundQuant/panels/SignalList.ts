@@ -100,10 +100,31 @@ export class SignalList extends PanelBase {
       const res = await fundQuantApi.getLatestSignals()
       let signals = res.data || []
 
+      // 只显示 fundPool 中存在的基金信号，过滤测试数据
+      const poolCodes = new Set(state.get('fundPool').map(f => f.fund_code))
+      if (poolCodes.size > 0) {
+        signals = signals.filter(s => poolCodes.has(s.fund_code))
+      }
+
+      // 去重 (code + direction + confidence 相同视为重复)
+      const seen = new Set<string>()
+      signals = signals.filter(s => {
+        const key = `${s.fund_code}|${s.direction}|${s.confidence}|${s.strategy_name}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+
       if (filter !== 'all') signals = signals.filter(s => s.direction === filter)
 
       const tbody = this.el.querySelector('.sig-tbody')
       if (!tbody) return
+
+      if (!signals.length) {
+        tbody.innerHTML = `<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--text-tertiary);font-size:13px;">暂无信号数据</td></tr>`
+        state.set('signals', [])
+        return
+      }
 
       tbody.innerHTML = signals.slice(0, 30).map(s => `
         <tr data-code="${s.fund_code}">
@@ -140,5 +161,9 @@ export class SignalList extends PanelBase {
     this.sseSource?.close()
     if (this.refreshTimer) clearInterval(this.refreshTimer)
     super.destroy()
+  }
+
+  onActivated(): void {
+    this.refresh()
   }
 }

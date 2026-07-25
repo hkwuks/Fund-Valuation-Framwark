@@ -7,7 +7,7 @@ export class Allocation extends PanelBase {
   private chart: echarts.ECharts | null = null
 
   constructor() {
-    super({ id: 'allocation', title: '组合配置', defaultGridPos: { x: 1, y: 3, w: 1, h: 2 } })
+    super({ id: 'allocation', title: '组合配置', defaultGridPos: { x: 1, y: 2, w: 1, h: 2 } })
   }
 
   render(): HTMLElement {
@@ -99,5 +99,9 @@ export class Allocation extends PanelBase {
   destroy(): void {
     this.chart?.dispose()
     super.destroy()
+  }
+
+  onActivated(): void {
+    this.chart?.resize()
   }
 }
