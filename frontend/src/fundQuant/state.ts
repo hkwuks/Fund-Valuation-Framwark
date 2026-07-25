@@ -52,6 +52,7 @@ export interface LayoutConfig {
 export interface GlobalState {
   fundPool: FundInfo[]
   selectedFund: string | null
+  showSignalPopup: boolean
   signals: SignalSummary[]
   portfolio: PortfolioKPI | null
   allocation: PortfolioAllocation | null
@@ -114,6 +115,7 @@ const DEFAULT_LAYOUT: LayoutConfig = {
 export const state = new EventEmitter({
   fundPool: [],
   selectedFund: null,
+  showSignalPopup: false,
   signals: [],
   portfolio: null,
   allocation: null,

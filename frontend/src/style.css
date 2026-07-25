@@ -4070,6 +4070,27 @@ body::after {
 .factor-row { cursor:pointer; transition:background .15s; }
 .factor-row:hover { background:rgba(59,130,246,0.05); }
 
+/* ── KPI 栏 ── */
+.kpi-bar {
+  display: flex; gap: 8px; padding: 12px 0;
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg-primary); border-radius: var(--radius);
+  border: 1px solid var(--border-color); margin-bottom: 12px;
+}
+.kpi-card {
+  flex: 1; padding: 12px 16px; text-align: center;
+  border-right: 1px solid var(--border-light); cursor: default;
+}
+.kpi-card:last-child { border-right: none; }
+.kpi-card:hover { background: var(--bg-secondary); }
+.kpi-label { display: block; font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px; }
+.kpi-value { display: block; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi-sub { display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+.kpi-up { color: var(--danger-color); }
+.kpi-down { color: var(--success-color); }
+.kpi-signal { cursor: pointer; }
+.kpi-signal:hover { background: var(--primary-light); border-radius: var(--radius-sm); }
+
 /* ── 量化引擎页面 ── */
 .quant-engine-page .qe-nav { display:flex; gap:4px; margin-bottom:16px; flex-wrap:wrap; }
 .quant-engine-page .qe-nav-btn { padding:8px 16px; border:1px solid var(--border); border-radius:6px; background:var(--bg-card); cursor:pointer; transition:all .15s; font-size:.9em; }
