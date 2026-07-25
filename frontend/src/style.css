@@ -4254,3 +4254,73 @@ tr[data-code]:hover {
   height: 300px;
   width: 100%;
 }
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── 组合配置面板 ── */
+.panel-allocation {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+}
+.panel-allocation .panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+  border-bottom: 1px solid var(--border-light);
+}
+.panel-allocation .panel-header h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+.panel-allocation .panel-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.alloc-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.alloc-chart {
+  height: 180px;
+}
+.alloc-table-wrapper {
+  overflow-y: auto;
+  max-height: 180px;
+}
+.alloc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.alloc-table th {
+  padding: 4px 6px;
+  text-align: left;
+  color: var(--text-secondary);
+}
+.alloc-table td {
+  padding: 4px 6px;
+}
+.alloc-weight {
+  text-align: right;
+  font-weight: 600;
+}
+.alloc-stats {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-light);
+  margin-top: 8px;
+}
