@@ -11,6 +11,7 @@ import { NavChart } from './panels/NavChart'
 import { SignalList } from './panels/SignalList'
 import { Allocation } from './panels/Allocation'
 import { FundRanking } from './panels/FundRanking'
+import { MonthlyReturns } from './panels/MonthlyReturns'
 
 export class FundQuantDashboard {
   private layout: LayoutManager | null = null
@@ -29,6 +30,7 @@ export class FundQuantDashboard {
     this.layout.register(new SignalList())
     this.layout.register(new Allocation())
     this.layout.register(new FundRanking())
+    this.layout.register(new MonthlyReturns())
 
     this.loadFundPool()
     this.layout.refreshAll()
