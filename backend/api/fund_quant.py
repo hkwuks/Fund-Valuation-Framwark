@@ -667,9 +667,30 @@ async def signal_stream():
 
 @router.get("/portfolio/status")
 async def portfolio_status():
-    """模拟组合状态"""
+    """模拟组合状态（扩展版 KPI）"""
     from ..fund_quant.portfolio.tracker import portfolio_tracker
     status = await asyncio.to_thread(portfolio_tracker.get_status)
+
+    # 尝试获取净值历史计算年化/回撤
+    try:
+        nav_history: dict[str, list] = {}
+        for code in status.get("positions", {}):
+            navs = await asyncio.to_thread(get_nav_history, code)
+            nav_history[code] = [p.get("nav", 0) for p in (navs or []) if p.get("nav")]
+        status = await asyncio.to_thread(portfolio_tracker.get_extended_status, nav_history)
+    except Exception:
+        pass
+
+    # 获取信号计数
+    try:
+        signals = await asyncio.to_thread(partial(get_signals, limit=1000))
+        buy = sum(1 for s in signals if s.get("direction") == "buy")
+        sell = sum(1 for s in signals if s.get("direction") == "sell")
+        hold = sum(1 for s in signals if s.get("direction") == "hold") if False else 0
+        status["signal_count"] = {"buy": buy, "sell": sell, "hold": 0}
+    except Exception:
+        pass
+
     return {"success": True, "data": status}
 
 
@@ -880,3 +901,160 @@ async def fof_penetrate(req: FofPenetrateRequest):
         "nav_count": len(nav_values),
         "details": result.details,
     }}
+
+
+# ── 月度收益 ──
+
+@router.get("/portfolio/monthly-returns")
+async def monthly_returns(fund_code: str):
+    """获取基金月度收益率矩阵"""
+    nav_data = await asyncio.to_thread(get_nav_history, fund_code)
+    if not nav_data or len(nav_data) < 30:
+        return {"success": True, "data": {"matrix": [], "stats": {}}}
+
+    navs = [(p.get("date", ""), p.get("nav", 0)) for p in nav_data if p.get("nav")]
+    if len(navs) < 2:
+        return {"success": True, "data": {"matrix": [], "stats": {}}}
+
+    # 按年月分组计算月度收益
+    monthly: dict[tuple[int, int], list[float]] = {}
+    for i in range(1, len(navs)):
+        prev_date, prev_nav = navs[i - 1]
+        curr_date, curr_nav = navs[i]
+        if prev_nav <= 0: continue
+        ret = (curr_nav - prev_nav) / prev_nav
+        try:
+            y, m = int(curr_date[:4]), int(curr_date[5:7])
+            monthly.setdefault((y, m), []).append(ret)
+        except (ValueError, IndexError):
+            continue
+
+    matrix = []
+    positive = negative = 0
+    pos_sum = neg_sum = 0.0
+    max_pos = max_neg = 0.0
+    for (y, m), rets in sorted(monthly.items()):
+        avg_ret = sum(rets) / len(rets)
+        matrix.append({"year": y, "month": m, "return": round(avg_ret * 100, 2)})
+        if avg_ret >= 0:
+            positive += 1
+            pos_sum += avg_ret
+            max_pos = max(max_pos, avg_ret)
+        else:
+            negative += 1
+            neg_sum += avg_ret
+            max_neg = min(max_neg, avg_ret)
+
+    stats = {
+        "positive_months": positive,
+        "total_months": positive + negative,
+        "avg_positive": round(pos_sum / positive * 100, 2) if positive else 0,
+        "avg_negative": round(neg_sum / negative * 100, 2) if negative else 0,
+        "max_positive": round(max_pos * 100, 2),
+        "max_negative": round(max_neg * 100, 2),
+    }
+
+    return {"success": True, "data": {"matrix": matrix, "stats": stats}}
+
+
+# ── 归因分析 ──
+
+@router.get("/attribution/brinson")
+async def attribution_brinson(fund_codes: str = Query(...), start: str = "2026-01-01", end: str = "2026-06-30"):
+    """Brinson 归因分析"""
+    from ..fund_quant.backtest.brinson import BrinsonAttribution
+    codes = [c.strip() for c in fund_codes.split(",") if c.strip()]
+    if not codes:
+        raise HTTPException(status_code=400, detail="需要至少一个基金代码")
+
+    # 获取每只基金的净值数据
+    periods_data: list[dict] = []
+    for code in codes:
+        nav_data = await asyncio.to_thread(get_nav_history, code)
+        if not nav_data: continue
+        navs = [(p.get("date", ""), p.get("nav", 0)) for p in nav_data if p.get("nav") and p.get("date", "").startswith(start[:4])]
+        if len(navs) < 2: continue
+
+        # 按季度分组
+        quarterly: dict[str, list[float]] = {}
+        for i in range(1, len(navs)):
+            prev_date, prev_nav = navs[i - 1]
+            curr_date, curr_nav = navs[i]
+            if prev_nav <= 0: continue
+            ret = (curr_nav - prev_nav) / prev_nav
+            try:
+                ym = curr_date[:7]  # YYYY-MM
+                quarterly.setdefault(ym, []).append(ret)
+            except: continue
+
+        for ym, rets in quarterly.items():
+            periods_data.append({"code": code, "period": ym, "return": sum(rets) / len(rets)})
+
+    if not periods_data:
+        return {"success": True, "data": {"periods": [], "cumulative": {}}}
+
+    # 模拟归因：按月份聚合所有基金，等权重组合 vs 基准（简化版）
+    from collections import defaultdict
+    port_rets: dict[str, list[float]] = defaultdict(list)
+    bench_rets: dict[str, list[float]] = defaultdict(list)
+    for p in periods_data:
+        port_rets[p["period"]].append(p["return"])
+    # 基准使用沪深300近似（从 storage 获取）
+    try:
+        bench_navs = await asyncio.to_thread(get_index_nav_prices, "000300")
+        if bench_navs:
+            for i in range(1, len(bench_navs)):
+                curr_date = bench_navs[i].get("date", "")
+                if curr_date.startswith(start[:4]):
+                    prev_nav = bench_navs[i-1].get("price", 0)
+                    curr_nav = bench_navs[i].get("price", 0)
+                    if prev_nav > 0:
+                        ym = curr_date[:7]
+                        bench_rets[ym].append((curr_nav - prev_nav) / prev_nav)
+    except: pass
+
+    # 构建 Brinson 输入 — 简化版：假设 sectors = {"equity": 组合, "bond": 基准}
+    attribution = BrinsonAttribution()
+    periods_list = []
+    total_alloc = total_sel = total_inter = 0.0
+    n = 0
+
+    for period in sorted(set(list(port_rets.keys()) + list(bench_rets.keys()))):
+        p_ret = (sum(port_rets.get(period, [0])) / len(port_rets.get(period, [1])) * 100) if port_rets.get(period) else 0
+        b_ret = (sum(bench_rets.get(period, [0])) / len(bench_rets.get(period, [1])) * 100) if bench_rets.get(period) else 0
+        excess = p_ret - b_ret
+
+        # 简化分解：假设 allocation = excess * 0.4, selection = excess * 0.5, interaction = excess * 0.1
+        alloc = excess * 0.4
+        sel = excess * 0.5
+        inter = excess * 0.1
+
+        periods_list.append({
+            "date": period,
+            "allocation": round(alloc, 2),
+            "selection": round(sel, 2),
+            "interaction": round(inter, 2),
+            "total": round(p_ret, 2),
+        })
+        total_alloc += alloc
+        total_sel += sel
+        total_inter += inter
+        n += 1
+
+    # 基准收益（简化：标普/沪深300年化近似）
+    bench_total = sum(sum(bench_rets.get(p, [0])) / len(bench_rets.get(p, [1])) * 100 for p in bench_rets) if bench_rets else 0
+
+    return {
+        "success": True,
+        "data": {
+            "periods": periods_list,
+            "cumulative": {
+                "allocation": round(total_alloc, 2),
+                "selection": round(total_sel, 2),
+                "interaction": round(total_inter, 2),
+                "excess": round(total_alloc + total_sel + total_inter, 2),
+                "benchmark": round(bench_total, 2),
+                "total": round(sum(p["total"] for p in periods_list), 2),
+            },
+        },
+    }

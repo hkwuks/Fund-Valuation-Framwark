@@ -79,4 +79,46 @@ class PortfolioTracker:
         }
 
 
+    def get_extended_status(self, nav_history: Optional[Dict[str, list]] = None) -> dict:
+        """扩展组合状态：在 get_status 基础上增加 KPI 指标"""
+        base = self.get_status()
+        base["annual_return"] = 0.0
+        base["max_drawdown"] = 0.0
+        base["sharpe_ratio"] = 0.0
+        base["volatility"] = 0.0
+        base["benchmark_return"] = 0.0
+        base["signal_count"] = {"buy": 0, "sell": 0, "hold": 0}
+
+        # 如果有净值历史，计算年化收益和最大回撤
+        if nav_history and self._portfolio.nav_values:
+            all_navs: list[float] = []
+            for code in self._portfolio.positions:
+                navs = nav_history.get(code, [])
+                all_navs.extend(navs)
+            if len(all_navs) > 20:
+                # 年化收益（按日频计算，252 个交易日）
+                daily_returns = [(all_navs[i] - all_navs[i-1]) / all_navs[i-1]
+                                 for i in range(1, len(all_navs))]
+                if daily_returns:
+                    mean_daily = sum(daily_returns) / len(daily_returns)
+                    base["annual_return"] = round(mean_daily * 252 * 100, 2)
+                    base["volatility"] = round(
+                        (sum((r - mean_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5 * (252 ** 0.5) * 100,
+                        2,
+                    )
+                    if base["volatility"] > 0:
+                        base["sharpe_ratio"] = round(mean_daily / (sum((r - mean_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5 * (252 ** 0.5), 2)
+
+                # 最大回撤
+                peak = -float("inf")
+                max_dd = 0.0
+                for nav in all_navs:
+                    peak = max(peak, nav)
+                    dd = (nav - peak) / peak
+                    max_dd = min(max_dd, dd)
+                base["max_drawdown"] = round(max_dd * 100, 2)
+
+        return base
+
+
 portfolio_tracker = PortfolioTracker()
