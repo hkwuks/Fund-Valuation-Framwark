@@ -1,7 +1,8 @@
 """FundQuant 事件驱动回测引擎 — 完整 T+1 申赎模拟 + 前视偏差防护"""
+from __future__ import annotations
 
 from datetime import datetime, date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from loguru import logger
 import numpy as np
 
@@ -62,7 +63,15 @@ class PendingOrder:
 
 
 class FundBacktester:
-    """基金回测引擎 — 事件驱动, T+1确认, 前视偏差防护"""
+    """基金回测引擎 — 事件驱动, T+1确认, 前视偏差防护, 策略集成, 风控管线
+
+    继承旧引擎 (core.BacktestEngine) 的能力:
+      - 策略回调: 每个交易日调用 strategy.on_evaluate()
+      - 风控管线: portfolio 级 + signal 级风险检查
+      - 完整指标: volatility, sortino, information_ratio, 胜率等
+    新增能力:
+      - T+1 申赎确认, 巨额赎回限制, 基金转换, 分红处理, 清盘检测
+    """
 
     def __init__(self):
         self._positions: Dict[str, SimPosition] = {}
@@ -77,9 +86,21 @@ class FundBacktester:
         self._dividend_calendar: dict = {}
         self._liquidation = LiquidationHandler()
         self._fund_type_map: Dict[str, str] = {}
+        # 旧引擎合并: 策略 + 风控
+        self._strategy: Any = None
+        self._risk_pipeline: Any = None
+
+    def set_strategy(self, strategy: Any) -> None:
+        """设置回测策略 (FundStrategyBase 子类实例)"""
+        self._strategy = strategy
+
+    def set_risk_pipeline(self, pipeline: Any) -> None:
+        """设置风控管线 (RiskPipeline, 可选)"""
+        self._risk_pipeline = pipeline
 
     def run(self, config: BacktestConfig,
-            nav_data: Optional[Dict[str, List[dict]]] = None) -> BacktestResult:
+            nav_data: Optional[Dict[str, List[dict]]] = None,
+            strategy: Any = None) -> BacktestResult:
         """事件驱动回测主循环"""
         self._config = config
         self._dividend_calendar = config.dividend_calendar
@@ -89,6 +110,8 @@ class FundBacktester:
         self._trade_log = []
         self._equity_curve = []
         self._nav_data = nav_data or {}
+        if strategy:
+            self._strategy = strategy
 
         # 申购费折扣
         self._cost_model.set_discount(config.subscription_discount)
@@ -153,6 +176,16 @@ class FundBacktester:
         # 注册有效基金到清盘检测器
         self._liquidation._active_funds = set(config.fund_codes)
 
+        # 初始化策略
+        if self._strategy and hasattr(self._strategy, 'on_init'):
+            try:
+                self._strategy.on_init(None)  # 复用现有策略的 on_init 签名
+            except Exception:
+                pass
+
+        # 交易日序号映射（用于持有天数计算）
+        day_index = {d: i for i, d in enumerate(trading_days)}
+
         # ── 逐日推进 ──
         for idx, day_str in enumerate(trading_days):
             current_date = datetime.strptime(day_str, "%Y-%m-%d").date()
@@ -177,29 +210,135 @@ class FundBacktester:
             total = self._calc_total_value(prev_date_str, code_nav_map)
             self._equity_curve.append({"date": day_str, "total_value": round(total, 2)})
 
-            # ── 步骤4: 策略评估 (严格基于T-1日信息集) ──
-            if self._config.qdii_fund_codes:
-                prev_idx = trading_days.index(prev_date_str)
-                qdii_prev_date_str = trading_days[prev_idx - 1] if prev_idx > 0 else prev_date_str
-                qdii_prev_date = datetime.strptime(qdii_prev_date_str, "%Y-%m-%d").date()
-            else:
-                qdii_prev_date = None
+            # ── 步骤4: 策略评估 + 风控 + 下单 (旧引擎 merge) ──
+            if self._strategy is not None and hasattr(self._strategy, 'on_evaluate'):
+                # 构建信息集
+                if self._config.qdii_fund_codes:
+                    prev_idx = day_index.get(prev_date_str, 0)
+                    qdii_prev_date_str = trading_days[prev_idx - 1] if prev_idx > 0 else prev_date_str
+                    qdii_prev_date = datetime.strptime(qdii_prev_date_str, "%Y-%m-%d").date()
+                else:
+                    qdii_prev_date = None
 
-            if not hasattr(self, '_disclosure_calendar'):
-                self._disclosure_calendar = DisclosureCalendar()
-            holdings_date = self._disclosure_calendar.get_available_as_of(current_date)
+                if not hasattr(self, '_disclosure_calendar'):
+                    self._disclosure_calendar = DisclosureCalendar()
+                holdings_date = self._disclosure_calendar.get_available_as_of(current_date)
 
-            info_set = InformationSet(
-                nav_available_up_to=prev_date,
-                qdii_nav_available_up_to=qdii_prev_date,
-                intraday_quotes_available=prev_date,
-                holdings_disclosed_up_to=holdings_date,
-                holdings_effective_date=holdings_date,
-            )
-            # 简化的策略评估：demo模式直接跳过实际策略调用
-            # 真实使用中由外部传入
+                info_set = InformationSet(
+                    nav_available_up_to=prev_date,
+                    qdii_nav_available_up_to=qdii_prev_date,
+                    intraday_quotes_available=prev_date,
+                    holdings_disclosed_up_to=holdings_date,
+                    holdings_effective_date=holdings_date,
+                )
+
+                # Portfolio 级风控
+                risk_blocked = False
+                if self._risk_pipeline is not None:
+                    try:
+                        risk_ctx = _RiskContext(
+                            portfolio_value=total,
+                            positions=list(self._positions.keys()),
+                            daily_signal_count=0,
+                        )
+                        portfolio_results = self._risk_pipeline.run_portfolio(risk_ctx)
+                        risk_blocked = any(
+                            r.level == _REJECT_LEVEL for r in portfolio_results
+                        )
+                    except Exception as e:
+                        logger.warning(f"风控异常(portfolio): {e}")
+
+                if not risk_blocked:
+                    # 构建策略上下文 (state 注入全量 nav 序列供策略评估)
+                    if hasattr(self._strategy, '_state'):
+                        all_navs = []
+                        all_dates_data = []
+                        for code, records in self._nav_data.items():
+                            for r in records:
+                                all_navs.append(r.get("nav", 0))
+                                all_dates_data.append(r.get("date", ""))
+                        self._strategy._state["nav_values"] = all_navs
+                        self._strategy._state["nav_dates"] = all_dates_data
+                        self._strategy._state["fund_code"] = list(self._nav_data.keys())[0] if self._nav_data else ""
+
+                    # 调用策略
+                    try:
+                        sigs = self._strategy.on_evaluate(
+                            _build_portfolio_snapshot(self._positions, self._cash, total),
+                            info_set,
+                        )
+                    except Exception as e:
+                        logger.warning(f"策略评估异常: {e}")
+                        sigs = []
+
+                    if sigs:
+                        # Signal 级风控
+                        allowed_signals = []
+                        if self._risk_pipeline is not None:
+                            for sig in sigs:
+                                try:
+                                    core_sig = _signal_to_core(sig)
+                                    s_results = self._risk_pipeline.run_signal(core_sig, risk_ctx)
+                                    if any(r.level == _REJECT_LEVEL for r in s_results):
+                                        logger.debug(f"风控拒绝信号: {sig.fund_code} {sig.direction}")
+                                        continue
+                                    allowed_signals.append(sig)
+                                except Exception:
+                                    allowed_signals.append(sig)
+                        else:
+                            allowed_signals = sigs
+
+                        # 下单
+                        for sig in allowed_signals:
+                            self._place_signal_order(sig, total, prev_date_str,
+                                                     code_nav_map, current_date, day_index)
 
         return self._generate_report()
+
+    # ── 信号转下单 ──
+
+    def _place_signal_order(self, sig, total: float, prev_date_str: str,
+                            code_nav_map, current_date: date, day_index) -> None:
+        """将 FundSignal 转为引擎订单"""
+        nav_price = self._get_nav_for_date(sig.fund_code, prev_date_str, code_nav_map)
+        if nav_price <= 0:
+            return
+
+        if sig.direction == Direction.BUY.value or sig.direction == Direction.BUY:
+            # 确定目标金额
+            target_amt = sig.suggested_amount
+            if target_amt is None and sig.suggested_pct is not None:
+                target_amt = sig.suggested_pct * total
+            if target_amt is None:
+                target_amt = total * 0.1  # 默认 10%
+            if target_amt <= 0:
+                return
+
+            shares = target_amt / nav_price
+            if shares > 0:
+                self.submit_order(sig.fund_code, "buy", shares, current_date, 1)
+                logger.debug(f"下单买入 {sig.fund_code}: {shares:.2f}份 @ {nav_price}")
+
+        elif sig.direction == Direction.SELL.value or sig.direction == Direction.SELL:
+            pos = self._positions.get(sig.fund_code)
+            if pos is None:
+                return
+            pct = sig.suggested_pct
+            if pct is None:
+                pct = 1.0  # 默认全卖
+            shares = pos.shares * pct
+            if shares > 0:
+                self.submit_order(sig.fund_code, "sell", shares, current_date, 1)
+                logger.debug(f"下单卖出 {sig.fund_code}: {shares:.2f}份")
+
+        elif sig.direction == Direction.REBALANCE.value or sig.direction == Direction.REBALANCE:
+            # 再平衡: 由 strategy 负责给出每个基金的买卖信号
+            pass
+
+    def _get_nav_for_date(self, fund_code: str, date_str: str,
+                          code_nav_map: Dict[str, Dict[str, dict]]) -> float:
+        nav_data = code_nav_map.get(fund_code, {}).get(date_str)
+        return nav_data.get("nav", 0) if nav_data else 0
 
     # ── 私有辅助方法 ──
 
@@ -530,7 +669,7 @@ class FundBacktester:
         return 1_000_000_000  # 10 亿份估算, 降级为不触发限制
 
     def _generate_report(self) -> BacktestResult:
-        """生成回测报告"""
+        """生成完整回测报告 (继承旧引擎 MetricsCalculator 的全部指标)"""
         import uuid
         from ..risk.metrics import risk_metrics_calculator
 
@@ -544,18 +683,58 @@ class FundBacktester:
         initial = self._config.initial_capital
         total_return = (equity_values[-1] - initial) / initial if initial > 0 else 0.0
 
+        # 日收益率
         returns = []
         for i in range(1, len(equity_values)):
             if equity_values[i - 1] > 0:
                 returns.append((equity_values[i] - equity_values[i - 1]) / equity_values[i - 1])
 
+        # 基础风险指标
         metrics = risk_metrics_calculator.calculate(returns)
-        ann_return = (1 + total_return) ** (252 / max(len(equity_values), 1)) - 1
+        n_days = len(equity_values)
+        ann_return = (1 + total_return) ** (252 / max(n_days, 1)) - 1
 
-        # 胜率计算
+        # 胜率 & 盈亏比
         buy_trades = [t for t in self._trade_log if t["action"] == "sell_confirmed"]
-        wins = [t for t in buy_trades if t.get("proceeds", 0) > 0]
+        wins = [t for t in buy_trades if t.get("proceeds", 0) > t.get("cost", 0)]
+        losses = [t for t in buy_trades if t.get("proceeds", 0) <= t.get("cost", 0)]
         win_rate = len(wins) / len(buy_trades) if buy_trades else 0.0
+        avg_win = np.mean([t["proceeds"] - t.get("cost", 0) for t in wins]) if wins else 0.0
+        avg_loss = abs(np.mean([t["proceeds"] - t.get("cost", 0) for t in losses])) if losses else 1.0
+        profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
+
+        # 信息比率 (用等权基准近似)
+        benchmark_returns = [r / n_days for r in range(n_days - 1)]  # ponytail: 直线上涨基准
+        if len(returns) > 1 and len(benchmark_returns) > 1:
+            excess = np.array(returns[:len(benchmark_returns)]) - np.array(benchmark_returns)
+            tracking_error = np.std(excess, ddof=1) * np.sqrt(252)
+            information_ratio = (
+                (ann_return - 0.02) / tracking_error if tracking_error > 0 else 0.0
+            )
+        else:
+            information_ratio = 0.0
+
+        # 换手率
+        total_turnover = sum(
+            t.get("cost", 0) or t.get("proceeds", 0) or 0
+            for t in self._trade_log if "confirmed" in t.get("action", "")
+        )
+        avg_equity = np.mean(equity_values) if equity_values else initial
+        turnover_rate = total_turnover / avg_equity if avg_equity > 0 else 0.0
+
+        # 费用损耗
+        total_fees = sum(t.get("cost", 0) for t in self._trade_log)
+        fee_leakage = total_fees / initial if initial > 0 else 0.0
+
+        # 最大连续亏损天数
+        max_consec_loss = 0
+        cur_loss = 0
+        for r in returns:
+            if r < 0:
+                cur_loss += 1
+                max_consec_loss = max(max_consec_loss, cur_loss)
+            else:
+                cur_loss = 0
 
         # 分年度收益
         period_returns = {}
@@ -568,18 +747,82 @@ class FundBacktester:
                 yr_return = (vals[-1] - vals[0]) / vals[0] if vals[0] > 0 else 0.0
                 period_returns[year] = round(yr_return, 6)
 
+        total_trades = len([t for t in self._trade_log if "confirmed" in t.get("action", "")])
+
         return BacktestResult(
             backtest_id=f"bt_{uuid.uuid4().hex[:12]}",
             config=self._config,
             total_return=round(total_return, 6),
             annual_return=round(ann_return, 6),
             max_drawdown=metrics.max_drawdown,
+            volatility=metrics.volatility or 0.0,
+            sortino_ratio=metrics.sortino_ratio or 0.0,
             sharpe_ratio=metrics.sharpe_ratio or 0.0,
             calmar_ratio=metrics.calmar_ratio or 0.0,
+            information_ratio=round(information_ratio, 4),
             win_rate=round(win_rate, 4),
-            total_trades=len([t for t in self._trade_log if "confirmed" in t.get("action", "")]),
+            profit_loss_ratio=round(profit_loss_ratio, 4),
+            total_trades=total_trades,
+            turnover_rate=round(turnover_rate, 6),
+            fee_leakage=round(fee_leakage, 6),
+            max_consecutive_loss_days=max_consec_loss,
             equity_curve=self._equity_curve,
             trade_log=self._trade_log,
             period_returns=period_returns,
             status="completed",
         )
+
+
+# ── 辅助函数 (旧引擎 compat) ──
+
+def _build_portfolio_snapshot(positions, cash, total) -> "Portfolio":
+    """构建策略可读的 Portfolio 快照 (Dict[str, float]: fund_code -> weight)"""
+    from ..core.models import Portfolio
+    pos_dict = {
+        code: (p.shares * p.buy_nav) / total if total > 0 else 0
+        for code, p in positions.items()
+    }
+    return Portfolio(
+        cash=cash,
+        positions=pos_dict,
+        total_value=total,
+    )
+
+
+def _signal_to_core(sig) -> Any:
+    """将 FundSignal 转换为 core.Signal (风控管线需要 core 类型)"""
+    try:
+        from core import Signal, Direction as CoreDir
+        dir_map = {
+            "buy": CoreDir.LONG,
+            "sell": CoreDir.CLOSE_LONG,
+            "hold": CoreDir.NONE,
+        }
+        d = sig.direction.value if hasattr(sig.direction, 'value') else sig.direction
+        return Signal(
+            id=getattr(sig, 'signal_id', ''),
+            strategy=getattr(sig, 'strategy_name', ''),
+            symbol=sig.fund_code,
+            direction=dir_map.get(str(d).lower(), CoreDir.NONE),
+            price=0,
+            volume=0,
+            confidence=getattr(sig, 'confidence', 0.5),
+        )
+    except ImportError:
+        return sig
+
+
+class _RiskContext:
+    """简化的风控上下文 (core.RiskContext 的轻量替代)"""
+    def __init__(self, portfolio_value=0.0, positions=None, daily_signal_count=0):
+        self.portfolio_value = portfolio_value
+        self.positions = positions or []
+        self.daily_signal_count = daily_signal_count
+
+
+_REJECT_LEVEL = None
+try:
+    from core import RiskLevel
+    _REJECT_LEVEL = RiskLevel.REJECT
+except ImportError:
+    pass

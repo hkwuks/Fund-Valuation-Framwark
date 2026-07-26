@@ -16,6 +16,8 @@ import { MonthlyReturns } from './panels/MonthlyReturns'
 import { Attribution } from './panels/Attribution'
 import { DetailPanel } from './panels/DetailPanel'
 import { BacktestPanel } from './panels/BacktestPanel'
+import { ParamScanPanel } from './panels/ParamScanPanel'
+import { PaperTradePanel } from './panels/PaperTradePanel'
 import { ResearchPanel } from './research-panel'
 
 export class FundQuantDashboard {
@@ -40,6 +42,8 @@ export class FundQuantDashboard {
     this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
     this.layout.register(new BacktestPanel())
+    this.layout.register(new ParamScanPanel())
+    this.layout.register(new PaperTradePanel())
 
     // L3 研究区容器（在 grid 下方）
     const researchContainer = document.createElement('div')
