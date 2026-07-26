@@ -25,6 +25,11 @@ from backend.gold.core.config import GoldSettings
 from backend.data_sync import get_gold_training_data
 from loguru import logger
 
+# RL 强化学习
+from backend.gold.ml.rl import RLTrainer, GoldTradingEnv
+
+_rl_trainer: RLTrainer | None = None
+
 # AuroraCore 新引擎
 from core import (
     BacktestEngine, BacktestConfig, BacktestReport, EventBus, Bar,
@@ -1679,6 +1684,84 @@ def _calc_atr(bars: list, period: int = 14):
         tr = max(b.high - b.low, abs(b.high - p.close), abs(b.low - p.close))
         trs.append(tr)
     return round(sum(trs[-period:]) / period, 2)
+
+
+# ===== RL 强化学习交易 =====
+
+def _get_rl_trainer() -> RLTrainer:
+    global _rl_trainer
+    if _rl_trainer is None:
+        _rl_trainer = RLTrainer()
+    return _rl_trainer
+
+
+@router.get("/rl/models")
+async def list_rl_models():
+    """列出所有训练好的RL模型"""
+    trainer = _get_rl_trainer()
+    return {"success": True, "data": {"models": trainer.list_models()}}
+
+
+class RLTrainRequest(BaseModel):
+    n_iterations: int = 50
+    n_steps: int = 1024
+    env_config: Optional[dict] = None
+    agent_config: Optional[dict] = None
+
+
+@router.post("/rl/train")
+async def train_rl(req: RLTrainRequest):
+    """训练RL模型 — 使用AU0历史K线"""
+    gateway = GoldDataGateway()
+    bars = await gateway.get_bars("AU0", period="d", limit=1000, refresh=True)
+    if not bars or len(bars) < 100:
+        raise HTTPException(status_code=400, detail="K线数据不足100根，无法训练")
+
+    trainer = _get_rl_trainer()
+    history = await asyncio.to_thread(
+        trainer.train, bars,
+        n_iterations=req.n_iterations,
+        n_steps=req.n_steps,
+    )
+    return {"success": True, "data": history}
+
+
+@router.post("/rl/signal")
+async def rl_signal():
+    """使用最新RL模型生成交易信号"""
+    trainer = _get_rl_trainer()
+    models = trainer.list_models()
+    if not models:
+        raise HTTPException(status_code=400, detail="无已训练的RL模型，请先训练")
+
+    # 加载最新的模型
+    latest = models[-1]
+    trainer.load_model(latest["path"])
+
+    gateway = GoldDataGateway()
+    bars = await gateway.get_bars("AU0", period="d", limit=200, refresh=True)
+    if not bars or len(bars) < 30:
+        raise HTTPException(status_code=400, detail="K线数据不足")
+
+    result = await asyncio.to_thread(trainer.generate_signal, bars)
+
+    return {"success": True, "data": result}
+
+
+@router.get("/rl/status")
+async def rl_status():
+    """RL系统状态"""
+    trainer = _get_rl_trainer()
+    models = trainer.list_models()
+    return {
+        "success": True,
+        "data": {
+            "model_count": len(models),
+            "latest_model": models[-1] if models else None,
+            "device": getattr(trainer.agent, "device", "N/A") if trainer.agent else "N/A",
+            "ready": trainer.agent is not None,
+        },
+    }
 
 
 # ===== 配置 =====
