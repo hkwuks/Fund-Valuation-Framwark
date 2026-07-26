@@ -4,7 +4,7 @@ import uuid
 import asyncio
 from functools import partial
 from datetime import date, datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -450,16 +450,11 @@ async def allocation_rebalance(req: AllocationRequest):
 # ── 回测 ──
 
 def _run_backtest_sync(config_dict: dict) -> str:
-    """同步回测任务 — 使用 AuroraCore 内核"""
+    """同步回测任务 — 使用 FundBacktester (新引擎, T+1模拟 + 前视偏差防护)"""
     from datetime import date, timedelta
-    from core import (
-        BacktestEngine, BacktestConfig as CoreConfig, EventBus,
-        FundNavPoint, MetricsCalculator,
-    )
-    from fund_quant.adapter import FundDomainAdapter
+    from ..fund_quant.backtest.engine import FundBacktester
 
-    adapter = FundDomainAdapter()
-    backtest_id = f"bt_{uuid.uuid4().hex[:12]}"
+    backtest_id = config_dict.get("backtest_id", f"bt_{uuid.uuid4().hex[:12]}")
 
     # 获取净值数据
     strategy_name = config_dict.get("strategy_name", "")
@@ -473,7 +468,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
 
     if not nav_data:
         # 模拟数据
-        navs = []
+        navs_list = []
         d = date.fromisoformat(start) if isinstance(start, str) else start
         ed = date.fromisoformat(end) if isinstance(end, str) else end
         if isinstance(d, str): d = date.fromisoformat(d)
@@ -482,107 +477,67 @@ def _run_backtest_sync(config_dict: dict) -> str:
         while cur <= ed:
             days = (cur - d).days
             trend = 1.0 + days * 0.002 if days < 150 else 1.0 + (300 - days) * 0.002
-            navs.append(FundNavPoint(fund_code=fund_code, date=cur, nav=round(trend, 4)))
+            navs_list.append({"date": cur.isoformat(), "nav": round(trend, 4)})
             cur += timedelta(days=1)
     else:
-        navs = []
-        for r in nav_data:
-            nd = date.fromisoformat(r["date"]) if isinstance(r["date"], str) else r["date"]
-            navs.append(FundNavPoint(fund_code=fund_code, date=nd, nav=r.get("nav", 0)))
+        navs_list = [{"date": r["date"], "nav": r.get("nav", 0)} for r in nav_data]
 
-    # 查找策略
-    available = adapter.get_available_strategies()
-    cls = available.get(strategy_name)
-    if cls is None:
-        from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry
-        registry = OldRegistry()
-        old_s = registry.get_strategy(strategy_name)
-        if old_s:
-            from core import Strategy
-            # Wrap old strategy in a compat layer
-            class _CompatWrapper(Strategy):
-                name = strategy_name
-                def on_data(self, data):
-                    nav_vals = [n.nav for n in navs if hasattr(n, 'nav')]
-                    old_s._state = {"nav_values": nav_vals, "fund_code": fund_code}
-                    sigs = old_s.on_evaluate(None, None)
-                    for sig in sigs or []:
-                        from core import Signal, Direction
-                        d = Direction.LONG if sig.direction.name == "BUY" else Direction.CLOSE_LONG
-                        self.ctx.emit(Signal(
-                            id="", strategy=self.name, symbol=fund_code,
-                            direction=d, price=data.nav, volume=10000,
-                            confidence=sig.confidence, reason=sig.reason,
-                        ))
-            cls = _CompatWrapper
-        else:
-            raise RuntimeError(f"策略 {strategy_name} 未找到")
+    nav_dict = {fund_code: navs_list}
 
-    strategy = cls()
-    cfg = CoreConfig(
+    # 查找策略 (优先旧注册表 — 原生的 FundStrategyBase 直接兼容)
+    from ..fund_quant.strategy.base import StrategyRegistry
+    registry = StrategyRegistry()
+    strategy = registry.get_strategy(strategy_name)
+    if strategy is None:
+        raise RuntimeError(f"策略 {strategy_name} 未找到")
+
+    # 构建新引擎配置
+    from ..fund_quant.core.models import BacktestConfig, CostModelConfig
+    config = BacktestConfig(
+        strategy_name=strategy_name,
+        fund_codes=fund_codes,
+        start_date=start,
+        end_date=end,
         initial_capital=config_dict.get("initial_capital", 100000),
+        rebalance_freq=config_dict.get("rebalance_freq", "monthly"),
+        params=config_dict.get("params", {}),
     )
-    from core import RiskPipeline
-    engine = BacktestEngine(cfg)
-    engine.set_event_bus(EventBus())
-    engine.set_strategy(strategy)
-    engine.set_executor(adapter.create_executor({"confirmation_delay": 1}))
-    pipeline = RiskPipeline()
-    for c in adapter.default_risk_checks():
-        pipeline.add(c)
-    engine.set_risk(pipeline)
-    engine.set_data(navs)
+
+    # 注入自定义参数
+    custom_params = config_dict.get("params", {})
+    if custom_params:
+        strategy.params.update(custom_params)
+
+    engine = FundBacktester()
 
     try:
-        report = engine.run()
-        equity_values = [e["equity"] for e in report.equity_curve]
-        nav_dates = [n.date.isoformat() for n in navs]
-        metrics = MetricsCalculator.calculate(
-            equity_values, trades=report.trades,
-            dates=[nav_dates[0]] + nav_dates,
-        )
-        metrics.total_trades = report.total_trades
+        result = engine.run(config, nav_dict, strategy=strategy)
+        result.backtest_id = backtest_id
 
-        result = BacktestResult(
-            backtest_id=backtest_id,
-            config=BacktestConfig(**config_dict),
-            status="completed",
-            total_return=metrics.total_return,
-            annual_return=metrics.annual_return,
-            max_drawdown=metrics.max_drawdown,
-            volatility=metrics.volatility,
-            sortino_ratio=metrics.sortino_ratio,
-            sharpe_ratio=metrics.sharpe_ratio,
-            calmar_ratio=metrics.calmar_ratio,
-            information_ratio=metrics.information_ratio,
-            win_rate=metrics.win_rate,
-            profit_loss_ratio=metrics.profit_loss_ratio,
-            total_trades=report.total_trades,
-            turnover_rate=metrics.turnover_rate,
-            fee_leakage=metrics.fee_leakage,
-            max_consecutive_loss_days=metrics.max_consecutive_loss_days,
-            equity_curve=[{"bar": i, "equity": e["equity"], "date": nav_dates[i] if i < len(nav_dates) else ""}
-                          for i, e in enumerate(report.equity_curve)],
-            period_returns=metrics.period_returns,
-        )
+        # 确保 equity_curve 含 equity 字段（前端需要）
+        for e in result.equity_curve:
+            if "equity" not in e:
+                e["equity"] = e.get("total_value", 0)
+
         save_backtest_result(result)
-        logger.info(f"AuroraCore 回测 [{backtest_id}] 完成: 收益 {metrics.total_return:.2%}")
+        logger.info(f"新引擎回测 [{backtest_id}] 完成: 收益 {result.total_return:.2%}")
     except Exception as e:
-        result = BacktestResult(backtest_id=backtest_id, config=BacktestConfig(**config_dict), status="failed")
+        logger.error(f"新引擎回测 [{backtest_id}] 失败: {e}", exc_info=True)
+        from ..fund_quant.core.models import BacktestResult as BResult
+        result = BResult(backtest_id=backtest_id, config=config, status="failed")
         save_backtest_result(result)
-        logger.error(f"AuroraCore 回测 [{backtest_id}] 失败: {e}")
 
     return backtest_id
 
 
 async def _run_backtest_async(config_dict: dict) -> str:
-    """异步回测任务 — AuroraCore 内核（线程池执行）"""
+    """异步回测任务 — FundBacktester 新引擎（线程池执行）"""
     return await asyncio.to_thread(_run_backtest_sync, config_dict)
 
 
 @router.post("/backtest/run")
 async def run_backtest(req: BacktestRequest):
-    """运行回测 (异步 — 在线程池执行)"""
+    """运行回测 (在线程池同步执行)"""
     import json
 
     backtest_id = f"bt_{uuid.uuid4().hex[:12]}"
@@ -596,19 +551,20 @@ async def run_backtest(req: BacktestRequest):
         params=req.params,
     )
 
-    result = BacktestResult(backtest_id=backtest_id, config=config, status="pending")
-    await asyncio.to_thread(save_backtest_result, result)
-
-    # 异步执行 (在线程池中执行以避免阻塞事件循环)
+    # 同步执行（在线程池中避免阻塞事件循环）
     config_dict = config.model_dump()
-    asyncio.create_task(_run_backtest_async(config_dict))
+    config_dict["backtest_id"] = backtest_id
+    await asyncio.to_thread(_run_backtest_sync, config_dict)
+
+    # 获取结果
+    result = await asyncio.to_thread(get_backtest_result, backtest_id)
 
     return {
         "success": True,
         "data": {
             "backtest_id": backtest_id,
-            "status": "pending",
-            "message": "回测任务已提交 (异步执行中)",
+            "status": result["status"] if result else "completed",
+            "message": "回测完成",
             "config": {
                 "strategy": req.strategy_name,
                 "fund_codes": req.fund_codes,
@@ -1244,3 +1200,303 @@ async def attribution_brinson(fund_codes: str = Query(...), start: str = "2026-0
             },
         },
     }
+
+
+# ── 回测后分析 ──
+
+class AnalysisRequest(BaseModel):
+    backtest_id: str
+    n_simulations: int = 1000
+
+@router.post("/backtest/analysis")
+async def backtest_analysis(req: AnalysisRequest):
+    """对已完成回测运行过拟合/显著性/Monte Carlo/市场状态检测"""
+    result = await asyncio.to_thread(get_backtest_result, req.backtest_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="回测结果未找到")
+
+    # 解析 equity_curve → daily_returns
+    import json
+    payload = dict(result)
+    if "result_json" in payload and payload["result_json"]:
+        try:
+            payload["result"] = json.loads(payload["result_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    result_data = payload.get("result") or {}
+    equity = result_data.get("equity_curve", [])
+    if len(equity) < 3:
+        raise HTTPException(status_code=400, detail="净值曲线过短，无法分析")
+
+    values = [e.get("equity", e.get("total_value", 0)) for e in equity]
+    daily_rets = [(values[i] - values[i-1]) / values[i-1] for i in range(1, len(values)) if values[i-1] > 0]
+
+    sharpe = result_data.get("sharpe_ratio", 0.0)
+    total_return = result_data.get("total_return", 0.0)
+    total_trades = result_data.get("total_trades", 0)
+
+    # 区间年数
+    dates = [e.get("date", "") for e in equity if e.get("date")]
+    years = 1.0
+    if len(dates) >= 2:
+        try:
+            d0 = datetime.strptime(dates[0][:10], "%Y-%m-%d")
+            d1 = datetime.strptime(dates[-1][:10], "%Y-%m-%d")
+            years = max((d1 - d0).days / 365.25, 0.1)
+        except (ValueError, IndexError):
+            pass
+
+    from ..fund_quant.backtest.analysis_provider import analysis_provider
+    analysis = analysis_provider.analyze(
+        daily_returns=daily_rets,
+        sharpe=sharpe,
+        years=years,
+        total_return=total_return,
+        total_trades=total_trades,
+        n_simulations=req.n_simulations,
+    )
+
+    return {"success": True, "data": {"backtest_id": req.backtest_id, "analysis": analysis}}
+
+
+# ── 参数扫描 ──
+
+class ParamScanRequest(BaseModel):
+    strategy_name: str
+    fund_codes: List[str]
+    start_date: str
+    end_date: str
+    initial_capital: float = 100000.0
+    mode: str = "single_param"           # single_param / grid_search / random_search
+    param_name: str = ""
+    param_values: List[Any] = []
+    param_grid: dict = {}
+    param_dist: dict = {}
+    fixed_params: dict = {}
+    n_iter: int = 50
+
+@router.post("/backtest/param-scan")
+async def backtest_param_scan(req: ParamScanRequest):
+    """参数敏感性扫描 — 单参数/网格搜索/随机搜索"""
+    from ..fund_quant.strategy.base import StrategyRegistry
+    from ..fund_quant.data.storage import get_nav_history
+    from ..fund_quant.backtest.engine import FundBacktester
+
+    registry = StrategyRegistry()
+    strategy = registry.get_strategy(req.strategy_name)
+    if strategy is None:
+        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未找到")
+
+    # 构建扫描函数
+    def _run_with_params(params: dict) -> dict:
+        engine = FundBacktester()
+        from ..fund_quant.core.models import BacktestConfig
+        config = BacktestConfig(
+            strategy_name=req.strategy_name,
+            fund_codes=req.fund_codes,
+            start_date=req.start_date,
+            end_date=req.end_date,
+            initial_capital=req.initial_capital,
+            params=params,
+        )
+        # 获取净值数据
+        nav_dict = {}
+        for code in req.fund_codes:
+            navs = get_nav_history(code)
+            if navs:
+                nav_dict[code] = navs
+        if not nav_dict:
+            return {"sharpe": 0, "total_return": 0}
+
+        strategy_clone = registry.get_strategy(req.strategy_name)
+        if strategy_clone:
+            strategy_clone.params.update(params)
+        result = engine.run(config, nav_dict, strategy=strategy_clone)
+        return {
+            "sharpe": result.sharpe_ratio,
+            "total_return": result.total_return,
+            "max_drawdown": result.max_drawdown,
+            "volatility": result.volatility,
+            "sortino": result.sortino_ratio,
+            "calmar": result.calmar_ratio,
+            "win_rate": result.win_rate,
+            "total_trades": result.total_trades,
+        }
+
+    from ..fund_quant.backtest.param_scanner import ParameterScanner
+    scanner = ParameterScanner(_run_with_params)
+
+    if req.mode == "single_param":
+        if not req.param_name or not req.param_values:
+            raise HTTPException(status_code=400, detail="single_param 需要 param_name + param_values")
+        scan_result = scanner.single_param(req.param_name, req.param_values, req.fixed_params)
+    elif req.mode == "grid_search":
+        if not req.param_grid:
+            raise HTTPException(status_code=400, detail="grid_search 需要 param_grid")
+        scan_result = scanner.grid_search(req.param_grid, req.fixed_params)
+    elif req.mode == "random_search":
+        if not req.param_dist:
+            raise HTTPException(status_code=400, detail="random_search 需要 param_dist")
+        scan_result = scanner.random_search(req.param_dist, n_iter=req.n_iter, fixed_params=req.fixed_params)
+    else:
+        raise HTTPException(status_code=400, detail=f"未知扫描模式: {req.mode}")
+
+    return {
+        "success": True,
+        "data": {
+            "mode": scan_result.mode,
+            "param_names": scan_result.param_names,
+            "results": scan_result.results,
+            "n_iterations": scan_result.n_iterations,
+            "sensitivity_score": scan_result.sensitivity_score,
+            "stability_region": scan_result.stability_region,
+        },
+    }
+
+
+# ── 向量化回测 ──
+
+class VectorizedBacktestRequest(BaseModel):
+    fund_codes: List[str]
+    start_date: str
+    end_date: str
+    initial_capital: float = 100000.0
+
+@router.post("/backtest/run-vectorized")
+async def run_vectorized_backtest(req: VectorizedBacktestRequest):
+    """向量化回测（公式策略全 numpy 计算，无事件循环）"""
+    from ..fund_quant.data.storage import get_nav_history
+    import numpy as np
+
+    nav_dict: dict[str, list[float]] = {}
+    for code in req.fund_codes:
+        navs = await asyncio.to_thread(get_nav_history, code)
+        if navs:
+            nav_dict[code] = [r.get("nav", 0) for r in navs if r.get("nav")]
+
+    if not nav_dict:
+        raise HTTPException(status_code=400, detail="无净值数据")
+
+    # 对齐日期：取所有基金的交集（简化版：按最短截断）
+    min_len = min(len(v) for v in nav_dict.values())
+    nav_matrix = np.array([v[-min_len:] for v in nav_dict.values()])
+
+    @np.vectorize
+    def equal_weight_signal(nav: float) -> float:
+        return 1.0  # placeholder: 等权重
+
+    # 等权重策略 (weight_func: n_funds x n_days → 每期求和=1)
+    def equal_weight_strategy(nm: np.ndarray) -> np.ndarray:
+        n_funds, n_days = nm.shape
+        w = np.ones((n_funds, n_days)) / n_funds
+        return w
+
+    from ..fund_quant.backtest.vectorized_engine import VectorizedBacktestEngine
+    vbe = VectorizedBacktestEngine()
+    vr = vbe.run(nav_matrix, equal_weight_strategy, req.initial_capital)
+
+    return {
+        "success": True,
+        "data": {
+            "total_return": round(float(vr.total_return), 4),
+            "annual_return": round(float(vr.annual_return), 4),
+            "sharpe_ratio": round(float(vr.sharpe_ratio), 4),
+            "max_drawdown": round(float(vr.max_drawdown), 4),
+            "volatility": round(float(vr.volatility), 4),
+            "n_trading_days": vr.n_trading_days,
+            "funds": req.fund_codes,
+            "strategy": "equal_weight",
+        },
+    }
+
+
+# ── 模拟交易 (Paper Trader) ──
+
+class PaperTradeStartRequest(BaseModel):
+    strategy_name: str
+    fund_codes: List[str]
+    initial_capital: float = 100000.0
+
+class PaperTradeRunRequest(BaseModel):
+    paper_trade_id: str
+
+_paper_trader = None
+
+def _get_paper_trader():
+    global _paper_trader
+    if _paper_trader is None:
+        from ..fund_quant.backtest.paper_trader import FundPaperTrader
+        _paper_trader = FundPaperTrader()
+    return _paper_trader
+
+@router.post("/paper-trade/start")
+async def paper_trade_start(req: PaperTradeStartRequest):
+    """启动一个新的模拟交易会话"""
+    pt = _get_paper_trader()
+    state = pt.start(req.strategy_name, req.fund_codes, req.initial_capital)
+    return {
+        "success": True,
+        "data": {
+            "paper_trade_id": state.paper_trade_id,
+            "strategy_name": state.strategy_name,
+            "fund_codes": state.fund_codes,
+            "initial_capital": state.initial_capital,
+            "status": state.status,
+        },
+    }
+
+@router.post("/paper-trade/run")
+async def paper_trade_run(req: PaperTradeRunRequest):
+    """执行一天的模拟交易"""
+    pt = _get_paper_trader()
+    from ..fund_quant.data.storage import get_nav_history
+
+    # 加载状态查询基金列表
+    state = pt.get_status(req.paper_trade_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="模拟交易会话未找到")
+    if state.status != "running":
+        return {"success": True, "data": {"status": state.status, "message": "已停止"}}
+
+    # 获取所有持仓基金的净值数据
+    nav_data = {}
+    for code in state.fund_codes:
+        navs = await asyncio.to_thread(get_nav_history, code)
+        if navs:
+            nav_data[code] = navs
+
+    updated = pt.daily_run(req.paper_trade_id, nav_data)
+    return {
+        "success": True,
+        "data": {
+            "paper_trade_id": req.paper_trade_id,
+            "status": updated.status if updated else "unknown",
+            "equity_count": len(updated.equity_curve) if updated else 0,
+        },
+    }
+
+@router.post("/paper-trade/stop")
+async def paper_trade_stop(req: PaperTradeRunRequest):
+    """停止模拟交易会话"""
+    pt = _get_paper_trader()
+    state = pt.stop(req.paper_trade_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="模拟交易会话未找到")
+    return {"success": True, "data": {"paper_trade_id": req.paper_trade_id, "status": "stopped"}}
+
+@router.get("/paper-trade/list")
+async def paper_trade_list():
+    """列出所有模拟交易会话"""
+    pt = _get_paper_trader()
+    summaries = pt.list_sessions()
+    return {"success": True, "data": [s.__dict__ for s in summaries]}
+
+@router.get("/paper-trade/status/{paper_trade_id}")
+async def paper_trade_status(paper_trade_id: str):
+    """获取模拟交易会话状态"""
+    pt = _get_paper_trader()
+    state = pt.get_status(paper_trade_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="模拟交易会话未找到")
+    return {"success": True, "data": state.__dict__}

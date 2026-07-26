@@ -403,7 +403,9 @@ class SensitivityRequest(BaseModel):
 
 @router.post("/backtest/sensitivity")
 async def run_sensitivity(req: SensitivityRequest):
-    """参数敏感性分析 — AuroraCore 引擎"""
+    """参数敏感性分析 — 使用 SensitivityAnalyzer 模块"""
+    from backend.gold.backtest.sensitivity import SensitivityAnalyzer
+
     bars = await gateway.get_bars(
         symbol=req.symbol, period=req.period,
         start=req.start_date, end=req.end_date, refresh=True,
@@ -411,7 +413,6 @@ async def run_sensitivity(req: SensitivityRequest):
     if not bars:
         raise HTTPException(status_code=400, detail="No bar data available")
 
-    # 从策略获取 param_ranges
     strategies = _get_domain_adapter().get_available_strategies()
     if req.strategy_name not in strategies:
         raise HTTPException(status_code=404, detail=f"Strategy '{req.strategy_name}' not found")
@@ -419,52 +420,11 @@ async def run_sensitivity(req: SensitivityRequest):
     if not param_ranges:
         raise HTTPException(status_code=400, detail="No param_ranges available for this strategy")
 
-    # 邻域扫描
-    import itertools
-    results: list[dict] = []
-    for param_name, values in param_ranges.items():
-        for value in values:
-            params = {param_name: value}
-            try:
-                r = await asyncio.to_thread(_aurora_backtest, req.strategy_name, bars, req.capital, params)
-                report = r["report"]
-                results.append({
-                    "param_name": param_name,
-                    "param_value": value,
-                    "sharpe": report["performance"]["sharpe_ratio"],
-                    "max_dd": report["risk"]["max_drawdown"],
-                    "total_return": report["performance"]["total_return"],
-                    "win_rate": report["performance"]["win_rate"],
-                })
-            except Exception as e:
-                logger.debug(f"Sensitivity failed for {param_name}={value}: {e}")
-                results.append({"param_name": param_name, "param_value": value,
-                                "sharpe": None, "max_dd": None, "total_return": None, "win_rate": None})
+    base_params = {}
+    analyzer = SensitivityAnalyzer(capital=req.capital)
+    result = analyzer.analyze(req.strategy_name, base_params, param_ranges, bars)
 
-    # 稳健性评估
-    conclusion = {}
-    for param_name in param_ranges:
-        vals = [r for r in results if r["param_name"] == param_name and r["sharpe"] is not None]
-        if vals:
-            sharpes = [v["sharpe"] for v in vals]
-            mean_s = sum(sharpes) / len(sharpes)
-            std_s = (sum((s - mean_s) ** 2 for s in sharpes) / len(sharpes)) ** 0.5
-            cv = std_s / abs(mean_s) if mean_s else 999
-            conclusion[param_name] = {
-                "mean_sharpe": round(mean_s, 2),
-                "std_sharpe": round(std_s, 2),
-                "cv_sharpe": round(cv, 2),
-                "status": "稳健" if cv < 0.5 else ("中等" if cv < 1.0 else "脆弱"),
-            }
-
-    return {
-        "success": True,
-        "data": {
-            "strategy": req.strategy_name,
-            "sensitivity_data": results,
-            "conclusion": conclusion,
-        },
-    }
+    return {"success": True, "data": result}
 
 
 # ===== In/Out样本验证 + 场景验证 =====

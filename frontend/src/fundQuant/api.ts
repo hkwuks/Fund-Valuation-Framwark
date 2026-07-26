@@ -176,6 +176,85 @@ export interface FactorExposureResult {
   data: FactorExposureData
 }
 
+// ── 回测分析 ──
+export interface AnalysisResult {
+  has_analysis: boolean
+  overfitting?: {
+    deflated_sharpe: number
+    min_btl_years: number
+    actual_years: number
+    min_btl_warning: string
+    shuffle_p_value: number
+    is_significant: boolean
+    total_trials: number
+  }
+  significance?: {
+    sharpe: number
+    p_value: number
+    ci_lower: number
+    ci_upper: number
+    is_significant: boolean
+  }
+  monte_carlo?: {
+    n_simulations: number
+    return_pct: Record<string, number>
+    sharpe_ratio: Record<string, number>
+    max_drawdown_pct: Record<string, number>
+    ulcer_index?: Record<string, number>
+    probability_of_loss: number
+  }
+  regime?: {
+    n_regimes: number
+    warning: string
+    regimes: { label: string; duration_days: number; ann_return: number; ann_vol: number; sharpe: number }[]
+  }
+  factor_attribution?: {
+    alpha: number
+    alpha_tstat: number
+    alpha_pvalue: number
+    alpha_significant: boolean
+    betas: Record<string, number>
+    r_squared: number
+    adj_r_squared: number
+  }
+}
+
+// ── 参数扫描 ──
+export interface ParamScanResult {
+  mode: string
+  param_names: string[]
+  results: Record<string, any>[]
+  n_iterations: number
+  sensitivity_score?: Record<string, number>
+  stability_region?: [number, number][]
+}
+
+// ── 模拟交易 ──
+export interface PaperTradeSession {
+  paper_trade_id: string
+  strategy_name: string
+  fund_codes: string[]
+  initial_capital: number
+  cash: number
+  positions: Record<string, number>
+  pending_orders: Record<string, any>[]
+  equity_curve: { date: string; total_value: number; cash: number }[]
+  status: string
+  last_run_date: string | null
+  created_at: string
+}
+
+export interface PaperTradeSummary {
+  paper_trade_id: string
+  strategy_name: string
+  status: string
+  days_run: number
+  total_return: number
+  current_value: number
+  sharpe: number
+  last_run: string | null
+}
+
 export const fundQuantApi = {
   // Portfolio KPI
   getPortfolioKPI: () => get<{ success: boolean; data: PortfolioStatus }>('/portfolio/status'),
@@ -233,4 +312,31 @@ export const fundQuantApi = {
   // — 新增：因子暴露接口 —
   getFactorExposure: (fund_code: string) =>
     get<FactorExposureResult>(`/factors/exposure/${fund_code}`),
+
+  // — 新增：回测分析 —
+  runAnalysis: (backtestId: string, nSimulations = 1000) =>
+    post<{ success: boolean; data: { backtest_id: string; analysis: AnalysisResult } }>(
+      '/backtest/analysis', { backtest_id: backtestId, n_simulations: nSimulations }
+    ),
+
+  // — 新增：参数扫描 —
+  runParamScan: (req: {
+    strategy_name: string; fund_codes: string[];
+    start_date: string; end_date: string; initial_capital?: number;
+    mode: string; param_name?: string; param_values?: any[];
+    param_grid?: Record<string, any>; param_dist?: Record<string, any>;
+    fixed_params?: Record<string, any>; n_iter?: number;
+  }) => post<{ success: boolean; data: ParamScanResult }>('/backtest/param-scan', req),
+
+  // — 新增：模拟交易 —
+  paperTradeStart: (req: { strategy_name: string; fund_codes: string[]; initial_capital?: number }) =>
+    post<{ success: boolean; data: { paper_trade_id: string } }>('/paper-trade/start', req),
+  paperTradeRun: (paperTradeId: string) =>
+    post<{ success: boolean; data: any }>('/paper-trade/run', { paper_trade_id: paperTradeId }),
+  paperTradeStop: (paperTradeId: string) =>
+    post<{ success: boolean; data: any }>('/paper-trade/stop', { paper_trade_id: paperTradeId }),
+  paperTradeList: () =>
+    get<{ success: boolean; data: PaperTradeSummary[] }>('/paper-trade/list'),
+  paperTradeStatus: (id: string) =>
+    get<{ success: boolean; data: PaperTradeSession }>(`/paper-trade/status/${id}`),
 }
