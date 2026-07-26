@@ -8,31 +8,31 @@ import * as echarts from 'echarts'
 export function getChartTheme(isDark: boolean) {
   return {
     backgroundColor: 'transparent',
-    textStyle: { color: isDark ? '#f1f5f9' : '#334155' },
+    textStyle: { color: isDark ? '#e2e8f0' : '#334155' },
     grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
     tooltip: {
       trigger: 'axis' as const,
       axisPointer: { type: 'cross' as const },
-      backgroundColor: isDark ? '#273549' : '#ffffff',
-      borderColor: isDark ? '#475569' : '#e2e8f0',
-      textStyle: { color: isDark ? '#f1f5f9' : '#334155' },
+      backgroundColor: isDark ? '#161e2e' : '#ffffff',
+      borderColor: isDark ? '#1e2d42' : '#e2e8f0',
+      textStyle: { color: isDark ? '#e2e8f0' : '#334155', fontSize: 11 },
     },
     legend: {
-      textStyle: { color: isDark ? '#cbd5e1' : '#475569', fontSize: 11 },
-      pageTextStyle: { color: isDark ? '#94a3b8' : '#64748b' },
+      textStyle: { color: isDark ? '#8494ad' : '#475569', fontSize: 10 },
+      pageTextStyle: { color: isDark ? '#546478' : '#64748b' },
     },
   }
 }
 
 /** 深色模式颜色映射表 — 系列颜色 */
 export const DARK_SERIES = {
-  nav: '#60a5fa',       // 净值亮蓝
-  navArea: 'rgba(96,165,250,0.2)',
-  benchmark: '#475569', // 基准灰
-  drawdown: '#fbbf24',  // 回撤亮琥珀
-  drawdownArea: 'rgba(251,191,36,0.1)',
+  nav: '#4a90d9',       // 净值蓝
+  navArea: 'rgba(74,144,217,0.15)',
+  benchmark: '#2a4060', // 基准暗蓝
+  drawdown: '#e8a838',  // 回撤琥珀
+  drawdownArea: 'rgba(232,168,56,0.08)',
   buy: '#ef4444',       // 买入红
-  sell: '#10b981',      // 卖出绿
+  sell: '#22c55e',      // 卖出绿
 }
 
 /** 浅色模式颜色映射表 */
@@ -57,9 +57,9 @@ export function renderTimingChart(
   const chart = echarts.init(container, undefined, { renderer: 'canvas' })
   const theme = getChartTheme(isDark)
   const C = isDark ? DARK_SERIES : LIGHT_SERIES
-  const axColor = isDark ? '#94a3b8' : '#64748b'
-  const axLineColor = isDark ? '#475569' : '#cbd5e1'
-  const gridColor = isDark ? '#334155' : '#e2e8f0'
+  const axColor = isDark ? '#8494ad' : '#64748b'
+  const axLineColor = isDark ? '#1e2d42' : '#cbd5e1'
+  const gridColor = isDark ? '#152238' : '#e2e8f0'
 
   const option: echarts.EChartsOption = {
     ...theme,
@@ -122,14 +122,14 @@ export function renderRadarChart(
       indicator: indicators.map(i => ({ name: i.name, max: 1 })),
       shape: 'polygon',
       splitArea: { areaStyle: { color: isDark
-        ? ['rgba(96,165,250,0.05)', 'rgba(96,165,250,0.1)']
+        ? ['rgba(74,144,217,0.04)', 'rgba(74,144,217,0.08)']
         : ['rgba(59,130,246,0.02)', 'rgba(59,130,246,0.05)'] } },
     },
     series: [{
       type: 'radar', data: [{ value: indicators.map(i => i.value), name: '评分' }],
-      areaStyle: { color: isDark ? 'rgba(96,165,250,0.3)' : 'rgba(59,130,246,0.2)' },
-      lineStyle: { color: isDark ? '#60a5fa' : '#3b82f6', width: 2 },
-      itemStyle: { color: isDark ? '#60a5fa' : '#3b82f6' },
+      areaStyle: { color: isDark ? 'rgba(74,144,217,0.25)' : 'rgba(59,130,246,0.2)' },
+      lineStyle: { color: isDark ? '#4a90d9' : '#3b82f6', width: 2 },
+      itemStyle: { color: isDark ? '#4a90d9' : '#3b82f6' },
     }],
     tooltip: { trigger: 'item' },
   }
@@ -148,7 +148,7 @@ export function renderPieChart(
   const chart = echarts.init(container, undefined, { renderer: 'canvas' })
   const theme = getChartTheme(isDark)
 
-  const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
+  const colors = ['#4a90d9', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316']
 
   const option: echarts.EChartsOption = {
     ...theme,
@@ -157,7 +157,7 @@ export function renderPieChart(
     series: [{
       type: 'pie', radius: ['30%', '60%'], center: ['50%', '55%'],
       data: data.map((d, i) => ({ ...d, itemStyle: { color: colors[i % colors.length] } })),
-      label: { formatter: '{b}\n{d}%', color: isDark ? '#e2e8f0' : '#334155' },
+      label: { formatter: '{b}\n{d}%', color: isDark ? '#e2e8f0' : '#334155', fontSize: 10 },
       emphasis: { itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.3)' } },
     }],
     legend: { ...theme.legend, bottom: 0, type: 'scroll' },
@@ -257,7 +257,7 @@ export function renderRiskChart(
     series: [
       {
         type: 'bar', data: hist.map(h => h.count),
-        itemStyle: { color: isDark ? '#60a5fa' : '#3b82f6' },
+        itemStyle: { color: isDark ? '#4a90d9' : '#3b82f6' },
       },
       {
         type: 'line', name: `VaR(95%): ${(var95 * 100).toFixed(2)}%`,
@@ -294,7 +294,7 @@ export function renderSignalTimeline(
   const theme = getChartTheme(isDark)
 
   const colorMap: Record<string, string> = {
-    buy: '#10b981', sell: '#ef4444', hold: '#94a3b8', rebalance: '#f59e0b',
+    buy: '#22c55e', sell: '#ef4444', hold: '#8494ad', rebalance: '#e8a838',
   }
 
   const option: echarts.EChartsOption = {
