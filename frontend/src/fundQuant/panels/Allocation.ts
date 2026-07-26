@@ -107,7 +107,7 @@ export class Allocation extends PanelBase {
     if (!chartEl) return
     if (this.chart) this.chart.dispose()
     this.chart = echarts.init(chartEl)
-    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316']
+    const colors = ['#4a90d9', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316']
     const pool = state.get('fundPool')
     const data = Object.entries(weights)
       .filter(([, w]) => w > 0.005)

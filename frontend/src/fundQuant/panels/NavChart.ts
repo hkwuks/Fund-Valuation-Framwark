@@ -280,9 +280,9 @@ export class NavChart extends PanelBase {
     this.chart = echarts.init(chartEl)
     const theme = getChartTheme(isDark)
 
-    const axColor = isDark ? '#94a3b8' : '#64748b'
-    const axLineColor = isDark ? '#475569' : '#cbd5e1'
-    const gridColor = isDark ? '#334155' : '#e2e8f0'
+    const axColor = isDark ? '#8494ad' : '#64748b'
+    const axLineColor = isDark ? '#1e2d42' : '#cbd5e1'
+    const gridColor = isDark ? '#152238' : '#e2e8f0'
 
     const option: echarts.EChartsOption = {
       ...theme,
@@ -336,7 +336,7 @@ export class NavChart extends PanelBase {
           areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
               { offset: 0, color: C.navArea },
-              { offset: 1, color: isDark ? 'rgba(96,165,250,0)' : 'rgba(59,130,246,0)' },
+              { offset: 1, color: isDark ? 'rgba(74,144,217,0)' : 'rgba(59,130,246,0)' },
             ]),
           },
         },

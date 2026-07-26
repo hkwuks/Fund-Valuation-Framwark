@@ -16,15 +16,11 @@ class ThemeManager {
 
   static init(): void {
     const savedTheme = localStorage.getItem(this.THEME_KEY);
-    if (savedTheme === 'dark') {
-      document.body.classList.add('dark-mode');
-    } else if (savedTheme === 'light') {
+    if (savedTheme === 'light') {
       document.body.classList.remove('dark-mode');
     } else {
-      // No saved preference: sync with OS preference
-      if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        document.body.classList.add('dark-mode');
-      }
+      // Default to dark (terminal) mode
+      document.body.classList.add('dark-mode');
     }
   }
 
@@ -51,7 +47,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         <div class="app-title-icon">📈</div>
         <div>
           <h1>智能理财Agent</h1>
-          <p class="app-title-subtitle">Intelligent Wealth Agent - 智能投资 · 精准预测</p>
+          <p class="app-title-subtitle">Wealth Terminal v1.0</p>
         </div>
       </div>
       <div class="app-nav">
