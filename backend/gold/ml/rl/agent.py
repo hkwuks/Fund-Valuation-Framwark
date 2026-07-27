@@ -75,6 +75,7 @@ class PPOAgent:
         model_type: str = "mlp",
         history_len: int = 30,
         action_space: str = "discrete",
+        adaptive_lr: bool = True,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -102,6 +103,14 @@ class PPOAgent:
         self.training_step = 0
         self.best_reward = -float("inf")
         self.writer: Optional[SummaryWriter] = None
+        self.entropy_history: list[float] = []
+
+        # 自适应学习率
+        self.adaptive_lr = adaptive_lr
+        self.adaptive_lr_min = 1e-6
+        self.adaptive_lr_max = 1e-3
+        self.entropy_low_threshold = 0.5
+        self.entropy_high_threshold = 2.0
 
     def get_action(self, obs: np.ndarray, deterministic: bool = False) -> tuple[int, float, float]:
         """推理：给定状态返回动作"""
@@ -185,8 +194,27 @@ class PPOAgent:
         self.buffer.clear()
         self.scheduler.step()
 
+        # 自适应学习率调整
+        avg_entropy = avg_loss.get("entropy", 0)
+        self.entropy_history.append(avg_entropy)
+        if self.adaptive_lr:
+            self._adjust_lr(avg_entropy)
+
         avg_loss = {k: np.mean([l[k] for l in losses]) for k in losses[0]}
         return avg_loss
+
+    def _adjust_lr(self, avg_entropy: float):
+        """根据策略熵值自适应调整学习率"""
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        if avg_entropy < self.entropy_low_threshold:
+            new_lr = min(current_lr * 1.5, self.adaptive_lr_max)
+        elif avg_entropy > self.entropy_high_threshold:
+            new_lr = max(current_lr * 0.5, self.adaptive_lr_min)
+        else:
+            return
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = new_lr
+        logger.debug(f"[PPO] Adaptive LR: {current_lr:.3e} -> {new_lr:.3e} (entropy={avg_entropy:.3f})")
 
     def _compute_gae(self, rewards, values, dones):
         """GAE-Lambda 优势估计"""
