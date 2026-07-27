@@ -11,6 +11,7 @@ import torch.optim as optim
 from loguru import logger
 
 from .models import ActorCritic
+from .models_lstm import LSTMActorCritic
 from .env import GoldTradingEnv
 
 
@@ -71,6 +72,8 @@ class PPOAgent:
         hidden_dim: int = 256,
         device: str = "auto",
         model_dir: str = "",
+        model_type: str = "mlp",
+        history_len: int = 30,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -85,7 +88,11 @@ class PPOAgent:
         self.model_dir = model_dir
         logger.info(f"[PPO] Using device: {self.device}")
 
-        self.model = ActorCritic(obs_dim, n_actions, hidden_dim).to(self.device)
+        if model_type == "lstm":
+            self.model = LSTMActorCritic(obs_dim, n_actions, hidden_dim, history_len).to(self.device)
+        else:
+            self.model = ActorCritic(obs_dim, n_actions, hidden_dim).to(self.device)
+        self.model_type = model_type
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
 
@@ -100,6 +107,11 @@ class PPOAgent:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
             action, log_prob, entropy, value = self.model.act(obs_t, deterministic)
         return int(action.item()), float(log_prob.item()), float(value.item())
+
+    def reset_history(self):
+        """重置LSTM模型的历史状态（新episode时调用）"""
+        if self.model_type == "lstm":
+            self.model.reset_history()
 
     def store_transition(self, obs, action, reward, done, value, log_prob):
         """存储经验"""
@@ -248,6 +260,7 @@ class PPOAgent:
                 obs = next_obs
 
                 if done:
+                    self.reset_history()
                     ep_info = info
                     obs = env.reset()
 
@@ -279,7 +292,7 @@ class PPOAgent:
                 self.best_reward = total_reward
 
             # 评估
-            if iteration % eval_interval == 0 or iteration == 1:
+            if eval_interval > 0 and (iteration % eval_interval == 0 or iteration == 1):
                 eval_result = self.evaluate(env, n_episodes=2)
                 iter_data["eval_return"] = round(eval_result["avg_return"], 2)
                 iter_data["eval_sharpe"] = round(eval_result["sharpe"], 3)

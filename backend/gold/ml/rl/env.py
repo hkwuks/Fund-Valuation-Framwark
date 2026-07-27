@@ -14,6 +14,7 @@ class TradeRecord:
     price: float
     pnl: float
     cumulative_pnl: float
+    reward_breakdown: dict = field(default_factory=dict)
     reason: str = ""
 
 
@@ -52,6 +53,7 @@ class GoldTradingEnv:
         max_position: int = 10,
         window_size: int = 30,
         reward_scale: float = 1e-6,
+        reward_config: dict = None,
     ):
         self.df = df.reset_index(drop=True)
         self.initial_capital = initial_capital
@@ -62,6 +64,7 @@ class GoldTradingEnv:
         self.max_position = max_position
         self.window_size = window_size
         self.reward_scale = reward_scale
+        self.reward_config = reward_config or {}
 
         self.n_actions = 12
         self.obs_dim = 30
@@ -76,10 +79,12 @@ class GoldTradingEnv:
         """重置环境，返回初始状态"""
         self.idx = self.window_size
         self.position = 0
+        self.last_action = 6  # 初始为观望
         self.cumulative_pnl = 0.0
         self.trades: list[TradeRecord] = []
         self.pnl_history: list[float] = []
         self.equity_curve: list[float] = [self.initial_capital]
+        self.peak_equity = self.initial_capital
         return self._get_obs()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
@@ -105,24 +110,63 @@ class GoldTradingEnv:
         mtm_pnl = self.position * price_change * self.multiplier
         self.cumulative_pnl += mtm_pnl - trade_cost
         self.equity_curve.append(self.initial_capital + self.cumulative_pnl)
+        self.peak_equity = max(self.peak_equity, self.equity_curve[-1])
 
-        # ---- 4. 奖励 ----
-        reward = (mtm_pnl - trade_cost * 2) * self.reward_scale
+        # ---- 4. 复合奖励函数 ----
+        rc = self.reward_config
+        rs = rc.get("reward_scale", self.reward_scale)
+
+        # 4a. PnL成分
+        pnl_component = mtm_pnl * rs
+
+        # 4b. 交易成本惩罚
+        cost_penalty = rc.get("cost_penalty", 1.5)
+        cost_component = trade_cost * rs * cost_penalty
+
+        # 4c. 频繁交易惩罚
+        freq_penalty = rc.get("freq_penalty", 0.2)
+        if action != self.last_action:
+            freq_component = freq_penalty * rs * 1000
+        else:
+            freq_component = 0.0
+        self.last_action = action
+
+        # 4d. 回撤渐进惩罚
+        dd = self._current_drawdown()
+        dd_penalty_start = rc.get("dd_penalty_start", 0.05)
+        dd_penalty_steep = rc.get("dd_penalty_steep", 0.5)
+        dd_penalty_steep2 = rc.get("dd_penalty_steep2", 1.0)
+        dd_terminate = rc.get("dd_terminate", 0.15)
+
+        dd_component = 0.0
+        if dd > dd_terminate:
+            dd_component = dd_penalty_steep2 * (dd - dd_terminate) + dd_penalty_steep * (dd_terminate - dd_penalty_start)
+        elif dd > dd_penalty_start:
+            dd_component = dd_penalty_steep * (dd - dd_penalty_start)
+
+        reward = pnl_component - cost_component - freq_component - dd_component
 
         # ---- 5. 记录 ----
+        reward_breakdown = {
+            "pnl": round(pnl_component, 8),
+            "cost": round(-cost_component, 8),
+            "freq": round(-freq_component, 8),
+            "drawdown": round(-dd_component, 8),
+        }
+
         self.trades.append(TradeRecord(
             step=self.idx, action=action, position=self.position,
             price=price, pnl=mtm_pnl, cumulative_pnl=self.cumulative_pnl,
+            reward_breakdown=reward_breakdown,
         ))
 
         # ---- 6. 终止条件 ----
         done = False
-        drawdown = self._current_drawdown()
-        if drawdown < -0.15:  # 回撤超过15%
-            reward -= 0.02
+        if dd > dd_terminate:
+            reward -= 0.05
             done = True
             info["termination"] = "max_drawdown"
-        elif self.cumulative_pnl < -self.initial_capital * 0.3:  # 亏损30%
+        elif self.cumulative_pnl < -self.initial_capital * 0.3:
             reward -= 0.05
             done = True
             info["termination"] = "bankruptcy"
@@ -130,9 +174,12 @@ class GoldTradingEnv:
             done = True
             info["termination"] = "end_of_data"
             # terminal bonus: sharpe
+            sharpe_bonus_scale = rc.get("sharpe_bonus_scale", 0.01)
             if len(self.pnl_history) > 5:
                 sharpe = self._sharpe_ratio()
-                reward += min(sharpe * 0.1, 0.01)
+                terminal_bonus = min(max(sharpe, -1), 3) * sharpe_bonus_scale
+                reward += terminal_bonus
+                reward_breakdown["terminal"] = round(terminal_bonus, 8)
 
         self.idx += 1
 
@@ -140,7 +187,8 @@ class GoldTradingEnv:
         info["pnl"] = mtm_pnl
         info["cumulative_pnl"] = self.cumulative_pnl
         info["equity"] = self.equity_curve[-1]
-        info["drawdown"] = drawdown
+        info["drawdown"] = dd
+        info["reward_breakdown"] = reward_breakdown
 
         return self._get_obs(), reward, done, info
 
@@ -226,9 +274,12 @@ class GoldTradingEnv:
         return arr
 
     def _current_drawdown(self) -> float:
+        """返回当前回撤比例（正数，如0.05=5%回撤）"""
         peak = max(self.equity_curve) if self.equity_curve else self.initial_capital
         current = self.equity_curve[-1] if self.equity_curve else self.initial_capital
-        return (current - peak) / (peak + 1e-8)
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - current) / peak)
 
     def _sharpe_ratio(self) -> float:
         if len(self.pnl_history) < 5:

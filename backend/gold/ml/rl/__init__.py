@@ -12,6 +12,7 @@ from loguru import logger
 from .env import GoldTradingEnv
 from .agent import PPOAgent
 from ..features import FeatureEngineer
+from .walk_forward import RLWalkForwardValidator, FoldResult
 
 
 # 模型保存目录
