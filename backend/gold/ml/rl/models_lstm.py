@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .models import ContinuousActor
+
 
 class LSTMActorCritic(nn.Module):
     """
@@ -12,16 +14,17 @@ class LSTMActorCritic(nn.Module):
     架构:
     - LSTM(obs_dim, hidden_dim, num_layers=2, batch_first=True) → 取最后一步输出
     - LayerNorm
-    - Actor: 2层MLP → n_actions (Categorical分布)
+    - Actor: 2层MLP → 离散(Categorical) 或 连续(Beta)
     - Critic: 2层MLP → 1 (V值)
 
     act() / evaluate() 接口与ActorCritic完全一致，保持PPOAgent兼容
     """
 
-    def __init__(self, obs_dim: int, n_actions: int, hidden_dim: int = 256, history_len: int = 30):
+    def __init__(self, obs_dim: int, n_actions: int, hidden_dim: int = 256, history_len: int = 30, action_space: str = "discrete"):
         super().__init__()
         self.obs_dim = obs_dim
         self.history_len = history_len
+        self.action_space = action_space
 
         # LSTM编码器
         self.lstm = nn.LSTM(
@@ -34,15 +37,18 @@ class LSTMActorCritic(nn.Module):
         self.ln = nn.LayerNorm(hidden_dim)
 
         # Actor
-        self.actor_net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, hidden_dim // 2),
-            nn.ReLU(),
-        )
-        self.actor_head = nn.Linear(hidden_dim // 2, n_actions)
-        nn.init.orthogonal_(self.actor_head.weight, gain=0.01)
-        nn.init.constant_(self.actor_head.bias, 0.0)
+        if action_space == "continuous":
+            self.actor = ContinuousActor(hidden_dim, hidden_dim // 2)
+        else:
+            self.actor_net = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_dim // 2, hidden_dim // 2),
+                nn.ReLU(),
+            )
+            self.actor_head = nn.Linear(hidden_dim // 2, n_actions)
+            nn.init.orthogonal_(self.actor_head.weight, gain=0.01)
+            nn.init.constant_(self.actor_head.bias, 0.0)
 
         # Critic
         self.critic_net = nn.Sequential(
@@ -75,28 +81,36 @@ class LSTMActorCritic(nn.Module):
         lstm_out, _ = self.lstm(seq)
         features = self.ln(lstm_out[:, -1, :])  # 取最后一步
         value = self.critic_net(features).squeeze(-1)
-        dist = self._get_distribution(features)
+        dist = self._get_action_distribution(features)
         return value, dist
+
+    def _get_action_distribution(self, features):
+        if self.action_space == "continuous":
+            return self.actor.get_distribution(features)
+        x = self.actor_net(features)
+        logits = self.actor_head(x)
+        probs = F.softmax(logits, dim=-1)
+        return torch.distributions.Categorical(probs)
 
     def act(self, obs, deterministic=False):
         seq = self._build_sequence(obs)
         lstm_out, _ = self.lstm(seq)
         features = self.ln(lstm_out[:, -1, :])
 
-        # Actor
-        x = self.actor_net(features)
-        logits = self.actor_head(x)
-        probs = F.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
-
-        if deterministic:
-            action = dist.probs.argmax(dim=-1)
+        if self.action_space == "continuous":
+            action, log_prob, entropy = self.actor.sample_action(features, deterministic)
         else:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+            x = self.actor_net(features)
+            logits = self.actor_head(x)
+            probs = F.softmax(logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
+            if deterministic:
+                action = dist.probs.argmax(dim=-1)
+            else:
+                action = dist.sample()
+            log_prob = dist.log_prob(action)
+            entropy = dist.entropy()
 
-        # Critic
         value = self.critic_net(features).squeeze(-1)
         return action, log_prob, entropy, value
 
@@ -105,14 +119,15 @@ class LSTMActorCritic(nn.Module):
         lstm_out, _ = self.lstm(seq)
         features = self.ln(lstm_out[:, -1, :])
 
-        # Actor
-        x = self.actor_net(features)
-        logits = self.actor_head(x)
-        probs = F.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
+        if self.action_space == "continuous":
+            dist = self.actor.get_distribution(features)
+        else:
+            x = self.actor_net(features)
+            logits = self.actor_head(x)
+            probs = F.softmax(logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
         log_probs = dist.log_prob(actions)
         entropy = dist.entropy()
 
-        # Critic
         values = self.critic_net(features).squeeze(-1)
         return values, log_probs, entropy

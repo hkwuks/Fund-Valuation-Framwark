@@ -74,6 +74,7 @@ class PPOAgent:
         model_dir: str = "",
         model_type: str = "mlp",
         history_len: int = 30,
+        action_space: str = "discrete",
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -86,12 +87,13 @@ class PPOAgent:
 
         self.device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
         self.model_dir = model_dir
+        self.action_space = action_space
         logger.info(f"[PPO] Using device: {self.device}")
 
         if model_type == "lstm":
-            self.model = LSTMActorCritic(obs_dim, n_actions, hidden_dim, history_len).to(self.device)
+            self.model = LSTMActorCritic(obs_dim, n_actions, hidden_dim, history_len, action_space=action_space).to(self.device)
         else:
-            self.model = ActorCritic(obs_dim, n_actions, hidden_dim).to(self.device)
+            self.model = ActorCritic(obs_dim, n_actions, hidden_dim, action_space=action_space).to(self.device)
         self.model_type = model_type
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)

@@ -54,6 +54,7 @@ class GoldTradingEnv:
         window_size: int = 30,
         reward_scale: float = 1e-6,
         reward_config: dict = None,
+        action_space: str = "discrete",
     ):
         self.df = df.reset_index(drop=True)
         self.initial_capital = initial_capital
@@ -65,8 +66,9 @@ class GoldTradingEnv:
         self.window_size = window_size
         self.reward_scale = reward_scale
         self.reward_config = reward_config or {}
+        self.action_space = action_space
 
-        self.n_actions = 12
+        self.n_actions = 12 if action_space == "discrete" else 1
         self.obs_dim = 30
 
         self.reset()
@@ -192,8 +194,12 @@ class GoldTradingEnv:
 
         return self._get_obs(), reward, done, info
 
-    def _action_to_position(self, action: int) -> int:
-        """离散动作 → 目标仓位手数"""
+    def _action_to_position(self, action) -> int:
+        """动作 → 目标仓位手数"""
+        if self.action_space == "continuous":
+            # action ∈ [-1, 1], 映射到 [-max_position, max_position]
+            return int(round(action * self.max_position))
+        # 离散动作
         if action == 0 or action == 6:
             return 0
         if 1 <= action <= 4:
