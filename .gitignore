@@ -60,7 +60,6 @@ docs/
 htmlcov/
 
 # Test code (not committed)
-tests/
 backend/gold/tests/
 
 # Frontend ignore file (should not be committed)
