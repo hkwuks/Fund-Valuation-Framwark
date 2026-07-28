@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 import asyncio
 import time
+import numpy as np
 import pandas as pd
 
 from backend.gold.data.labeling import TripleBarrierLabeler
@@ -40,14 +41,14 @@ from gold.adapter import GoldDomainAdapter
 router = APIRouter(prefix="/gold/trading", tags=["黄金量化交易"])
 
 gateway = GoldDataGateway()
-_adapter: GoldDomainAdapter | None = None
+_domain_adapter: GoldDomainAdapter | None = None
 
 def _get_domain_adapter() -> GoldDomainAdapter:
     """懒加载 GoldDomainAdapter（避免导入时序问题）"""
-    global _adapter
-    if _adapter is None:
-        _adapter = GoldDomainAdapter()
-    return _adapter
+    global _domain_adapter
+    if _domain_adapter is None:
+        _domain_adapter = GoldDomainAdapter()
+    return _domain_adapter
 
 
 # ── AuroraCore 新引擎辅助函数 ──
@@ -87,6 +88,18 @@ def _create_engine(strategy_name: str, bars: list, capital: float,
     return engine
 
 
+def _clean_nans(obj):
+    """递归清洗 dict/list 中的 NaN/Inf → None"""
+    if isinstance(obj, dict):
+        return {k: _clean_nans(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_clean_nans(v) for v in obj]
+    elif isinstance(obj, float):
+        import math
+        return None if (math.isnan(obj) or math.isinf(obj)) else obj
+    return obj
+
+
 def _convert_report(engine: BacktestEngine, report: BacktestReport,
                     capital: float, start_date: str, end_date: str) -> dict:
     """BacktestEngine.run() 输出转旧格式 report dict"""
@@ -115,21 +128,31 @@ def _convert_report(engine: BacktestEngine, report: BacktestReport,
     avg_loss_val = (gross_loss / (n - wins) * 100) if (n - wins) else 0
     max_loss = min(trade_returns) * 100 if trade_returns else 0
 
+    def _safe(v, default=None):
+        """NaN → None, 其余保留"""
+        if v is None:
+            return default
+        try:
+            import math
+            return default if math.isnan(v) or math.isinf(v) else v
+        except (TypeError, ValueError):
+            return v
+
     return {
         "performance": {
-            "total_return": round(metrics.total_return * 100, 2),
-            "annualized_return": round(metrics.annual_return * 100, 2),
-            "sharpe_ratio": round(metrics.sharpe_ratio, 2),
-            "sortino_ratio": round(metrics.sortino_ratio, 2),
-            "calmar_ratio": round(metrics.calmar_ratio, 2),
+            "total_return": _safe(round(metrics.total_return * 100, 2)),
+            "annualized_return": _safe(round(metrics.annual_return * 100, 2)),
+            "sharpe_ratio": _safe(round(metrics.sharpe_ratio, 2)),
+            "sortino_ratio": _safe(round(metrics.sortino_ratio, 2)),
+            "calmar_ratio": _safe(round(metrics.calmar_ratio, 2)),
             "win_rate": round(win_rate * 100, 2),
             "profit_factor": round(profit_factor, 2) if profit_factor else None,
         },
         "risk": {
-            "max_drawdown": round(metrics.max_drawdown * 100, 2),
-            "var_95": round(metrics.var_95, 2),
-            "cvar_95": round(metrics.cvar_95, 2),
-            "volatility": round(metrics.volatility * 100, 2),
+            "max_drawdown": _safe(round(metrics.max_drawdown * 100, 2)),
+            "var_95": _safe(round(metrics.var_95, 2)),
+            "cvar_95": _safe(round(metrics.cvar_95, 2)),
+            "volatility": _safe(round(metrics.volatility * 100, 2)),
         },
         "trades": {
             "total_count": n,
@@ -1053,6 +1076,163 @@ async def get_risk_status():
     }
 
 
+# ===== 风险监控面板 =====
+
+
+@router.get("/risk/overview")
+async def get_risk_overview():
+    """综合风险监控面板 — 风控状态 + 过拟合检测 + 策略退化 + 市场状态"""
+    config = GoldSettings()
+    store = GoldDataStore()
+    bars = await gateway.get_bars("AU0", period="d", limit=300, refresh=False)
+
+    # 1. 风控状态
+    recent_signals = store.get_signals(limit=100)
+    today_signal_count = sum(1 for s in recent_signals
+                             if s.created_at and s.created_at.date() == __import__('datetime').date.today())
+    risk_checker = RiskChecker()
+    daily = risk_checker.get_daily_summary()
+
+    risk_status = {
+        "today_signal_count": today_signal_count,
+        "daily_pnl": daily.get("total_pnl", 0),
+        "consecutive_losses": daily.get("consecutive_losses", 0),
+        "max_drawdown_pct": config.max_drawdown_pct,
+        "max_daily_loss_pct": config.max_daily_loss_pct,
+        "max_position_lots": config.max_position_lots,
+    }
+
+    # 2. 市场状态
+    market_regime = "unknown"
+    regime_stats = {}
+    if bars and len(bars) > 50:
+        from backend.gold.ml.market_regime import MarketRegimeDetector
+        import pandas as pd
+        df = pd.DataFrame([{
+            "close": b.close, "high": b.high, "low": b.low, "volume": b.volume,
+        } for b in bars])
+        detector = MarketRegimeDetector()
+        market_regime = detector.detect(df)
+        returns = df["close"].pct_change()
+        regime_stats = detector.regime_stats(df, returns)
+
+    # 3. 过拟合检测（从最近回测结果估算）
+    overfitting = {}
+    if bars and len(bars) > 252:
+        from backend.gold.ml.overfitting_detection import OverfittingDetector
+        closes = [b.close for b in bars]
+        returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+        mid = len(returns) // 2
+        is_sharpes = [np.mean(returns[:mid]) / max(np.std(returns[:mid]), 1e-10) * np.sqrt(252)]
+        oos_sharpes = [np.mean(returns[mid:]) / max(np.std(returns[mid:]), 1e-10) * np.sqrt(252)]
+        detector = OverfittingDetector()
+        overfitting = detector.detect(is_sharpes, oos_sharpes, n_trials=10)
+
+    # 4. 策略退化（模拟RL熵值估算）
+    decay = {}
+    if bars and len(bars) > 60:
+        from backend.gold.ml.strategy_decay import StrategyDecayMonitor
+        monitor = StrategyDecayMonitor()
+        closes = [b.close for b in bars]
+        returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+        decay = monitor.comprehensive_check(return_history=returns)
+
+    return {
+        "success": True,
+        "data": {
+            "risk_status": risk_status,
+            "market_regime": {"regime": market_regime, "stats": regime_stats},
+            "overfitting": overfitting,
+            "decay": decay,
+            "timestamp": datetime.now().isoformat(),
+        },
+    }
+
+
+@router.get("/risk/overfitting")
+async def get_overfitting_detail(
+    n_trials: int = Query(10, ge=1, le=1000, description="多重比较试验次数"),
+):
+    """过拟合检测详情 — DSR + Sharpe衰减率 + MMC"""
+    bars = await gateway.get_bars("AU0", period="d", limit=500, refresh=False)
+    if not bars or len(bars) < 252:
+        raise HTTPException(status_code=400, detail="K线数据不足252根")
+
+    from backend.gold.ml.overfitting_detection import OverfittingDetector
+    import numpy as np
+
+    closes = [b.close for b in bars]
+    returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+    mid = len(returns) // 2
+    is_sharpes = [np.mean(returns[:mid]) / max(np.std(returns[:mid]), 1e-10) * np.sqrt(252)]
+    oos_sharpes = [np.mean(returns[mid:]) / max(np.std(returns[mid:]), 1e-10) * np.sqrt(252)]
+
+    detector = OverfittingDetector()
+    result = detector.detect(is_sharpes, oos_sharpes, n_trials=n_trials)
+
+    return {"success": True, "data": result}
+
+
+@router.get("/risk/decay")
+async def get_strategy_decay_detail():
+    """策略退化监控详情 — 熵漂移 + 收益衰减 + 综合判定"""
+    bars = await gateway.get_bars("AU0", period="d", limit=300, refresh=False)
+    if not bars or len(bars) < 60:
+        raise HTTPException(status_code=400, detail="K线数据不足60根")
+
+    from backend.gold.ml.strategy_decay import StrategyDecayMonitor
+    import numpy as np
+
+    monitor = StrategyDecayMonitor()
+    closes = [b.close for b in bars]
+    returns = [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
+    result = monitor.comprehensive_check(return_history=returns)
+
+    # 附加市场波动率背景
+    vols = [np.std(returns[i - 20:i]) * np.sqrt(252) for i in range(20, len(returns) + 1)] if len(returns) >= 20 else []
+    result["context"] = {
+        "recent_volatility": round(float(np.mean(vols[-20:])), 4) if vols else 0,
+        "historical_volatility": round(float(np.mean(vols)), 4) if vols else 0,
+    }
+
+    return {"success": True, "data": result}
+
+
+@router.get("/risk/regime")
+async def get_market_regime_detail():
+    """市场状态检测详情 — 趋势/震荡/高波动 三分类 + 各状态Sharpe"""
+    bars = await gateway.get_bars("AU0", period="d", limit=300, refresh=False)
+    if not bars or len(bars) < 50:
+        raise HTTPException(status_code=400, detail="K线数据不足50根")
+
+    from backend.gold.ml.market_regime import MarketRegimeDetector
+    import pandas as pd
+    import numpy as np
+
+    df = pd.DataFrame([{
+        "close": b.close, "high": b.high, "low": b.low, "volume": b.volume,
+    } for b in bars])
+
+    detector = MarketRegimeDetector()
+    regimes = detector.detect_window(df)
+    current_regime = detector.detect(df)
+    returns = df["close"].pct_change()
+    stats = detector.regime_stats(df, returns)
+
+    # 状态分布
+    regime_counts = regimes.value_counts().to_dict()
+
+    return {
+        "success": True,
+        "data": {
+            "current_regime": current_regime,
+            "regime_distribution": {k: int(v) for k, v in regime_counts.items()},
+            "stats": stats,
+            "total_bars": len(bars),
+        },
+    }
+
+
 # ===== 数据管理 =====
 
 @router.post("/sync-data")
@@ -1192,7 +1372,7 @@ async def get_market_data():
         except Exception as e:
             logger.warning(f"Macro data fetch failed: {e}")
 
-        return {
+        return _clean_nans({
             "success": True,
             "data": {
                 "price": round(price, 2),
@@ -1215,7 +1395,7 @@ async def get_market_data():
                 # 宏观指标
                 **macro,
             },
-        }
+        })
     except HTTPException:
         raise
     except Exception as e:
@@ -1613,6 +1793,48 @@ async def get_strategy_comparison(
         "reasons": ml_reasons,
     })
 
+    # RL强化学习策略
+    rl_score = 50.0
+    rl_reasons = []
+    rl_models = _get_rl_trainer().list_models()
+    if rl_models:
+        rl_score += 15
+        rl_reasons.append(f"已有{len(rl_models)}个训练好的模型可用+15分")
+    else:
+        rl_score -= 20
+        rl_reasons.append("未训练模型，需要先训练RL模型-20分")
+    if len(bars) >= 200:
+        rl_score += 10
+        rl_reasons.append(f"历史数据{len(bars)}条充足，RL训练数据丰富+10分")
+    else:
+        rl_score -= 10
+        rl_reasons.append(f"历史数据仅{len(bars)}条，RL训练数据偏少-10分")
+    if abs(vol_anomaly) < 0.3:
+        rl_score += 10
+        rl_reasons.append("波动率适中，RL策略可稳定学习+10分")
+    else:
+        rl_score -= 10
+        rl_reasons.append(f"波动异常({vol_anomaly*100:.0f}%)，RL学习难度大-10分")
+    if 35 <= (rsi14 or 50) <= 65:
+        rl_score += 5
+        rl_reasons.append("RSI中性区，RL有自由决策空间+5分")
+    if ma_direction != 0:
+        rl_score += 10
+        rl_reasons.append("趋势方向明确，RL可学习顺势交易+10分")
+    else:
+        rl_score += 10
+        rl_reasons.append("震荡行情RL自适应能力强于固定规则策略+10分")
+    rl_score = max(0, min(100, rl_score))
+    results.append({
+        "strategy_id": "rl_ppo",
+        "strategy_name": "RL强化学习",
+        "icon": "🧠",
+        "score": round(rl_score),
+        "tags": ["PPO算法", "奖励函数", "自适应学习"],
+        "description": "PPO强化学习智能体，通过环境交互自主优化交易策略",
+        "reasons": rl_reasons,
+    })
+
     # 排序：高分在前
     results.sort(key=lambda r: r["score"], reverse=True)
     best = results[0]
@@ -1744,6 +1966,9 @@ async def rl_signal():
         raise HTTPException(status_code=400, detail="K线数据不足")
 
     result = await asyncio.to_thread(trainer.generate_signal, bars)
+
+    # 清洗 NaN → None
+    result = _clean_nans(result)
 
     return {"success": True, "data": result}
 

@@ -53,14 +53,16 @@ async def main():
     try:
         macro = await gateway.get_macro_data(start="2018-01-01")
         if not macro.empty:
-            macro["date"] = pd.to_datetime(macro["date"])
-            df["date"] = pd.to_datetime(df["datetime"]).dt.date
-            macro["date_dt"] = macro["date"].dt.date
+            macro["date"] = pd.to_datetime(macro["date"]).dt.tz_localize(None)
+            # 统一 datetime 为 timezone-naive
+            df["dt_naive"] = pd.to_datetime(df["datetime"]).dt.tz_localize(None)
+            df["date_str"] = df["dt_naive"].dt.strftime("%Y-%m-%d")
+            macro["date_str"] = macro["date"].dt.strftime("%Y-%m-%d")
             df = df.merge(
-                macro[["date_dt", "DXY_value", "VIX_value", "US10Y_value"]],
-                left_on="date", right_on="date_dt", how="left"
+                macro[["date_str", "DXY_value", "VIX_value", "US10Y_value"]],
+                on="date_str", how="left"
             )
-            df.drop(columns=["date", "date_dt"], inplace=True)
+            df.drop(columns=["dt_naive", "date_str"], inplace=True)
             # 向前填充
             for col in ["DXY_value", "VIX_value", "US10Y_value"]:
                 df[col] = df[col].ffill().bfill().fillna(0)

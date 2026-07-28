@@ -194,13 +194,17 @@ class PPOAgent:
         self.buffer.clear()
         self.scheduler.step()
 
+        if not losses:
+            return {"error": "no training steps executed"}
+
+        avg_loss = {k: np.mean([l[k] for l in losses]) for k in losses[0]}
+
         # 自适应学习率调整
         avg_entropy = avg_loss.get("entropy", 0)
         self.entropy_history.append(avg_entropy)
         if self.adaptive_lr:
             self._adjust_lr(avg_entropy)
 
-        avg_loss = {k: np.mean([l[k] for l in losses]) for k in losses[0]}
         return avg_loss
 
     def _adjust_lr(self, avg_entropy: float):
@@ -239,7 +243,7 @@ class PPOAgent:
 
     def load(self, path: str):
         """加载模型"""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.training_step = checkpoint.get("training_step", 0)

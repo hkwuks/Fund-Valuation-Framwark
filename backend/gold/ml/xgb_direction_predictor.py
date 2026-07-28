@@ -210,7 +210,17 @@ class XGBDirectionPredictor:
 
     def _prepare_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """生成特征和标签，返回 index 为位置序的 DataFrame"""
-        df_sorted = df.sort_values("datetime" if "datetime" in df.columns else "date").reset_index(drop=True)
+        # 统一 datetime 为 timezone-naive，避免排序时 mixed-aware 报错
+        df = df.copy()
+        dt_col = "datetime" if "datetime" in df.columns else "date"
+        if dt_col in df.columns:
+            # 逐个处理：timedelta 或带 tz 的 datetime 转为 naive
+            def _to_naive(v):
+                if hasattr(v, 'tzinfo') and v.tzinfo is not None:
+                    return v.replace(tzinfo=None)
+                return v
+            df[dt_col] = df[dt_col].apply(_to_naive)
+        df_sorted = df.sort_values(dt_col).reset_index(drop=True)
 
         # 用 FeatureEngineer 生成特征
         X, _ = self.feature_engineer.prepare_features(df_sorted, target_horizon=1)

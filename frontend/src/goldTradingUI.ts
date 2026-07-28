@@ -89,6 +89,7 @@ export class GoldTradingUI {
   private dark = false
   private signalTimer: ReturnType<typeof setInterval> | null = null
   private ctpTimer: ReturnType<typeof setInterval> | null = null
+  private riskTimer: ReturnType<typeof setInterval> | null = null
 
   init(container: HTMLDivElement) {
     this.container = container
@@ -101,11 +102,15 @@ export class GoldTradingUI {
     // 加载最近信号
     this.loadSignals()
 
+    // 加载风险监控
+    this.loadRiskOverview()
+
     // 市场数据 + K线 轮询刷新
     this.marketTimer = setInterval(() => this.loadMarketData(), 30000)
     this.chartTimer = setInterval(() => {
       if (this.chart) this.loadKlineData()
     }, 60000)
+    this.riskTimer = setInterval(() => this.loadRiskOverview(), 120000)
     new MutationObserver(() => this.onThemeChange()).observe(document.body, { attributes: true, attributeFilter: ['class'] })
     window.addEventListener('resize', () => this.onResize())
 
@@ -158,6 +163,7 @@ export class GoldTradingUI {
     if (this.chartTimer) clearInterval(this.chartTimer)
     if (this.signalTimer) clearInterval(this.signalTimer)
     if (this.ctpTimer) clearInterval(this.ctpTimer)
+    if (this.riskTimer) clearInterval(this.riskTimer)
     this.destroyChart()
   }
 
@@ -425,6 +431,34 @@ export class GoldTradingUI {
           </div>
         </div>
 
+        <!-- 风险监控面板 -->
+        <div class="quant-section">
+          <div class="section-title-bar">
+            <h3>🛡️ 风险监控面板</h3>
+            <div style="display:flex;align-items:center;gap:8px">
+              <button class="btn btn-ghost btn-xs" id="risk-overview-btn" title="刷新风险概览">🔄</button>
+            </div>
+          </div>
+          <div class="risk-monitor-grid" id="risk-monitor-grid">
+            <div class="rm-card" id="rm-overview">
+              <div class="rm-card-title">📊 风控概览</div>
+              <div class="rm-card-body"><div class="empty-text">加载中...</div></div>
+            </div>
+            <div class="rm-card" id="rm-regime">
+              <div class="rm-card-title">🌤 市场状态</div>
+              <div class="rm-card-body"><div class="empty-text">加载中...</div></div>
+            </div>
+            <div class="rm-card" id="rm-overfitting">
+              <div class="rm-card-title">⚡ 过拟合检测</div>
+              <div class="rm-card-body"><div class="empty-text">加载中...</div></div>
+            </div>
+            <div class="rm-card" id="rm-decay">
+              <div class="rm-card-title">📉 策略退化</div>
+              <div class="rm-card-body"><div class="empty-text">加载中...</div></div>
+            </div>
+          </div>
+        </div>
+
         <!-- 模拟交易面板 -->
         <div class="quant-section">
           <div class="section-title-bar">
@@ -509,6 +543,9 @@ export class GoldTradingUI {
 
     // 交易模式切换
     document.getElementById('trading-mode-switch')?.addEventListener('click', () => this.switchTradingMode())
+
+    // 风险监控刷新
+    document.getElementById('risk-overview-btn')?.addEventListener('click', () => this.loadRiskOverview())
 
     // RL 强化学习
     document.getElementById('rl-train-btn')?.addEventListener('click', () => this.runRLTraining())
@@ -984,6 +1021,13 @@ export class GoldTradingUI {
   private async generateSignal() {
     if (this.isWorking) return
     const strategyName = (document.getElementById('sig-strategy-select') as HTMLSelectElement)?.value || 'trend_following'
+
+    // RL走独立端点
+    if (strategyName === 'rl_ppo') {
+      this.runRLSignal()
+      return
+    }
+
     this.isWorking = true
     const btn = document.getElementById('sig-generate-btn') as HTMLButtonElement
     if (btn) { btn.disabled = true; btn.textContent = '...' }
@@ -1465,6 +1509,93 @@ export class GoldTradingUI {
     } catch (_) { /* 静默 */ }
   }
 
+  // ===== 风险监控面板 =====
+
+  private async loadRiskOverview() {
+    try {
+      const resp = await api.get('/gold/trading/risk/overview')
+      if (resp.success && resp.data) {
+        this.renderRiskOverview(resp.data)
+      }
+    } catch (_) { /* 静默 */ }
+  }
+
+  private renderRiskOverview(d: any) {
+    // 风控概览
+    const overviewEl = document.getElementById('rm-overview')
+    if (overviewEl) {
+      const rs = d.risk_status || {}
+      overviewEl.innerHTML = `
+        <div class="rm-card-title">📊 风控概览</div>
+        <div class="rm-card-body">
+          <div class="rm-metrics">
+            <div class="rm-metric"><span class="rm-label">日内信号</span><span class="rm-value">${rs.today_signal_count ?? 0} 次</span></div>
+            <div class="rm-metric"><span class="rm-label">日内盈亏</span><span class="rm-value ${(rs.daily_pnl||0)>=0?'positive':'negative'}">¥${(rs.daily_pnl||0)>=0?'+':''}${(rs.daily_pnl||0).toLocaleString()}</span></div>
+            <div class="rm-metric"><span class="rm-label">连续亏损</span><span class="rm-value ${(rs.consecutive_losses||0)>=3?'negative':''}">${rs.consecutive_losses ?? 0} 次</span></div>
+            <div class="rm-metric"><span class="rm-label">回撤限</span><span class="rm-value">${rs.max_drawdown_pct*100 ?? 0}%</span></div>
+            <div class="rm-metric"><span class="rm-label">持仓上限</span><span class="rm-value">${rs.max_position_lots ?? 0} 手</span></div>
+          </div>
+        </div>`
+    }
+
+    // 市场状态
+    const regimeEl = document.getElementById('rm-regime')
+    if (regimeEl) {
+      const mr = d.market_regime || {}
+      const regime = mr.regime || 'unknown'
+      const stats = mr.stats || {}
+      regimeEl.innerHTML = `
+        <div class="rm-card-title">🌤 市场状态</div>
+        <div class="rm-card-body">
+          <div class="rm-regime-badge ${regime}">${regime === 'trending' ? '📈 趋势' : regime === 'volatile' ? '🌊 高波动' : '📊 震荡'}</div>
+          <div class="rm-metrics" style="margin-top:6px">
+            ${['trending', 'ranging', 'volatile'].map(r => {
+              const s = stats[r] || {}
+              return `<div class="rm-metric"><span class="rm-label">${r}</span><span class="rm-value">${s.n ?? 0}天 Sharpe=${s.sharpe ?? 0}</span></div>`
+            }).join('')}
+          </div>
+        </div>`
+    }
+
+    // 过拟合检测
+    const ofEl = document.getElementById('rm-overfitting')
+    if (ofEl) {
+      const of = d.overfitting || {}
+      const verdict = of.verdict || '--'
+      const isOverfit = of.overfitting_detected
+      ofEl.innerHTML = `
+        <div class="rm-card-title">⚡ 过拟合检测</div>
+        <div class="rm-card-body">
+          <div class="rm-verdict ${isOverfit ? 'negative' : 'positive'}">${isOverfit ? '⚠ 高风险' : '✅ 正常'}</div>
+          <div class="rm-metrics" style="margin-top:6px">
+            <div class="rm-metric"><span class="rm-label">DSR</span><span class="rm-value">${of.dsr != null ? of.dsr.toFixed(4) : '--'}</span></div>
+            <div class="rm-metric"><span class="rm-label">Sharpe衰减</span><span class="rm-value">${of.sharpe_drop != null ? (of.sharpe_drop*100).toFixed(1) + '%' : '--'}</span></div>
+            <div class="rm-metric"><span class="rm-label">IS Sharpe</span><span class="rm-value">${of.avg_is_sharpe != null ? of.avg_is_sharpe.toFixed(3) : '--'}</span></div>
+            <div class="rm-metric"><span class="rm-label">OOS Sharpe</span><span class="rm-value">${of.avg_oos_sharpe != null ? of.avg_oos_sharpe.toFixed(3) : '--'}</span></div>
+          </div>
+        </div>`
+    }
+
+    // 策略退化
+    const decayEl = document.getElementById('rm-decay')
+    if (decayEl) {
+      const dc = d.decay || {}
+      const verdict = dc.verdict || '--'
+      const isDecay = dc.decay_detected
+      decayEl.innerHTML = `
+        <div class="rm-card-title">📉 策略退化</div>
+        <div class="rm-card-body">
+          <div class="rm-verdict ${isDecay ? 'negative' : 'positive'}">${verdict}</div>
+          <div class="rm-metrics" style="margin-top:6px">
+            <div class="rm-metric"><span class="rm-label">收益衰减</span><span class="rm-value ${dc.return_decay?.decay_detected ? 'negative' : ''}">${dc.return_decay?.decay_detected ? '⚠ 是' : '✅ 否'}</span></div>
+            <div class="rm-metric"><span class="rm-label">近期均值</span><span class="rm-value">${dc.return_decay?.recent_mean != null ? (dc.return_decay.recent_mean * 100).toFixed(3) + '%' : '--'}</span></div>
+            <div class="rm-metric"><span class="rm-label">历史均值</span><span class="rm-value">${dc.return_decay?.historical_mean != null ? (dc.return_decay.historical_mean * 100).toFixed(3) + '%' : '--'}</span></div>
+            <div class="rm-metric"><span class="rm-label">波动率</span><span class="rm-value">${dc.context?.recent_volatility != null ? (dc.context.recent_volatility * 100).toFixed(2) + '%' : '--'}</span></div>
+          </div>
+        </div>`
+    }
+  }
+
   // ===== 辅助方法 =====
   private async loadStrategies() {
     try {
@@ -1541,7 +1672,7 @@ export class GoldTradingUI {
       const resp = await api.post('/gold/trading/rl/train', {
         n_iterations: iterations,
         n_steps: steps,
-      })
+      }, 600000) // 10分钟超时
       if (resp.success && resp.data) {
         const iterData = resp.data.iterations || []
         const last = iterData[iterData.length - 1] || {}
@@ -1550,8 +1681,9 @@ export class GoldTradingUI {
         if (progress) progress.textContent = `✅ 完成: ${last.avg_return_pct ?? 0}%`
       }
     } catch (e) {
-      toast.error('RL训练失败')
-      if (progress) progress.textContent = '❌ 训练失败'
+      const msg = e instanceof Error ? e.message : '未知错误'
+      toast.error(`RL训练失败: ${msg}`)
+      if (progress) progress.textContent = `❌ 训练失败 (${msg})`
     } finally {
       this.isWorking = false
       if (btn) { btn.disabled = false; btn.textContent = '训练模型' }
@@ -1566,7 +1698,7 @@ export class GoldTradingUI {
     if (btn) { btn.disabled = true; btn.textContent = '生成中...' }
 
     try {
-      const resp = await api.post('/gold/trading/rl/signal', {})
+      const resp = await api.post('/gold/trading/rl/signal', {}, 120000) // 2分钟超时
       if (resp.success && resp.data) {
         const signal = resp.data.signal || {}
         const metrics = resp.data.metrics || {}
@@ -1588,7 +1720,8 @@ export class GoldTradingUI {
         toast.success('RL信号已生成')
       }
     } catch (e) {
-      toast.error('RL信号生成失败')
+      const msg = e instanceof Error ? e.message : '未知错误'
+      toast.error(`RL信号生成失败: ${msg}`)
     } finally {
       this.isWorking = false
       if (btn) { btn.disabled = false; btn.textContent = '生成信号' }
