@@ -192,7 +192,7 @@ def _aurora_backtest(strategy_name: str, bars: list, capital: float,
     return {
         "report": _convert_report(engine, report, capital, start_date, end_date),
         "trades": trades[-100:],
-        "signals": [{"strategy": strategy_name, "direction": str(s.direction), "price": s.price,
+        "signals": [{"strategy": strategy_name, "direction": s.direction.value, "price": s.price,
                       "volume": s.volume, "stop_loss": s.stop_loss, "reason": s.reason}
                      for s in signals],
     }
@@ -723,7 +723,7 @@ async def generate_signal(
     auto_execute=true 时，风控通过后自动发单到 CTP/SimNow。
     """
     strategies = _get_domain_adapter().get_available_strategies()
-    if strategy_name not in strategies:
+    if strategy_name not in strategies and strategy_name not in ("rl_ppo",):
         raise HTTPException(status_code=404, detail=f"Strategy '{strategy_name}' not found")
 
     # 获取行情数据（需要足够的历史让策略积累状态）
@@ -735,7 +735,11 @@ async def generate_signal(
 
     # ML策略走直接预测路径（不用全量回测，避免宏观特征NaN问题）
     if strategy_name == "ml_predictor":
-        return await _generate_ml_signal(strategy_name, bars, gateway)
+        return await _generate_ml_signal(strategy_name, bars, gateway, auto_execute)
+
+    # RL策略走RL模型路径
+    if strategy_name == "rl_ppo":
+        return await _generate_rl_signal(strategy_name, bars, gateway, auto_execute)
 
     # AuroraCore 引擎驱动策略
     capital = GoldSettings().backtest_capital
@@ -896,7 +900,7 @@ _last_ctp_account: dict = {}
 _last_ctp_account_time: float = 0
 
 
-async def _generate_ml_signal(strategy_name: str, bars: list, gateway) -> dict:
+async def _generate_ml_signal(strategy_name: str, bars: list, gateway, auto_execute: bool = False) -> dict:
     """ML策略信号生成 — 直接预测路径，绕过全量回测"""
     from backend.gold.core.models import GoldSignal, SignalDirection
     from backend.gold.ml import GoldPricePredictor, FeatureEngineer, ModelType, PredictionHorizon
@@ -1014,6 +1018,74 @@ async def _generate_ml_signal(strategy_name: str, bars: list, gateway) -> dict:
 
     signal_output = SignalOutput()
     advice = signal_output.output(signal, risk_result)
+
+    # 自动执行（仅 auto_execute=True 时）
+    if auto_execute and risk_result.passed:
+        execution = await _execute_signal_to_ctp(store, signal)
+        risk_checker.set_equity(GoldSettings().backtest_capital)
+        advice["execution"] = execution
+
+    return {"success": True, "data": advice}
+
+
+async def _generate_rl_signal(strategy_name: str, bars: list, gateway, auto_execute: bool = False) -> dict:
+    """RL策略信号生成（主端点统一路由）"""
+    from backend.gold.core.models import GoldSignal, SignalDirection
+
+    trainer = _get_rl_trainer()
+    models = trainer.list_models()
+    current_price = bars[-1].close if bars else 0
+    if not models:
+        return {"success": True, "data": {"signal": None, "message": "无已训练的RL模型，请先训练", "strategy": strategy_name, "price": round(current_price, 2)}}
+
+    latest = models[-1]
+    trainer.load_model(latest["path"])
+    result = await asyncio.to_thread(trainer.generate_signal, bars)
+    result = _clean_nans(result)
+    signal_data = result.get("signal")
+
+    if not signal_data or signal_data.get("direction") in (None, "hold"):
+        return {"success": True, "data": {"signal": None, "message": signal_data.get("reason", "RL建议观望"), "strategy": strategy_name, "price": round(current_price, 2)}}
+
+    direction = SignalDirection.LONG if signal_data["direction"] == "long" else SignalDirection.SHORT
+    signal = GoldSignal(
+        signal_id=f"rl_{datetime.now().strftime('%Y%m%d%H%M%S')}_signal",
+        strategy_id=strategy_name, strategy_name=strategy_name,
+        symbol="AU0", direction=direction,
+        price=signal_data.get("price", 0), volume=abs(signal_data.get("position", 1)),
+        stop_loss=signal_data.get("stop_loss"),
+        confidence=signal_data.get("confidence", 0),
+        reason=signal_data.get("reason", ""),
+        created_at=datetime.now(),
+    )
+
+    # 风控检查
+    risk_checker = RiskChecker()
+    risk_checker.record_signal(signal)
+    positions = await query_ctp_positions_raw()
+    account = await query_ctp_account_raw()
+    risk_result = risk_checker.check(
+        signal, positions=positions, account=account,
+        current_equity=GoldSettings().backtest_capital,
+        initial_capital=GoldSettings().backtest_capital,
+    )
+
+    # 输出交易建议（内含保存信号+创建订单）
+    signal_output = SignalOutput()
+    advice = signal_output.output(signal, risk_result)
+
+    # RL特有概率信息
+    advice["long_prob"] = signal_data.get("long_prob")
+    advice["short_prob"] = signal_data.get("short_prob")
+    advice["hold_prob"] = signal_data.get("hold_prob")
+    advice["position"] = signal_data.get("position")
+
+    # 自动执行
+    if auto_execute and risk_result.passed:
+        execution = await _execute_signal_to_ctp(GoldDataStore(), signal)
+        risk_checker.set_equity(GoldSettings().backtest_capital)
+        advice["execution"] = execution
+
     return {"success": True, "data": advice}
 
 
@@ -1946,31 +2018,6 @@ async def train_rl(req: RLTrainRequest):
         n_steps=req.n_steps,
     )
     return {"success": True, "data": history}
-
-
-@router.post("/rl/signal")
-async def rl_signal():
-    """使用最新RL模型生成交易信号"""
-    trainer = _get_rl_trainer()
-    models = trainer.list_models()
-    if not models:
-        raise HTTPException(status_code=400, detail="无已训练的RL模型，请先训练")
-
-    # 加载最新的模型
-    latest = models[-1]
-    trainer.load_model(latest["path"])
-
-    gateway = GoldDataGateway()
-    bars = await gateway.get_bars("AU0", period="d", limit=200, refresh=True)
-    if not bars or len(bars) < 30:
-        raise HTTPException(status_code=400, detail="K线数据不足")
-
-    result = await asyncio.to_thread(trainer.generate_signal, bars)
-
-    # 清洗 NaN → None
-    result = _clean_nans(result)
-
-    return {"success": True, "data": result}
 
 
 @router.get("/rl/status")

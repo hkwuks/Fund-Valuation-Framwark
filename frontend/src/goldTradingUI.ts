@@ -302,7 +302,7 @@ export class GoldTradingUI {
                   <option value="trend_following">趋势跟踪</option>
                   <option value="mean_reversion">均值回归</option>
                   <option value="ml_predictor">ML预测</option>
-                  <option value="rl_ppo">🧠 RL强化学习</option>
+                  <option value="rl_ppo">RL强化学习</option>
                 </select>
                 <button class="btn btn-primary btn-sm" id="sig-generate-btn">生成信号</button>
                 <select id="sig-auto-select" style="width:90px">
@@ -343,7 +343,7 @@ export class GoldTradingUI {
                   <option value="trend_following">趋势跟踪</option>
                   <option value="mean_reversion">均值回归</option>
                   <option value="ml_predictor">ML预测</option>
-                  <option value="rl_ppo">🧠 RL强化学习</option>
+                  <option value="rl_ppo">RL强化学习</option>
                 </select>
                 <input type="date" id="bt-start-date" value="2025-01-01" style="width:120px" />
                 <input type="date" id="bt-end-date" value="2026-06-26" style="width:120px" />
@@ -549,7 +549,11 @@ export class GoldTradingUI {
 
     // RL 强化学习
     document.getElementById('rl-train-btn')?.addEventListener('click', () => this.runRLTraining())
-    document.getElementById('rl-signal-btn')?.addEventListener('click', () => this.runRLSignal())
+    document.getElementById('rl-signal-btn')?.addEventListener('click', () => {
+      const sel = document.getElementById('sig-strategy-select') as HTMLSelectElement
+      if (sel) sel.value = 'rl_ppo'
+      this.generateSignal()
+    })
     document.getElementById('rl-refresh-btn')?.addEventListener('click', () => this.loadRLStatus())
   }
 
@@ -1021,13 +1025,6 @@ export class GoldTradingUI {
   private async generateSignal() {
     if (this.isWorking) return
     const strategyName = (document.getElementById('sig-strategy-select') as HTMLSelectElement)?.value || 'trend_following'
-
-    // RL走独立端点
-    if (strategyName === 'rl_ppo') {
-      this.runRLSignal()
-      return
-    }
-
     this.isWorking = true
     const btn = document.getElementById('sig-generate-btn') as HTMLButtonElement
     if (btn) { btn.disabled = true; btn.textContent = '...' }
@@ -1088,6 +1085,12 @@ export class GoldTradingUI {
           <span class="scc-strategy">${STRATEGY_LABELS[data.strategy]?.icon || ''} ${STRATEGY_LABELS[data.strategy]?.name || data.strategy}</span>
         </div>
         ${data.reason ? `<div class="scc-reason">${data.reason}</div>` : ''}
+        ${data.long_prob != null ? `
+        <div class="scc-row" style="margin-top:4px;gap:6px;font-size:11px;color:var(--text-tertiary)">
+          <span>做多 ${(data.long_prob*100).toFixed(0)}%</span>
+          <span>做空 ${(data.short_prob*100).toFixed(0)}%</span>
+          <span>观望 ${(data.hold_prob*100).toFixed(0)}%</span>
+        </div>` : ''}
         <div class="scc-row" style="margin-top:6px;gap:8px">
           ${executed
             ? `<span class="scc-item" style="color:#10b981">✅ 已执行 ref=${exec.ctp_ref}</span>
@@ -1688,43 +1691,6 @@ export class GoldTradingUI {
       this.isWorking = false
       if (btn) { btn.disabled = false; btn.textContent = '训练模型' }
       this.loadRLStatus()
-    }
-  }
-
-  private async runRLSignal() {
-    if (this.isWorking) return
-    this.isWorking = true
-    const btn = document.getElementById('rl-signal-btn') as HTMLButtonElement
-    if (btn) { btn.disabled = true; btn.textContent = '生成中...' }
-
-    try {
-      const resp = await api.post('/gold/trading/rl/signal', {}, 120000) // 2分钟超时
-      if (resp.success && resp.data) {
-        const signal = resp.data.signal || {}
-        const metrics = resp.data.metrics || {}
-        this.displayRLSignal(signal, metrics, document.getElementById('rl-card-signal'))
-        // 同步显示信号到主信号区
-        const sigContainer = document.getElementById('sig-result')
-        if (sigContainer) {
-          sigContainer.innerHTML = `<div class="signal-card-compact ${signal.direction === 'long' ? 'bullish' : signal.direction === 'short' ? 'bearish' : ''}">
-            <div class="scc-row">
-              <span class="signal-dir-badge ${signal.direction === 'long' ? 'long' : signal.direction === 'short' ? 'short' : ''}">${signal.direction === 'long' ? '做多' : signal.direction === 'short' ? '做空' : '观望'}</span>
-              <span class="scc-price">¥${formatPrice(signal.price)}</span>
-              <span class="scc-item">置信度 ${(signal.confidence * 100).toFixed(0)}%</span>
-              ${signal.stop_loss ? `<span class="scc-item">止损 ¥${formatPrice(signal.stop_loss)}</span>` : ''}
-              <span class="scc-strategy">🧠 RL强化学习</span>
-            </div>
-            <div class="scc-reason">${signal.reason || ''}</div>
-          </div>`
-        }
-        toast.success('RL信号已生成')
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : '未知错误'
-      toast.error(`RL信号生成失败: ${msg}`)
-    } finally {
-      this.isWorking = false
-      if (btn) { btn.disabled = false; btn.textContent = '生成信号' }
     }
   }
 

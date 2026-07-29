@@ -73,7 +73,7 @@ class RLTrainer:
         """初始化PPO智能体"""
         ac = {
             "obs_dim": self.env.obs_dim if self.env else 30,
-            "n_actions": self.env.n_actions if self.env else 13,
+            "n_actions": self.env.n_actions if self.env else 12,
             "model_dir": ensure_model_dir(),
             **(self.config.get("agent", {})),
             **(agent_config or {}),
