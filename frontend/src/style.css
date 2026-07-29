@@ -2004,6 +2004,27 @@ th.sortable.sorted-desc::after { content: ' ↓'; opacity: 1; color: var(--prima
 .pt-positions th { font-size: 18px; color: var(--text-tertiary); padding: 2px 3px; border-bottom: 1px solid var(--border-light); }
 .pt-positions td { padding: 2px 3px; border-bottom: 1px solid var(--border-light); font-variant-numeric: tabular-nums; }
 
+/* ═══ 风险监控面板 ═══ */
+.risk-monitor-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
+
+.rm-card { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius); padding: 10px; }
+.rm-card-title { font-size: 16px; font-weight: 600; color: var(--primary-color); margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color); }
+.rm-card-body { font-size: 14px; color: var(--text-secondary); }
+.rm-metrics { display: flex; flex-direction: column; gap: 3px; }
+.rm-metric { display: flex; justify-content: space-between; align-items: center; padding: 2px 4px; background: var(--bg-primary); border-radius: 2px; font-size: 13px; }
+.rm-label { color: var(--text-tertiary); font-size: 12px; text-transform: uppercase; letter-spacing: .2px; }
+.rm-value { font-weight: 600; font-variant-numeric: tabular-nums; font-size: 13px; }
+.rm-verdict { font-size: 16px; font-weight: 700; text-align: center; padding: 6px; border-radius: var(--radius-sm); }
+.rm-verdict.positive { background: rgba(34,197,94,.12); color: #22c55e; }
+.rm-verdict.negative { background: rgba(239,68,68,.12); color: #ef4444; }
+.rm-regime-badge { font-size: 18px; font-weight: 700; text-align: center; padding: 8px; border-radius: var(--radius-sm); }
+.rm-regime-badge.trending { background: rgba(239,68,68,.12); color: #ef4444; }
+.rm-regime-badge.volatile { background: rgba(245,158,11,.12); color: #f59e0b; }
+.rm-regime-badge.ranging { background: rgba(74,144,217,.12); color: #4a90d9; }
+
+@media (max-width: 1024px) { .risk-monitor-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 768px) { .risk-monitor-grid { grid-template-columns: 1fr; } }
+
 /* ═══ RL 强化学习 ═══ */
 .rl-panel { padding: 0; }
 .rl-config { padding: 8px 16px; border-bottom: 1px solid var(--border-light); }

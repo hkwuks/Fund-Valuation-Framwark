@@ -11,6 +11,7 @@ import torch.optim as optim
 from loguru import logger
 
 from .models import ActorCritic
+from .models_lstm import LSTMActorCritic
 from .env import GoldTradingEnv
 
 
@@ -71,6 +72,10 @@ class PPOAgent:
         hidden_dim: int = 256,
         device: str = "auto",
         model_dir: str = "",
+        model_type: str = "mlp",
+        history_len: int = 30,
+        action_space: str = "discrete",
+        adaptive_lr: bool = True,
     ):
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -83,9 +88,14 @@ class PPOAgent:
 
         self.device = device if device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
         self.model_dir = model_dir
+        self.action_space = action_space
         logger.info(f"[PPO] Using device: {self.device}")
 
-        self.model = ActorCritic(obs_dim, n_actions, hidden_dim).to(self.device)
+        if model_type == "lstm":
+            self.model = LSTMActorCritic(obs_dim, n_actions, hidden_dim, history_len, action_space=action_space).to(self.device)
+        else:
+            self.model = ActorCritic(obs_dim, n_actions, hidden_dim, action_space=action_space).to(self.device)
+        self.model_type = model_type
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.scheduler = optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=100, eta_min=1e-6)
 
@@ -93,6 +103,14 @@ class PPOAgent:
         self.training_step = 0
         self.best_reward = -float("inf")
         self.writer: Optional[SummaryWriter] = None
+        self.entropy_history: list[float] = []
+
+        # 自适应学习率
+        self.adaptive_lr = adaptive_lr
+        self.adaptive_lr_min = 1e-6
+        self.adaptive_lr_max = 1e-3
+        self.entropy_low_threshold = 0.5
+        self.entropy_high_threshold = 2.0
 
     def get_action(self, obs: np.ndarray, deterministic: bool = False) -> tuple[int, float, float]:
         """推理：给定状态返回动作"""
@@ -100,6 +118,11 @@ class PPOAgent:
             obs_t = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
             action, log_prob, entropy, value = self.model.act(obs_t, deterministic)
         return int(action.item()), float(log_prob.item()), float(value.item())
+
+    def reset_history(self):
+        """重置LSTM模型的历史状态（新episode时调用）"""
+        if self.model_type == "lstm":
+            self.model.reset_history()
 
     def store_transition(self, obs, action, reward, done, value, log_prob):
         """存储经验"""
@@ -171,8 +194,31 @@ class PPOAgent:
         self.buffer.clear()
         self.scheduler.step()
 
+        if not losses:
+            return {"error": "no training steps executed"}
+
         avg_loss = {k: np.mean([l[k] for l in losses]) for k in losses[0]}
+
+        # 自适应学习率调整
+        avg_entropy = avg_loss.get("entropy", 0)
+        self.entropy_history.append(avg_entropy)
+        if self.adaptive_lr:
+            self._adjust_lr(avg_entropy)
+
         return avg_loss
+
+    def _adjust_lr(self, avg_entropy: float):
+        """根据策略熵值自适应调整学习率"""
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        if avg_entropy < self.entropy_low_threshold:
+            new_lr = min(current_lr * 1.5, self.adaptive_lr_max)
+        elif avg_entropy > self.entropy_high_threshold:
+            new_lr = max(current_lr * 0.5, self.adaptive_lr_min)
+        else:
+            return
+        for pg in self.optimizer.param_groups:
+            pg["lr"] = new_lr
+        logger.debug(f"[PPO] Adaptive LR: {current_lr:.3e} -> {new_lr:.3e} (entropy={avg_entropy:.3f})")
 
     def _compute_gae(self, rewards, values, dones):
         """GAE-Lambda 优势估计"""
@@ -197,7 +243,7 @@ class PPOAgent:
 
     def load(self, path: str):
         """加载模型"""
-        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.training_step = checkpoint.get("training_step", 0)
@@ -248,6 +294,7 @@ class PPOAgent:
                 obs = next_obs
 
                 if done:
+                    self.reset_history()
                     ep_info = info
                     obs = env.reset()
 
@@ -279,7 +326,7 @@ class PPOAgent:
                 self.best_reward = total_reward
 
             # 评估
-            if iteration % eval_interval == 0 or iteration == 1:
+            if eval_interval > 0 and (iteration % eval_interval == 0 or iteration == 1):
                 eval_result = self.evaluate(env, n_episodes=2)
                 iter_data["eval_return"] = round(eval_result["avg_return"], 2)
                 iter_data["eval_sharpe"] = round(eval_result["sharpe"], 3)

@@ -610,9 +610,11 @@ class BacktestEngine:
         strategy.on_init(ctx)
 
         _signals_published: list[Signal] = []
+        _all_signals: list[Signal] = []  # ponytail: accumulate all signals across bars
 
         def _capture(event: Event):
             _signals_published.append(event.payload)
+            _all_signals.append(event.payload)  # also accumulate globally
 
         # ponytail: subscribe by value string to avoid circular import on EventType
         bus._subscribers["signal.generated"].append(_capture)
@@ -713,7 +715,7 @@ class BacktestEngine:
 
         report.final_equity = report.equity_curve[-1]["equity"]
         report.total_return = (report.final_equity / self.config.initial_capital) - 1
-        self._captured_signals = _signals_published
+        self._captured_signals = _all_signals
         bus.publish(Event(EventType.ENGINE_STOP, {"reason": "completed"}, source="engine"))
         return report
 
