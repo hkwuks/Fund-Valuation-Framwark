@@ -1117,13 +1117,27 @@ export class GoldTradingUI {
       if (resp.success && resp.data.executed) {
         toast.success('已执行到 SimNow')
         this.loadCtpData()
-        this.generateSignal() // 刷新信号
+        // 更新当前信号卡片显示执行结果，不重新生成信号
+        this._updateSignalCardWithExecution(resp.data)
       } else {
         toast.error('执行失败: ' + (resp.data.reason || '未知'))
-        this.generateSignal()
       }
     } catch (e) {
       toast.error('执行出错')
+    }
+  }
+
+  private _updateSignalCardWithExecution(exec: any) {
+    const container = document.getElementById('sig-result')
+    if (!container) return
+    const card = container.querySelector('.signal-card-compact')
+    if (!card) return
+    const row = card.querySelector('.scc-row:last-child')
+    if (row) {
+      row.innerHTML = exec.sim_trade
+        ? `<span class="scc-item" style="color:#10b981">✅ 已执行 ref=${exec.ctp_ref}</span>
+           <span class="scc-item">模拟成交 @¥${formatPrice(exec.sim_trade.price)}</span>`
+        : `<span class="scc-item" style="color:#10b981">✅ 已执行 ref=${exec.ctp_ref}</span>`
     }
   }
 
