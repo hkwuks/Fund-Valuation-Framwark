@@ -62,7 +62,6 @@ Thumbs.db
 htmlcov/
 
 # Test code (not committed)
-tests/
 backend/gold/tests/
 
 # Node
