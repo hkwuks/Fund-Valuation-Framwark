@@ -115,7 +115,9 @@ _DIR_MAP = {
 def _map_direction(d):
     if isinstance(d, Direction):
         return d
-    return _DIR_MAP.get(str(d).lower(), Direction.LONG)
+    if hasattr(d, 'value'):
+        return _DIR_MAP.get(d.value, Direction.LONG)
+    return _DIR_MAP.get(d.lower(), Direction.LONG) if isinstance(d, str) else Direction.LONG
 
 
 

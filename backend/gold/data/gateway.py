@@ -77,7 +77,7 @@ class GoldDataGateway:
         for source_name, fetch_fn in [
             ("AkShare SHFE", lambda: self._fetch_from_akshare(symbol, period, fetch_start, fetch_end)),
             ("Sina直连", lambda: self._fetch_from_sina_direct(symbol, period, fetch_start, fetch_end)),
-            ("yFinance COMEX", lambda: self._fetch_from_yfinance(fetch_start, fetch_end, period, output_symbol=symbol)),
+            ("yFinance COMEX", lambda: self._fetch_from_yfinance(fetch_start, fetch_end, period, output_symbol="GC=F")),
         ]:
             bars = await fetch_fn()
             if bars:
@@ -215,7 +215,7 @@ class GoldDataGateway:
 
         bars = []
         for _, row in df.iterrows():
-            dt = row.get("日期") or row.get("时间") or row.get("datetime")
+            dt = row.get("日期") or row.get("时间") or row.get("datetime") or row.get("date")
             if isinstance(dt, str):
                 dt = pd.to_datetime(dt)
             elif hasattr(dt, 'to_pydatetime'):
