@@ -136,9 +136,9 @@ class GoldDomainAdapter(DomainAdapter):
             multiplier=config.get("multiplier", 1000),
             margin_rate=config.get("margin_rate", 0.08),
             fill_ratio=config.get("fill_ratio", 1.0),
-            execution_delay=config.get("execution_delay", 0),
+            execution_delay=config.get("execution_delay", 1),
             slippage_per_lot=config.get("slippage_per_lot", 20.0),
-            dynamic_slippage=config.get("dynamic_slippage", True),
+            dynamic_slippage=config.get("dynamic_slippage", False),
             slippage_atr_ratio=config.get("slippage_atr_ratio", 0.5),
         )
 

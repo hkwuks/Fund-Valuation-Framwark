@@ -34,7 +34,7 @@ _rl_trainer: RLTrainer | None = None
 # AuroraCore 新引擎
 from core import (
     BacktestEngine, BacktestConfig, BacktestReport, EventBus, Bar,
-    MetricsCalculator, RiskPipeline,
+    RiskPipeline,
 )
 from gold.adapter import GoldDomainAdapter
 
@@ -100,97 +100,43 @@ def _clean_nans(obj):
     return obj
 
 
-def _convert_report(engine: BacktestEngine, report: BacktestReport,
-                    capital: float, start_date: str, end_date: str) -> dict:
-    """BacktestEngine.run() 输出转旧格式 report dict"""
-    equity = [e["equity"] for e in report.equity_curve]
-    metrics = MetricsCalculator.calculate(equity)
-
-    exec_ = engine._execution
-    trades = list(getattr(exec_, "_trades", []) or [])
-    fills = getattr(exec_, "_fills", []) or []
-    close_trades = [t for t in trades if t.get("type") == "close"]
-    trade_pnls = [t.get("pnl", 0) for t in close_trades]
-    total_commission = sum(getattr(f, "commission", 0) for f in fills)
-    total_slippage = sum(t.get("slippage", 0) for t in trades)
-    net_pnl = sum(trade_pnls) - total_commission
-    gross_pnl = net_pnl + total_commission + total_slippage
-
-    n = len(close_trades)
-    wins = sum(1 for p in trade_pnls if p > 0)
-    win_rate = wins / n if n else 0
-    trade_returns = [p / capital for p in trade_pnls] if capital else []
-    gross_profit = sum(r for r in trade_returns if r > 0)
-    gross_loss = abs(sum(r for r in trade_returns if r < 0))
-    profit_factor = gross_profit / gross_loss if gross_loss else None
-    avg_holding = sum(t.get("holding_bars", 0) for t in close_trades) / n if n else 0
-    avg_profit_val = (gross_profit / wins * 100) if wins else 0
-    avg_loss_val = (gross_loss / (n - wins) * 100) if (n - wins) else 0
-    max_loss = min(trade_returns) * 100 if trade_returns else 0
-
-    def _safe(v, default=None):
-        """NaN → None, 其余保留"""
-        if v is None:
-            return default
-        try:
-            import math
-            return default if math.isnan(v) or math.isinf(v) else v
-        except (TypeError, ValueError):
-            return v
-
-    return {
-        "performance": {
-            "total_return": _safe(round(metrics.total_return * 100, 2)),
-            "annualized_return": _safe(round(metrics.annual_return * 100, 2)),
-            "sharpe_ratio": _safe(round(metrics.sharpe_ratio, 2)),
-            "sortino_ratio": _safe(round(metrics.sortino_ratio, 2)),
-            "calmar_ratio": _safe(round(metrics.calmar_ratio, 2)),
-            "win_rate": round(win_rate * 100, 2),
-            "profit_factor": round(profit_factor, 2) if profit_factor else None,
-        },
-        "risk": {
-            "max_drawdown": _safe(round(metrics.max_drawdown * 100, 2)),
-            "var_95": _safe(round(metrics.var_95, 2)),
-            "cvar_95": _safe(round(metrics.cvar_95, 2)),
-            "volatility": _safe(round(metrics.volatility * 100, 2)),
-        },
-        "trades": {
-            "total_count": n,
-            "avg_holding_bars": round(avg_holding, 1),
-            "avg_profit": round(avg_profit_val, 2),
-            "avg_loss": round(avg_loss_val, 2),
-            "max_single_loss": round(max_loss, 2),
-        },
-        "cost": {
-            "total_commission": round(total_commission, 2),
-            "total_slippage": round(total_slippage, 2),
-            "gross_pnl": round(gross_pnl, 2),
-            "net_pnl": round(net_pnl, 2),
-        },
-        "meta": {
-            "capital": capital,
-            "start_date": start_date,
-            "end_date": end_date,
-            "total_days": len(equity) - 1,
-            "risk_free_rate": 0.025,
-        },
-    }
-
-
 def _aurora_backtest(strategy_name: str, bars: list, capital: float,
                      params: dict | None = None) -> dict:
-    """使用 AuroraCore 新引擎运行回测，返回与旧格式兼容的结果"""
+    """使用 AuroraCore 新引擎运行回测，报告走 BacktestReport.generate()（含 benchmark 对比）"""
     core_bars = _bars_to_core(bars)
     engine = _create_engine(strategy_name, core_bars, capital, params)
     report = engine.run()
 
     trades = list(getattr(engine._execution, "_trades", []) or [])
+    fills = getattr(engine._execution, "_fills", []) or []
     signals = list(getattr(engine, "_captured_signals", []) or [])
     start_date = core_bars[0].datetime.strftime("%Y-%m-%d") if core_bars else ""
     end_date = core_bars[-1].datetime.strftime("%Y-%m-%d") if core_bars else ""
 
+    # 基准收益率（买入持有）
+    benchmark_returns = None
+    if len(core_bars) > 1:
+        closes = np.array([b.close for b in core_bars])
+        benchmark_returns = (closes[1:] - closes[:-1]) / closes[:-1]
+
+    equity = [e["equity"] for e in report.equity_curve]
+    from backend.gold.backtest.report import BacktestReport as GoldBacktestReport
+    report_data = GoldBacktestReport().generate(
+        equity_curve=equity, trades=trades, capital=capital,
+        start_date=start_date, end_date=end_date,
+        risk_free_rate=0.025, benchmark_returns=benchmark_returns,
+    )
+
+    # BacktestReport.generate() 从 trade 取 commission，但 FuturesExecutionEngine
+    # 写在 Fill 上。从 fills 补上 cost 精度。
+    total_commission = sum(getattr(f, "commission", 0) for f in fills)
+    close_pnls = [t.get("pnl", 0) for t in trades if t.get("type") == "close"]
+    net_pnl = sum(close_pnls) - total_commission
+    report_data["cost"]["total_commission"] = round(total_commission, 2)
+    report_data["cost"]["net_pnl"] = round(net_pnl, 2)
+
     return {
-        "report": _convert_report(engine, report, capital, start_date, end_date),
+        "report": report_data,
         "trades": trades[-100:],
         "signals": [{"strategy": strategy_name, "direction": s.direction.value, "price": s.price,
                       "volume": s.volume, "stop_loss": s.stop_loss, "reason": s.reason}

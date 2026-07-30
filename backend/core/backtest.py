@@ -432,8 +432,8 @@ class FuturesExecutionEngine(ExecutionEngine):
         remaining: list[dict] = []
 
         for entry in self._pending:
-            entry["remaining"] -= 1
             if entry["remaining"] > 0:
+                entry["remaining"] -= 1
                 remaining.append(entry)
                 continue
 
