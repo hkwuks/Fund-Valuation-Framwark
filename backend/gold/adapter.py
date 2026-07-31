@@ -171,6 +171,7 @@ class GoldDomainAdapter(DomainAdapter):
             "trend_following": AdaptedTrendFollowing,
             "mean_reversion": _make_wrapper("mean_reversion"),
             "ml_predictor": _make_wrapper("ml_predictor"),
+            "rl_ppo": RLStrategy,
         }
 
     def register_factors(self):
@@ -397,6 +398,93 @@ def demo():
     assert executor.portfolio_value < 1_000_000, "占用保证金后总权益应减少"
     print(f"[gold_adapter] ✅ FuturesExecutionEngine 集成通过 — "
           f"开仓价={pos.avg_price:.2f}, 占用保证金={1_000_000 - executor.portfolio_value:.0f}")
+
+
+# ── RL PPO 策略（统一回测引擎） ──
+
+class RLStrategy(Strategy):
+    """强化学习 PPO 策略 — 加载训练好的模型，逐 bar 推理出信号"""
+    name = "rl_ppo"
+    strategy_type = "ml"
+    description = "PPO强化学习交易策略"
+    default_params: dict = {}
+    param_ranges: dict = {}
+
+    def __init__(self):
+        super().__init__()
+        self._bars: list[Bar] = []
+        self._trainer = None
+        self._ready = False
+        self._target_pos: int = 0
+
+    def on_init(self, ctx):
+        """加载最新 RL 模型"""
+        super().on_init(ctx)
+        from backend.gold.ml.rl import RLTrainer
+        from loguru import logger
+        try:
+            self._trainer = RLTrainer()
+            models = self._trainer.list_models()
+            if models:
+                latest = models[-1]
+                self._trainer.load_model(latest["path"])
+                self._ready = True
+                logger.info(f"RLStrategy 加载模型: {latest.get('filename', latest.get('name', '?'))}")
+            else:
+                logger.warning("RLStrategy: 无已训练模型")
+        except Exception as e:
+            logger.warning(f"RLStrategy init 失败: {e}")
+            self._ready = False
+
+    def on_data(self, bar: Bar):
+        if not self._ready or self._trainer is None:
+            return
+        self._bars.append(bar)
+        if len(self._bars) <= 30:
+            return
+
+        target_pos = self._model_predict()
+        if target_pos == self._target_pos:
+            return
+
+        if self._target_pos != 0:
+            close_dir = Direction.CLOSE_LONG if self._target_pos > 0 else Direction.CLOSE_SHORT
+            self.ctx.emit(Signal(
+                id=f"rl_close_{len(self._bars)}", strategy=self.name,
+                symbol=bar.symbol, direction=close_dir,
+                price=bar.close, volume=abs(self._target_pos),
+                reason=f"RL调仓: {self._target_pos}→{target_pos}",
+            ))
+
+        if target_pos != 0:
+            direction = Direction.LONG if target_pos > 0 else Direction.SHORT
+            self.ctx.emit(Signal(
+                id=f"rl_open_{len(self._bars)}", strategy=self.name,
+                symbol=bar.symbol, direction=direction,
+                price=bar.close, volume=abs(target_pos),
+                confidence=0.7,
+                reason=f"RL策略目标仓位={target_pos}",
+            ))
+
+        self._target_pos = target_pos
+
+    def _model_predict(self) -> int:
+        from backend.gold.ml.rl import bars_to_dataframe, GoldTradingEnv
+        import torch  # noqa: F401
+
+        df = bars_to_dataframe(self._bars)
+        if len(df) < 30:
+            return 0
+
+        env = GoldTradingEnv(df, **self._trainer.config.get("env", {}))
+        obs = env.reset()
+        action = 0
+        for i in range(len(df) - 1):
+            action, _, _ = self._trainer.agent.get_action(obs, deterministic=True)
+            obs, _, done, _ = env.step(action)
+            if done:
+                break
+        return env._action_to_position(action)
 
 
 if __name__ == "__main__":

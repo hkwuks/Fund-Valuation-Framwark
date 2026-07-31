@@ -669,7 +669,7 @@ async def generate_signal(
     auto_execute=true 时，风控通过后自动发单到 CTP/SimNow。
     """
     strategies = _get_domain_adapter().get_available_strategies()
-    if strategy_name not in strategies and strategy_name not in ("rl_ppo",):
+    if strategy_name not in strategies:
         raise HTTPException(status_code=404, detail=f"Strategy '{strategy_name}' not found")
 
     # 获取行情数据（需要足够的历史让策略积累状态）
@@ -683,11 +683,7 @@ async def generate_signal(
     if strategy_name == "ml_predictor":
         return await _generate_ml_signal(strategy_name, bars, gateway, auto_execute)
 
-    # RL策略走RL模型路径
-    if strategy_name == "rl_ppo":
-        return await _generate_rl_signal(strategy_name, bars, gateway, auto_execute)
-
-    # AuroraCore 引擎驱动策略
+    # AuroraCore 引擎驱动策略（ML 使用直接预测路径，避免宏观特征 NaN）
     capital = GoldSettings().backtest_capital
     result = await asyncio.to_thread(_aurora_backtest, strategy_name, bars, capital)
     signal_dicts = result.get("signals", [])
