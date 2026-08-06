@@ -90,16 +90,25 @@ class GoldTradingEnv:
         return self._get_obs()
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, dict]:
-        """执行动作，返回 (next_obs, reward, done, info)"""
+        """执行动作，返回 (next_obs, reward, done, info)
+
+        时序: 本步的 PnL 来自上一步决策的仓位在本 bar 的变动，
+        动作设定的新仓位从下个 bar 开始生效。
+        """
+        if self.idx >= len(self.df):
+            return self._get_obs(), 0.0, True, {"termination": "end_of_data"}
         price = self.df.iloc[self.idx]["close"]
         prev_price = self.df.iloc[self.idx - 1]["close"]
         price_change = price - prev_price
         info = {}
 
-        # ---- 1. 解析动作 ----
+        # ---- 1. Mark-to-market PnL 使用本 bar 之前已持有的仓位（上一步决策） ----
+        mtm_pnl = self.position * price_change * self.multiplier
+
+        # ---- 2. 解析动作 → 设定下一步仓位 ----
         target_pos = self._action_to_position(action)
 
-        # ---- 2. 交易成本 ----
+        # ---- 3. 交易成本（基于旧仓位 → 新仓位的变动） ----
         trade_cost = 0.0
         if target_pos != self.position:
             volume = abs(target_pos - self.position)
@@ -108,8 +117,6 @@ class GoldTradingEnv:
                 self.pnl_history.append(self.cumulative_pnl)
             self.position = target_pos
 
-        # ---- 3. Mark-to-market PnL ----
-        mtm_pnl = self.position * price_change * self.multiplier
         self.cumulative_pnl += mtm_pnl - trade_cost
         self.equity_curve.append(self.initial_capital + self.cumulative_pnl)
         self.peak_equity = max(self.peak_equity, self.equity_curve[-1])
@@ -199,15 +206,15 @@ class GoldTradingEnv:
         if self.action_space == "continuous":
             # action ∈ [-1, 1], 映射到 [-max_position, max_position]
             return int(round(action * self.max_position))
-        # 离散动作
+        # 离散动作: 0/6=平仓, 1-4=做多, 7-10=做空
         if action == 0 or action == 6:
             return 0
         if 1 <= action <= 4:
-            sizes = {1: 2, 2: 4, 3: 6, 4: 10}
-            return sizes.get(action, 0)
+            sizes = {1: 1, 2: 2, 3: 3, 4: self.max_position}
+            return min(sizes.get(action, 0), self.max_position)
         if 7 <= action <= 10:
-            sizes = {7: -2, 8: -4, 9: -6, 10: -10}
-            return sizes.get(action, 0)
+            sizes = {7: -1, 8: -2, 9: -3, 10: -self.max_position}
+            return max(sizes.get(action, 0), -self.max_position)
         return 0
 
     def _get_obs(self) -> np.ndarray:
