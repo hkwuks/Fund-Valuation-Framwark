@@ -359,6 +359,7 @@ tr:hover { background: var(--bg-tertiary); }
 .badge-danger { background: rgba(239,68,68,.12); color: var(--danger-color); }
 .badge-warning { background: rgba(245,158,11,.12); color: var(--warning-color); }
 .badge-secondary { background: var(--bg-tertiary); color: var(--text-secondary); }
+.badge-info { background: rgba(59,130,246,.12); color: var(--info-color); }
 .badge-gradient { background: var(--primary-color); color: var(--text-inverse); }
 
 /* ═══ 涨跌 ═══ */

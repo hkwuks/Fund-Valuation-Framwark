@@ -9,6 +9,7 @@ class FundManagerUI {
   private refreshInterval: number | null = null;
   private refreshIntervalMs: number = 60000;
   private sortDirection: 'asc' | 'desc' | null = null;
+  private sortColumn: 'change_percent' | 'pe_percentile' = 'change_percent';
   private isInitialized = false;
   private isValuationLoading = false; // 估值加载中标志
   private static readonly REFRESH_INTERVAL_OPTIONS = [
@@ -143,6 +144,13 @@ class FundManagerUI {
                       </span>
                     </th>
                     <th>估值方法</th>
+                    <th class="sortable-header" id="sort-pe-percentile" style="cursor: pointer; user-select: none;">
+                      估值分位
+                      <span class="sort-icons">
+                        <span class="sort-icon ${this.sortDirection === 'asc' ? 'active' : ''}">▲</span>
+                        <span class="sort-icon ${this.sortDirection === 'desc' ? 'active' : ''}">▼</span>
+                      </span>
+                    </th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -177,6 +185,14 @@ class FundManagerUI {
     const positiveClass = fund.estimated_change_percent != null && fund.estimated_change_percent >= 0 ? 'positive' : 'negative';
     const valuationMethodDisplay = fund.valuation_method || '-';
 
+    // 估值分位显示
+    const pePercentileDisplay = fund.pe_percentile != null
+      ? this.renderPercentileBadge(fund.pe_percentile, fund.pe_value, fund.index_name)
+      : this.renderPercentileNa(fund);
+    const pePercentileTitle = fund.pe_percentile != null
+      ? `${fund.index_name || '指数'} 当前 PE ${fund.pe_value != null ? fund.pe_value.toFixed(2) : '--'}，历史分位 ${fund.pe_percentile.toFixed(1)}%`
+      : this.getPercentileNaTitle(fund);
+
     return `
       <tr class="fade-in" data-fund-code="${fund.fund_code}">
         <td><strong>${fund.fund_code}</strong></td>
@@ -190,6 +206,7 @@ class FundManagerUI {
           ${changePercentDisplay}
         </td>
         <td><span class="valuation-method-tag">${valuationMethodDisplay}</span></td>
+        <td title="${pePercentileTitle}">${pePercentileDisplay}</td>
         <td>
           <button class="btn btn-danger btn-sm delete-fund" data-code="${fund.fund_code}">
             删除
@@ -197,6 +214,39 @@ class FundManagerUI {
         </td>
       </tr>
     `;
+  }
+
+  private renderPercentileBadge(percentile: number, peValue?: number, indexName?: string): string {
+    // 分位越低越好（低估），分位越高越贵（高估）
+    let colorClass = 'badge-success';
+    if (percentile > 70) {
+      colorClass = 'badge-danger';  // 高估
+    } else if (percentile > 50) {
+      colorClass = 'badge-warning';  // 偏高
+    } else if (percentile > 30) {
+      colorClass = 'badge-info';  // 适中
+    }
+    const label = percentile <= 30 ? '低估' : percentile <= 50 ? '适中' : percentile <= 70 ? '偏高' : '高估';
+    return `<span class="badge ${colorClass}" style="font-size: 11px;" title="${indexName || ''} PE ${peValue != null ? peValue.toFixed(2) : ''}">${label} ${percentile.toFixed(0)}%</span>`;
+  }
+
+  // 无法计算估值分位时显示原因
+  private getPercentileNaReason(fund: Fund): string {
+    const t = fund.fund_type || '';
+    const n = fund.fund_name || '';
+    if (t.includes('债券') || t.includes('固收') || t.includes('货币')) return '债券基金无 PE 分位';
+    if (t.includes('海外') || t.includes('QDII')) return '海外基金暂不支持 PE 分位';
+    if (n.includes('黄金') || t.includes('商品')) return '黄金/商品基金无 PE 分位';
+    if (t.includes('混合') || t.includes('主动')) return '主动基金无跟踪指数 PE 分位';
+    return '暂无指数估值分位数据';
+  }
+
+  private renderPercentileNa(fund: Fund): string {
+    return `<span class="badge badge-secondary" style="font-size: 11px; opacity: 0.7;">不适用</span>`;
+  }
+
+  private getPercentileNaTitle(fund: Fund): string {
+    return this.getPercentileNaReason(fund);
   }
 
   private calculateTotalValue(funds: Fund[]): string {
@@ -259,6 +309,10 @@ class FundManagerUI {
 
       if (target.id === 'sort-change-percent' || target.closest('#sort-change-percent')) {
         this.handleSortChangePercent();
+      }
+
+      if (target.id === 'sort-pe-percentile' || target.closest('#sort-pe-percentile')) {
+        this.handleSortPePercentile();
       }
     });
 
@@ -448,6 +502,15 @@ class FundManagerUI {
               if (result.nav_date) {
                 fund.nav_date = result.nav_date;
               }
+              // 更新估值分位数据
+              if (result.pe_percentile != null) {
+                fund.pe_percentile = result.pe_percentile;
+                fund.pe_value = result.pe_value;
+                fund.pb_percentile = result.pb_percentile;
+                fund.pb_value = result.pb_value;
+                fund.index_code = result.index_code;
+                fund.index_name = result.index_name;
+              }
               // 实时更新单个基金行
               this.updateFundRow(result.fund_code);
             }
@@ -604,60 +667,63 @@ class FundManagerUI {
     }
 
     return [...funds].sort((a, b) => {
-      const aValue = a.estimated_change_percent;
-      const bValue = b.estimated_change_percent;
+      let aValue: number | null | undefined;
+      let bValue: number | null | undefined;
+
+      if (this.sortColumn === 'pe_percentile') {
+        aValue = a.pe_percentile;
+        bValue = b.pe_percentile;
+      } else {
+        aValue = a.estimated_change_percent;
+        bValue = b.estimated_change_percent;
+      }
 
       const aIsValid = aValue !== null && aValue !== undefined;
       const bIsValid = bValue !== null && bValue !== undefined;
 
-      // 无效值放在负值和 0/正值之间
-      // 升序：负值 → 无效 → 0 和正值
-      // 降序：正值和 0 → 无效 → 负值
       if (!aIsValid && !bIsValid) {
         return 0;
       }
 
       if (!aIsValid) {
-        // a 无效
-        if (this.sortDirection === 'asc') {
-          // 升序：b 是负数则 a 在后，b 是 0 或正数则 a 在前
-          return bValue! < 0 ? 1 : -1;
-        } else {
-          // 降序：b 是正数或 0 则 a 在后，b 是负数则 a 在前
-          return bValue! >= 0 ? 1 : -1;
-        }
+        return this.sortDirection === 'asc' ? 1 : -1;
       }
 
       if (!bIsValid) {
-        // b 无效
-        if (this.sortDirection === 'asc') {
-          // 升序：a 是负数则 a 在前，a 是 0 或正数则 a 在后
-          return aValue! < 0 ? -1 : 1;
-        } else {
-          // 降序：a 是正数或 0 则 a 在前，a 是负数则 a 在后
-          return aValue! >= 0 ? -1 : 1;
-        }
+        return this.sortDirection === 'asc' ? -1 : 1;
       }
 
-      // 两个都有效，正常比较
       if (this.sortDirection === 'asc') {
-        return aValue - bValue;
+        return (aValue as number) - (bValue as number);
       } else {
-        return bValue - aValue;
+        return (bValue as number) - (aValue as number);
       }
     });
   }
 
   private handleSortChangePercent(): void {
-    if (this.sortDirection === null) {
+    if (this.sortDirection === null || this.sortColumn !== 'change_percent') {
       this.sortDirection = 'desc';
     } else if (this.sortDirection === 'desc') {
       this.sortDirection = 'asc';
     } else {
       this.sortDirection = null;
     }
+    this.sortColumn = 'change_percent';
 
     // 使用 sortAndRender 而不是 render，确保排序正确
+    this.sortAndRender();
+  }
+
+  private handleSortPePercentile(): void {
+    if (this.sortDirection === null || this.sortColumn !== 'pe_percentile') {
+      this.sortDirection = 'asc';  // 分位低 = 低估 = 好，默认升序
+    } else if (this.sortDirection === 'asc') {
+      this.sortDirection = 'desc';
+    } else {
+      this.sortDirection = null;
+    }
+    this.sortColumn = 'pe_percentile';
     this.sortAndRender();
   }
 }
