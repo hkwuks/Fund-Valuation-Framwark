@@ -68,6 +68,13 @@ class ValuationResult(BaseModel):
     confidence_note: Optional[str] = Field(None, description="置信度说明")
     valuation_method: Optional[str] = Field(None, description="估值方法说明")
     timestamp: datetime
+    # 指数估值分位
+    index_code: Optional[str] = Field(None, description="跟踪指数代码")
+    index_name: Optional[str] = Field(None, description="跟踪指数名称")
+    pe_value: Optional[float] = Field(None, description="指数当前市盈率")
+    pe_percentile: Optional[float] = Field(None, description="指数市盈率历史分位(0-100)")
+    pb_value: Optional[float] = Field(None, description="指数当前市净率")
+    pb_percentile: Optional[float] = Field(None, description="指数市净率历史分位(0-100)")
 
 
 class MarketData(BaseModel):

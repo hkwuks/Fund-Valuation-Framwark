@@ -1,6 +1,8 @@
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
+import numpy as np
+import pandas as pd
 from backend.models import (
     Holding,
     ValuationResult,
@@ -13,6 +15,7 @@ from backend.market_data import (
     GLOBAL_INDEX_MAPPING,
     INDEX_MAPPING,
 )
+from backend.ttl_cache import TtlCache
 from loguru import logger
 
 logger.add(str(Path(__file__).parent.parent / "logs" / "fund_valuation.log"), encoding="utf-8")
@@ -927,6 +930,75 @@ class FundValuationService:
             logger.error(f"Error calculating index fund valuation for {fund_code}: {e}")
             return None
 
+    PE_INDEX_MAP = {
+        "000300": "沪深300", "000905": "中证500", "000016": "上证50",
+        "000852": "中证1000", "000906": "中证800", "000688": "科创50",
+        "399006": "创业板指", "399673": "创业板50",
+        "000001": "上证指数", "399001": "深证成指",
+        "000922": "上证红利", "399986": "中证银行",
+        "399967": "中证军工", "399997": "中证白酒",
+        "399975": "中证证券", "399808": "中证新能源",
+        "000932": "中证消费", "000933": "中证医药",
+        "931632": "中证黄金股", "399989": "中证医疗",
+        "399005": "中小板指", "399303": "国证2000",
+    }
+    # 乐咕支持的历史PE数据（12个宽基指数，有5000+行历史数据）
+    PE_LG_SUPPORTED = {"沪深300", "中证500", "上证50", "中证1000", "中证800",
+                       "上证180", "深证红利", "深证100", "中证100",
+                       "上证红利", "上证380", "创业板50"}
+
+    def _get_pe_percentile(self, index_code: str) -> dict:
+        """
+        获取指数 PE/PB 估值分位
+
+        优先使用乐咕（stock_index_pe_lg）历史数据算分位（5000+行），
+        回退到中证指数（stock_zh_index_value_csindex）近20日数据。
+
+        Returns:
+            dict: {index_code, index_name, pe_value, pe_percentile, ...}
+        """
+        pe_name = self.PE_INDEX_MAP.get(index_code)
+        if not pe_name:
+            return {}
+
+        try:
+            # 优先：乐咕历史数据（5000+行，分位准确）
+            if pe_name in self.PE_LG_SUPPORTED:
+                from akshare import stock_index_pe_lg
+                df = stock_index_pe_lg(symbol=pe_name)
+                if df is not None and len(df) >= 20:
+                    latest_pe = float(df["滚动市盈率"].iloc[-1])
+                    all_pe = df["滚动市盈率"].dropna().values
+                    percentile = (all_pe < latest_pe).mean() * 100
+                    return {
+                        "index_code": index_code,
+                        "index_name": pe_name,
+                        "pe_value": round(float(latest_pe), 2),
+                        "pe_percentile": round(float(percentile), 1),
+                        "pb_value": None,
+                        "pb_percentile": None,
+                    }
+
+            # 回退：中证指数（近20日，标注"短周期"）
+            from akshare import stock_zh_index_value_csindex
+            df = stock_zh_index_value_csindex(symbol=index_code)
+            if df is not None and len(df) >= 5:
+                latest_pe = float(df["市盈率1"].iloc[0])
+                all_pe = df["市盈率1"].dropna().values
+                percentile = (all_pe < latest_pe).mean() * 100
+                return {
+                    "index_code": index_code,
+                    "index_name": pe_name,
+                    "pe_value": round(float(latest_pe), 2),
+                    "pe_percentile": round(float(percentile), 1),
+                    "pb_value": float(df["市盈率2"].iloc[0]) if "市盈率2" in df.columns else None,
+                    "pb_percentile": None,
+                }
+        except Exception as e:
+            logger.warning(f"获取 {pe_name}({index_code}) PE 分位失败: {e}")
+
+        return {}
+
     async def _calculate_etf_linking_valuation(
         self,
         fund_code: str,
@@ -1808,6 +1880,21 @@ class FundValuationService:
         result = await self.calculate_fund_valuation(fund_code, prefer_holdings)
         if result and not result.valuation_method:
             result.valuation_method = get_valuation_method_name(result.valuation_type)
+        # 附加跟踪指数的 PE/PB 估值分位
+        if result and result.pe_percentile is None:
+            # 直接从 fund data 获取跟踪指数（比 benchmark_info 更可靠）
+            fund_data = await market_data_service.get_fund_data(fund_code)
+            fund_name = fund_data.fund_name if fund_data else ""
+            tracking_index = await self.get_tracking_index(fund_code, fund_name)
+            if tracking_index:
+                pe_data = self._get_pe_percentile(tracking_index)
+                if pe_data:
+                    result.index_code = pe_data["index_code"]
+                    result.index_name = pe_data["index_name"]
+                    result.pe_value = pe_data["pe_value"]
+                    result.pe_percentile = pe_data["pe_percentile"]
+                    result.pb_value = pe_data.get("pb_value")
+                    result.pb_percentile = pe_data.get("pb_percentile")
         return result
 
 

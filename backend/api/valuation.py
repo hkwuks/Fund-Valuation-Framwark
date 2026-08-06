@@ -229,6 +229,12 @@ async def get_fund_valuation_batch_stream(request: ValuationBatchRequest):
                             "benchmark_info": result.benchmark_info,
                             "confidence": result.confidence,
                             "confidence_note": result.confidence_note,
+                            "index_code": result.index_code,
+                            "index_name": result.index_name,
+                            "pe_value": result.pe_value,
+                            "pe_percentile": result.pe_percentile,
+                            "pb_value": result.pb_value,
+                            "pb_percentile": result.pb_percentile,
                             "timestamp": result.timestamp.isoformat()
                             if result.timestamp
                             else None,

@@ -39,6 +39,13 @@ export interface Fund {
   last_update?: string;
   confidence_note?: string;  // 估值说明
   valuation_method?: string;  // 估值方法
+  // 指数估值分位
+  index_code?: string;
+  index_name?: string;
+  pe_value?: number;
+  pe_percentile?: number;
+  pb_value?: number;
+  pb_percentile?: number;
 }
 
 export interface FundData {
@@ -75,6 +82,13 @@ export interface ValuationResult {
   confidence: number;
   confidence_note?: string;
   timestamp: string;
+  // 指数估值分位
+  index_code?: string;
+  index_name?: string;
+  pe_value?: number;
+  pe_percentile?: number;
+  pb_value?: number;
+  pb_percentile?: number;
 }
 
 export interface MarketData {
