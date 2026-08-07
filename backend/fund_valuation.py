@@ -1,8 +1,10 @@
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
+import re
 import numpy as np
 import pandas as pd
+import yfinance as yf
 from backend.models import (
     Holding,
     ValuationResult,
@@ -185,6 +187,10 @@ ETF_LINKING_MAPPING = {
 
 class FundValuationService:
     """基金估值服务"""
+
+    def __init__(self):
+        """初始化估值服务和内部缓存"""
+        self._signal_cache = TtlCache(default_ttl=300, maxsize=32)  # 5分钟缓存，用于信号数据
 
     def _is_etf_linking(self, fund_code: str, fund_name: str = "") -> bool:
         """判断是否为 ETF 联接基金"""
@@ -563,6 +569,9 @@ class FundValuationService:
             ("富时 A50", "a50"),
             ("富时中国", "a50"),
             ("A50", "a50"),
+            # 标普A股红利低波（必须放在"标普"之前，否则会被误匹配为标普500）
+            ("标普红利低波", "sp_china_a_dividend"),
+            ("标普A股", "sp_china_a_dividend"),
             # 海外指数
             ("纳斯达克 100", "nasdaq100"),
             ("纳斯达克精选", "nasdaq"),
@@ -578,6 +587,12 @@ class FundValuationService:
             ("恒生指数", "hsi"),
             ("恒生", "hsi"),
             ("香港", "hsi"),  # 香港优选、香港精选等基金，默认使用恒生指数
+            # 香港互认基金（摩根/惠理系列），近似用恒生指数
+            ("亚洲股息", "hsi"),
+            ("亚洲", "hsi"),
+            ("高息股票", "hsi"),
+            ("高息股", "hsi"),
+            ("价值基金", "hsi"),
             ("日经 225", "nikkei"),
             ("日经", "nikkei"),
             # 黄金相关
@@ -607,6 +622,9 @@ class FundValuationService:
             ("白酒", "399997"),
             ("食品饮料", "399997"),
             ("中证食品", "399997"),
+            ("信息产业", "000934"),
+            ("中证信息", "000934"),
+            ("信息技术", "000934"),
             ("中证新能源", "399808"),
             ("新能源", "399808"),
             ("中证军工", "399967"),
@@ -940,12 +958,203 @@ class FundValuationService:
         "399975": "中证证券", "399808": "中证新能源",
         "000932": "中证消费", "000933": "中证医药",
         "931632": "中证黄金股", "399989": "中证医疗",
-        "399005": "中小板指", "399303": "国证2000",
+        "000934": "中证信息", "399005": "中小板指", "399303": "国证2000",
     }
     # 乐咕支持的历史PE数据（12个宽基指数，有5000+行历史数据）
     PE_LG_SUPPORTED = {"沪深300", "中证500", "上证50", "中证1000", "中证800",
                        "上证180", "深证红利", "深证100", "中证100",
                        "上证红利", "上证380", "创业板50"}
+    # 海外指数 → yfinance ETF 代码（用于价格分位 + 当前PE）
+    OVERSEAS_ETF_MAP = {
+        "sp500": "SPY",
+        "nasdaq100": "QQQ",
+        "nasdaq": "QQQ",
+        "dax": "EWG",
+        "hsi": "EWH",
+        "sp_china_a_dividend": "515450.SS",  # 标普A股大盘红利低波50 ETF
+    }
+    # 债券指数 → 用10年国债收益率作为估值指标
+    BOND_INDEX_CODES = {
+        "CBA00101", "CBA00201", "CBA00401", "CBA00501", "CBA00601",
+        "H11070", "H11071", "H11072", "bond_index",
+    }
+
+    @staticmethod
+    def _compute_signal(percentile: float) -> Dict[str, str]:
+        """根据估值分位生成定投信号"""
+        if percentile is None:
+            return {"signal": "unknown", "action": "无信号", "source": "无数据"}
+        if percentile < 20:
+            return {"signal": "深度低估", "action": "加倍定投", "source": "低估区间"}
+        if percentile < 40:
+            return {"signal": "低估", "action": "正常定投", "source": "低估区间"}
+        if percentile < 60:
+            return {"signal": "合理", "action": "持有/暂停定投", "source": "合理区间"}
+        if percentile < 80:
+            return {"signal": "偏高", "action": "逐步止盈", "source": "偏高区间"}
+        return {"signal": "高估", "action": "分批卖出", "source": "高估区间"}
+
+    def _get_bond_yield_signal(self) -> Dict:
+        """债券基金估值：使用中国10年国债收益率历史分位"""
+        cached = self._signal_cache.get("bond_yield")
+        if cached is not None:
+            return cached
+        try:
+            from akshare import bond_zh_us_rate
+            df = bond_zh_us_rate()
+            col = "中国国债收益率10年"
+            if df is None or col not in df.columns:
+                return {}
+            series = df[[col]].dropna()
+            if len(series) < 20:
+                return {}
+            latest = float(series[col].iloc[-1])
+            vals = series[col].astype(float).values
+            # 收益率越低 → 债券越贵（估值越高），用反分位
+            yield_pct = (vals < latest).mean() * 100
+            bond_expensive_pct = 100 - yield_pct
+            result = {
+                "index_code": "CN10Y",
+                "index_name": "中国10年国债",
+                "pe_value": round(latest, 3),
+                "pe_percentile": round(float(bond_expensive_pct), 1),
+                "pb_value": None,
+                "pb_percentile": None,
+                "source": "bond_yield",
+            }
+            self._signal_cache.set("bond_yield", result)
+            return result
+        except Exception as e:
+            logger.warning(f"获取债券收益率分位失败: {e}")
+            return {}
+
+    def _get_overseas_signal(self, index_code: str) -> Dict:
+        """海外指数估值：优先用真实 PE 历史分位（标普500），否则用 yfinance 价格分位"""
+        cache_key = f"overseas_{index_code}"
+        cached = self._signal_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        # 标普500：从 multpl 抓取真实历史 PE，计算分位
+        if index_code == "sp500":
+            pe_data = self._get_sp500_pe_percentile()
+            if pe_data:
+                self._signal_cache.set(cache_key, pe_data)
+                return pe_data
+
+        etf = self.OVERSEAS_ETF_MAP.get(index_code)
+        if not etf:
+            return {}
+        try:
+            # 10年价格历史
+            data = yf.download(etf, period="10y", progress=False, auto_adjust=True)
+            if data is None or len(data) < 50:
+                return {}
+            close = data["Close"].squeeze() if hasattr(data, "squeeze") else data["Close"]
+            close = close.dropna()
+            if len(close) < 50:
+                return {}
+            latest = float(close.iloc[-1])
+            price_pct = (close < latest).mean() * 100
+            # 当前 PE
+            pe_value = None
+            try:
+                info = yf.Ticker(etf).info
+                pe_value = info.get("trailingPE")
+            except Exception:
+                pass
+            result = {
+                "index_code": index_code,
+                "index_name": GLOBAL_INDEX_MAPPING.get(index_code, {}).get("name", etf),
+                "pe_value": round(float(pe_value), 2) if pe_value else None,
+                "pe_percentile": round(float(price_pct), 1),
+                "pb_value": None,
+                "pb_percentile": None,
+                "source": "overseas_price",
+            }
+            self._signal_cache.set(cache_key, result)
+            return result
+        except Exception as e:
+            logger.warning(f"获取海外指数 {index_code} 估值分位失败: {e}")
+            return {}
+
+    def _get_sp500_pe_percentile(self) -> Dict:
+        """获取标普500真实历史PE分位（multpl.com，月度数据回1871年）"""
+        cached = self._signal_cache.get("sp500_pe")
+        if cached is not None:
+            return cached
+        try:
+            import requests
+            import html as html_lib
+            resp = requests.get(
+                "https://www.multpl.com/s-p-500-pe-ratio/table/by-month",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=20,
+            )
+            if resp.status_code != 200:
+                return {}
+            text = resp.text
+            trs = re.findall(r"<tr[^>]*>(.*?)</tr>", text, re.S)
+            vals, dates = [], []
+            for tr in trs[1:]:
+                cells = re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)
+                if len(cells) >= 2:
+                    d = html_lib.unescape(re.sub(r"<[^>]+>", "", cells[0])).strip()
+                    v = html_lib.unescape(re.sub(r"<[^>]+>", "", cells[1])).replace("†", "").strip()
+                    try:
+                        vals.append(float(v))
+                        dates.append(d)
+                    except ValueError:
+                        pass
+            if len(vals) < 120:
+                return {}
+            cur = vals[0]
+            # 用近20年(240个月)计算分位，更贴近现代估值周期
+            recent = vals[:240]
+            pct = sum(1 for v in recent if v < cur) / len(recent) * 100
+            result = {
+                "index_code": "sp500",
+                "index_name": "标普500",
+                "pe_value": round(cur, 1),
+                "pe_percentile": round(float(pct), 1),
+                "pb_value": None,
+                "pb_percentile": None,
+                "source": "sp500_pe",
+            }
+            self._signal_cache.set("sp500_pe", result)
+            return result
+        except Exception as e:
+            logger.warning(f"获取标普500 PE 分位失败: {e}")
+            return {}
+
+    def _get_gold_signal(self) -> Dict:
+        """黄金基金估值：用黄金价格历史分位作为参考（金价本身无PE）"""
+        cached = self._signal_cache.get("gold_price")
+        if cached is not None:
+            return cached
+        try:
+            data = yf.download("GC=F", period="10y", progress=False, auto_adjust=True)
+            if data is None or len(data) < 50:
+                return {}
+            close = data["Close"].squeeze() if hasattr(data, "squeeze") else data["Close"]
+            close = close.dropna()
+            if len(close) < 50:
+                return {}
+            latest = float(close.iloc[-1])
+            price_pct = (close < latest).mean() * 100
+            result = {
+                "index_code": "au",
+                "index_name": "COMEX黄金",
+                "pe_value": round(latest, 2),
+                "pe_percentile": round(float(price_pct), 1),
+                "pb_value": None,
+                "pb_percentile": None,
+                "source": "gold_price",
+            }
+            self._signal_cache.set("gold_price", result)
+            return result
+        except Exception as e:
+            logger.warning(f"获取黄金价格分位失败: {e}")
+            return {}
 
     def _get_pe_percentile(self, index_code: str) -> dict:
         """
@@ -977,6 +1186,7 @@ class FundValuationService:
                         "pe_percentile": round(float(percentile), 1),
                         "pb_value": None,
                         "pb_percentile": None,
+                        "source": "pe_lg",
                     }
 
             # 回退：中证指数（近20日，标注"短周期"）
@@ -993,6 +1203,7 @@ class FundValuationService:
                     "pe_percentile": round(float(percentile), 1),
                     "pb_value": float(df["市盈率2"].iloc[0]) if "市盈率2" in df.columns else None,
                     "pb_percentile": None,
+                    "source": "pe_csindex",
                 }
         except Exception as e:
             logger.warning(f"获取 {pe_name}({index_code}) PE 分位失败: {e}")
@@ -1885,16 +2096,48 @@ class FundValuationService:
             # 直接从 fund data 获取跟踪指数（比 benchmark_info 更可靠）
             fund_data = await market_data_service.get_fund_data(fund_code)
             fund_name = fund_data.fund_name if fund_data else ""
+            fund_type = fund_data.fund_type if fund_data else ""
             tracking_index = await self.get_tracking_index(fund_code, fund_name)
-            if tracking_index:
+
+            pe_data: Dict = {}
+            # 1. 债券基金 → 用10年国债收益率分位
+            is_bond = any(kw in (fund_type or "") for kw in ["债券", "固收", "偏债"]) or (
+                tracking_index in self.BOND_INDEX_CODES
+            )
+            # 2. 海外指数 → yfinance 价格分位
+            is_overseas = tracking_index in self.OVERSEAS_ETF_MAP
+            # 3. 黄金 → 金价分位
+            is_gold = tracking_index == "au" or (tracking_index == "931632" and not pe_data)
+
+            if is_bond:
+                pe_data = self._get_bond_yield_signal()
+            elif is_overseas and tracking_index:
+                pe_data = self._get_overseas_signal(tracking_index)
+            elif tracking_index == "au":
+                pe_data = self._get_gold_signal()
+            elif tracking_index:
                 pe_data = self._get_pe_percentile(tracking_index)
-                if pe_data:
-                    result.index_code = pe_data["index_code"]
-                    result.index_name = pe_data["index_name"]
-                    result.pe_value = pe_data["pe_value"]
-                    result.pe_percentile = pe_data["pe_percentile"]
-                    result.pb_value = pe_data.get("pb_value")
-                    result.pb_percentile = pe_data.get("pb_percentile")
+                # 黄金股PE失败时回退到金价分位
+                if not pe_data and tracking_index == "931632":
+                    gold_data = self._get_gold_signal()
+                    if gold_data:
+                        gold_data["index_code"] = "931632"
+                        gold_data["index_name"] = "中证黄金股(参考金价)"
+                        gold_data["source"] = "gold_price"
+                        pe_data = gold_data
+
+            if pe_data:
+                result.index_code = pe_data["index_code"]
+                result.index_name = pe_data["index_name"]
+                result.pe_value = pe_data["pe_value"]
+                result.pe_percentile = pe_data["pe_percentile"]
+                result.pb_value = pe_data.get("pb_value")
+                result.pb_percentile = pe_data.get("pb_percentile")
+                # 生成定投信号
+                signal = self._compute_signal(result.pe_percentile)
+                result.valuation_signal = signal["signal"]
+                result.signal_action = signal["action"]
+                result.signal_source = pe_data.get("source", "")
         return result
 
 
