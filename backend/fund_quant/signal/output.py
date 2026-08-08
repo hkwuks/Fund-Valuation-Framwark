@@ -34,8 +34,8 @@ class SignalOutputService:
             signal.signal_id = f"sig_{uuid.uuid4().hex[:12]}"
         signal.timestamp = datetime.now()
 
-        # 冷却去重（单基金+类型 5分钟）
-        key = f"{signal.fund_code}:{signal.signal_type}"
+        # 冷却去重（单基金+策略+类型 5分钟，避免不同策略互相拦截）
+        key = f"{signal.fund_code}:{signal.signal_type}:{signal.strategy_name}"
         last = self._recent_signals.get(key)
         if last and (datetime.now() - last).total_seconds() < self._cooldown_seconds:
             return signal.signal_id

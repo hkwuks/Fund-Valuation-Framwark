@@ -15,21 +15,21 @@ class ValuationDeviationStrategy(FundStrategyBase):
     default_params = {
         "z_threshold": 1.5,
         "confidence_min": 0.7,
-        "lookback_days": 60,
+        "lookback_days": 120,   # 估值是长期概念，默认 120 天（约半年）
         "momentum_confirm_days": 3,
         "cooldown_days": 5,
         "allow_short": False,  # 高估时是否发 SHORT 做空信号（仅场内ETF有效）
     }
     param_ranges = {
         "z_threshold": {"min": 1.0, "max": 3.0},
-        "lookback_days": {"min": 20, "max": 126},
+        "lookback_days": {"min": 20, "max": 500},
         "confidence_min": {"min": 0, "max": 1},
         "momentum_confirm_days": {"min": 1, "max": 10},
         "cooldown_days": {"min": 0, "max": 20},
     }
     formula_description = "基于净值偏离历史均值标准差程度的估值偏差择时策略"
     applicable_fund_types = ["stock", "hybrid", "index"]
-    min_history_days = 60
+    min_history_days = 120
 
     def on_evaluate(self, portfolio: Optional[Portfolio],
                     info_set: Optional[InformationSet]) -> List[FundSignal]:
@@ -41,21 +41,18 @@ class ValuationDeviationStrategy(FundStrategyBase):
 
         arr = np.array(nav_values, dtype=np.float64)
         lookback = min(self.params["lookback_days"], len(arr))
-
-        # 计算日收益率
-        returns = np.diff(arr) / arr[:-1]
-        if len(returns) < lookback:
+        if len(arr) < self.min_history_days:
             return []
 
-        # 计算滚动z-score (基于最近lookback天的收益率分布)
-        window = returns[-lookback:]
+        # 估值偏差 = 净值偏离历史均值的 z-score（长期视角）
+        # 不用日收益率：单日大反弹会让低谷期基金误判为"估值偏高"
+        window = arr[-lookback:]
         mu = np.mean(window)
         sigma = np.std(window, ddof=1)
         if sigma < 1e-10:
             return []
 
-        latest_return = returns[-1]
-        z_score = (latest_return - mu) / sigma
+        z_score = (arr[-1] - mu) / sigma
         z_threshold = self.params["z_threshold"]
 
         # 置信度: z-score越大置信度越高

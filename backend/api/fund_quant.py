@@ -679,8 +679,8 @@ async def export_backtest(backtest_id: str, fmt: str = "json"):
 @router.get("/signal/latest")
 async def get_latest_signals(fund_code: Optional[str] = None,
                               signal_type: Optional[str] = None):
-    """获取最新信号"""
-    signals = await asyncio.to_thread(partial(get_signals, fund_code=fund_code, signal_type=signal_type, limit=20))
+    """获取最新信号（返回足够多，前端按基金去重保留最佳信号）"""
+    signals = await asyncio.to_thread(partial(get_signals, fund_code=fund_code, signal_type=signal_type, limit=200))
     return {"success": True, "data": signals}
 
 

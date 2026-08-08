@@ -125,14 +125,30 @@ export class SignalList extends PanelBase {
         signals = signals.filter(s => poolCodes.has(s.fund_code))
       }
 
-      // 去重 (code + direction + confidence 相同视为重复)
-      const seen = new Set<string>()
-      signals = signals.filter(s => {
-        const key = `${s.fund_code}|${s.direction}|${s.confidence}|${s.strategy_name}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
+      // 去重：每只基金只保留一条信号
+      // 优先真实择时策略（momentum/valuation_deviation/interest_rate/credit_spread/fx/gold）的信号，
+      // smart_dca 是定投建议、固定置信度 0.7，会顶掉真实方向信号，仅作为兜底
+      const TIMING_STRATEGIES = new Set([
+        'momentum', 'valuation_deviation', 'interest_rate', 'credit_spread',
+        'fx_momentum', 'gold_momentum',
+      ])
+      const bestByFund = new Map<string, any>()
+      for (const s of signals) {
+        const isTiming = TIMING_STRATEGIES.has(s.strategy_name)
+        const existing = bestByFund.get(s.fund_code)
+        if (!existing) {
+          bestByFund.set(s.fund_code, s)
+        } else {
+          const existingIsTiming = TIMING_STRATEGIES.has(existing.strategy_name)
+          // 真实择时信号优先于 smart_dca；同级别时取置信度更高者
+          if (isTiming && !existingIsTiming) {
+            bestByFund.set(s.fund_code, s)
+          } else if (isTiming === existingIsTiming && (s.confidence || 0) > (existing.confidence || 0)) {
+            bestByFund.set(s.fund_code, s)
+          }
+        }
+      }
+      signals = Array.from(bestByFund.values())
 
       if (filter !== 'all') signals = signals.filter(s => s.direction === filter)
 
@@ -150,7 +166,7 @@ export class SignalList extends PanelBase {
       const existingKeys = new Set<string>()
       existingRows.forEach(r => existingKeys.add(r.getAttribute('data-key') || ''))
 
-      tbody.innerHTML = signals.slice(0, 30).map(s => {
+      tbody.innerHTML = signals.slice(0, 50).map(s => {
         const key = `${s.fund_code}|${s.direction}|${s.confidence}`
         const isNew = existingRows.length > 0 && !existingKeys.has(key)
         return `<tr data-code="${s.fund_code}" data-key="${key}" class="${isNew ? 'sig-row-new' : ''}">
