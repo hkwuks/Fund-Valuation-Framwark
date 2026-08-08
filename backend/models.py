@@ -75,6 +75,10 @@ class ValuationResult(BaseModel):
     pe_percentile: Optional[float] = Field(None, description="指数市盈率历史分位(0-100)")
     pb_value: Optional[float] = Field(None, description="指数当前市净率")
     pb_percentile: Optional[float] = Field(None, description="指数市净率历史分位(0-100)")
+    # 定投信号
+    valuation_signal: Optional[str] = Field(None, description="定投信号：深度低估/低估/合理/偏高/高估")
+    signal_action: Optional[str] = Field(None, description="建议操作：加倍定投/正常定投/持有/止盈/卖出")
+    signal_source: Optional[str] = Field(None, description="信号数据来源：PE分位/债券收益率/价格分位/黄金价格")
 
 
 class MarketData(BaseModel):

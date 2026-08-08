@@ -151,6 +151,7 @@ class FundManagerUI {
                         <span class="sort-icon ${this.sortDirection === 'desc' ? 'active' : ''}">▼</span>
                       </span>
                     </th>
+                    <th>定投信号</th>
                     <th>操作</th>
                   </tr>
                 </thead>
@@ -207,12 +208,47 @@ class FundManagerUI {
         </td>
         <td><span class="valuation-method-tag">${valuationMethodDisplay}</span></td>
         <td title="${pePercentileTitle}">${pePercentileDisplay}</td>
+        <td>${this.renderSignal(fund)}</td>
         <td>
           <button class="btn btn-danger btn-sm delete-fund" data-code="${fund.fund_code}">
             删除
           </button>
         </td>
       </tr>
+    `;
+  }
+
+  // 定投信号显示
+  private renderSignal(fund: Fund): string {
+    const signal = fund.valuation_signal;
+    if (!signal) {
+      return `<span class="badge badge-secondary" style="font-size: 11px; opacity: 0.7;">无信号</span>`;
+    }
+    const colorMap: Record<string, string> = {
+      '深度低估': 'badge-success',
+      '低估': 'badge-success',
+      '合理': 'badge-info',
+      '偏高': 'badge-warning',
+      '高估': 'badge-danger',
+    };
+    const colorClass = colorMap[signal] || 'badge-secondary';
+    const action = fund.signal_action || '';
+    const source = fund.signal_source || '';
+    const sourceLabel = source === 'bond_yield' ? '基于债券收益率'
+      : source === 'sp500_pe' ? '基于标普500 PE分位'
+      : source === 'sp500_pe_proxy' ? '以标普500PE近似'
+      : source === 'hsi_pe' ? '基于恒生指数PE分位'
+      : source === 'overseas_price' ? '基于海外价格分位'
+      : source === 'gold_price' ? '基于金价分位'
+      : source === 'pe_lg' ? '基于历史PE分位'
+      : source === 'pe_csindex' ? '基于中证官网PE分位'
+      : source === 'pe_csindex_short' ? '基于短周期PE(仅20日)'
+      : '';
+    return `
+      <div style="display: flex; flex-direction: column; gap: 2px;">
+        <span class="badge ${colorClass}" style="font-size: 11px;" title="${sourceLabel}">${signal}</span>
+        <span style="font-size: 10px; color: var(--muted-color, #888);">${action}</span>
+      </div>
     `;
   }
 
@@ -510,6 +546,12 @@ class FundManagerUI {
                 fund.pb_value = result.pb_value;
                 fund.index_code = result.index_code;
                 fund.index_name = result.index_name;
+              }
+              // 更新定投信号
+              if (result.valuation_signal) {
+                fund.valuation_signal = result.valuation_signal;
+                fund.signal_action = result.signal_action;
+                fund.signal_source = result.signal_source;
               }
               // 实时更新单个基金行
               this.updateFundRow(result.fund_code);

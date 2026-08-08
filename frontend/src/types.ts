@@ -46,6 +46,10 @@ export interface Fund {
   pe_percentile?: number;
   pb_value?: number;
   pb_percentile?: number;
+  // 定投信号
+  valuation_signal?: string;  // 深度低估/低估/合理/偏高/高估
+  signal_action?: string;  // 加倍定投/正常定投/持有/止盈/卖出
+  signal_source?: string;  // 信号数据来源
 }
 
 export interface FundData {
@@ -89,6 +93,10 @@ export interface ValuationResult {
   pe_percentile?: number;
   pb_value?: number;
   pb_percentile?: number;
+  // 定投信号
+  valuation_signal?: string;  // 深度低估/低估/合理/偏高/高估
+  signal_action?: string;  // 加倍定投/正常定投/持有/止盈/卖出
+  signal_source?: string;  // 信号数据来源
 }
 
 export interface MarketData {
