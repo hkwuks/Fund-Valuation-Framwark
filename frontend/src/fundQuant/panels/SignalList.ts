@@ -154,14 +154,14 @@ export class SignalList extends PanelBase {
         const key = `${s.fund_code}|${s.direction}|${s.confidence}`
         const isNew = existingRows.length > 0 && !existingKeys.has(key)
         return `<tr data-code="${s.fund_code}" data-key="${key}" class="${isNew ? 'sig-row-new' : ''}">
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);">
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);">
             <span style="font-weight:600;color:var(--text-primary);">${s.fund_name || s.fund_code}</span>
             <span style="font-size:11px;color:var(--text-tertiary);margin-left:4px;">${s.fund_code}</span>
           </td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);">
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);">
             <span class="${DIR_CLASS[s.direction] || ''}" style="font-weight:600;">${DIR_LABEL[s.direction] || s.direction}</span>
           </td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:right;">
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:right;">
             <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;">
               <span style="color:var(--text-primary);font-weight:600;">${(s.confidence * 100).toFixed(0)}%</span>
               <div style="width:50px;height:6px;background:var(--bg-tertiary);border-radius:3px;">
@@ -169,9 +169,9 @@ export class SignalList extends PanelBase {
               </div>
             </div>
           </td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);font-size:12px;">${s.strategy_name || '-'}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:right;color:var(--text-tertiary);font-size:11px;">${(s.created_at || '').slice(5, 16)}</td>
-          <td style="padding:6px 8px;border-bottom:1px solid var(--border-light);text-align:center;">
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);font-size:12px;">${s.strategy_name || '-'}</td>
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:right;color:var(--text-tertiary);font-size:11px;">${(s.created_at || '').slice(5, 16)}</td>
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:center;">
             <button class="btn btn-sm btn-ghost sig-study-btn" data-code="${s.fund_code}" data-direction="${s.direction}" data-confidence="${s.confidence}" data-strategy="${s.strategy_name || ''}" data-timestamp="${s.created_at || ''}" title="研究此信号" style="font-size:11px;padding:1px 4px;">🔍</button>
           </td>
         </tr>`
