@@ -74,6 +74,11 @@ class DataCollectRequest(BaseModel):
     years: int = 5
 
 
+class EvaluatePoolRequest(BaseModel):
+    fund_codes: List[str]
+    force: bool = False
+
+
 # ── 初始化 ──
 init_db()
 logger.info("FundQuant 数据库已初始化")
@@ -700,6 +705,109 @@ async def signal_stream():
         except Exception as e:
             logger.error(f"SSE 推送异常: {e}")
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── 批量信号评估 ──
+
+# 策略 applicable_fund_types 用旧值(stock/hybrid/index)，此处映射到 FundType 新值
+_APPLICABLE_TO_NEW = {
+    "stock": "equity", "hybrid": "equity", "index": "index",
+    "bond": "bond", "qdii": "qdii", "commodity": "commodity",
+    "balanced": "balanced",
+}
+
+
+def _fund_type_matches(applicable: list, fund_type: str) -> bool:
+    """判断策略适用类型列表是否匹配某基金类型（兼容旧值映射）"""
+    if not applicable:
+        return True
+    for a in applicable:
+        if _APPLICABLE_TO_NEW.get(a, a) == fund_type:
+            return True
+    return False
+
+
+@router.post("/signal/evaluate-pool")
+async def evaluate_pool(req: EvaluatePoolRequest):
+    """遍历基金池跑择时策略，生成真实信号并落库+SSE推送"""
+    from ..fund_quant.strategy.base import StrategyRegistry
+    from ..fund_quant.data.classifier import classify_fund_for_quant
+    from ..fund_quant.data.storage import get_fund_meta
+    from ..market_data import determine_market_type, MarketType
+    from .funds import _load_funds_sync
+
+    registry = StrategyRegistry()
+    all_timing = await asyncio.to_thread(registry.list_by_type, "timing")
+
+    # 从 funds.json 加载基金元数据（fund_metadata 表可能为空）
+    fund_meta_map: dict[str, dict] = {}
+    try:
+        all_funds = await asyncio.to_thread(_load_funds_sync)
+        for f in all_funds:
+            fund_meta_map[f["fund_code"]] = f
+    except Exception:
+        logger.warning("无法加载 funds.json，降级使用空元数据")
+
+    emitted = 0
+    results = []
+
+    for code in req.fund_codes:
+        try:
+            nav_data = await asyncio.to_thread(get_nav_history, code)
+            if not nav_data:
+                continue
+            nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
+            if len(nav_values) < 30:
+                results.append({"fund_code": code, "status": "skip", "reason": "净值不足"})
+                continue
+
+            # 确定基金类型：优先 funds.json 的原始类型，再 fallback DB 元数据
+            f_info = fund_meta_map.get(code, {})
+            fund_name = f_info.get("fund_name", "")
+            raw_type = f_info.get("fund_type", "")
+            if not raw_type:
+                meta = await asyncio.to_thread(get_fund_meta, code)
+                raw_type = (meta or {}).get("fund_type", "")
+                fund_name = (meta or {}).get("fund_name", fund_name)
+            fund_type = classify_fund_for_quant(raw_type, fund_name).value
+
+            # 场内 index 类 ETF 才允许做空（场外 ETF联接不可做空）
+            market_type = await asyncio.to_thread(determine_market_type, code, fund_name, raw_type)
+            allow_short = fund_type == "index" and market_type == MarketType.ON_EXCHANGE
+
+            fund_signals = []
+            for s_info in all_timing:
+                if not _fund_type_matches(s_info.get("applicable_fund_types", []), fund_type):
+                    continue
+                strategy = await asyncio.to_thread(registry.get_strategy, s_info["name"])
+                if not strategy:
+                    continue
+                try:
+                    strategy._state["nav_values"] = nav_values
+                    strategy._state["nav_dates"] = [r["date"] for r in nav_data if r.get("nav")]
+                    strategy._state["fund_code"] = code
+                    if allow_short and s_info["name"] == "valuation_deviation":
+                        strategy.params["allow_short"] = True
+                    sigs = await asyncio.to_thread(strategy.on_evaluate, None, None) or []
+                    fund_signals.extend(sigs)
+                except Exception as e:
+                    logger.warning(f"批量评估策略 [{s_info['name']}] 异常 [{code}]: {e}")
+
+            # 落库 + SSE 推送
+            for sig in fund_signals:
+                sig.fund_name = fund_name
+                sig.fund_type = fund_type
+                signal_output_service.emit_signal(sig)
+                emitted += 1
+
+            results.append({
+                "fund_code": code, "fund_name": fund_name, "fund_type": fund_type,
+                "status": "ok", "signals": len(fund_signals), "nav_count": len(nav_values),
+            })
+        except Exception as e:
+            logger.warning(f"批量评估失败 [{code}]: {e}")
+
+    return {"success": True, "data": {"results": results, "emitted": emitted}}
 
 
 # ── 组合 ──

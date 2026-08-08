@@ -275,6 +275,8 @@ export const fundQuantApi = {
     return get<{ success: boolean; data: SignalRecord[] }>(`/signal/history?${params}`)
   },
   getLatestSignals: () => get<{ success: boolean; data: SignalRecord[] }>('/signal/latest'),
+  evaluatePool: (fundCodes: string[]) =>
+    post<{ success: boolean; data: { results: any[]; emitted: number; failed: string[] } }>('/signal/evaluate-pool', { fund_codes: fundCodes }),
 
   // Allocation
   optimizeAllocation: (fund_codes: string[], params?: any) =>

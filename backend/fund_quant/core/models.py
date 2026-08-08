@@ -13,6 +13,18 @@ TYPE_COMPAT = {
     "hybrid": "equity",
     "etf": "index",
     "etf_link": "index",
+    # 中文原始类型（funds.json / 采集数据）
+    "ETF 基金": "index",
+    "指数型-股票": "index",
+    "指数型-海外股票": "qdii",
+    "指数型-固收": "bond",
+    "指数型-其他": "index",
+    "债券型-混合一级": "bond",
+    "债券型-混合二级": "bond",
+    "混合型-偏债": "balanced",
+    "混合型-偏股": "equity",
+    "QDII-普通股票": "qdii",
+    "海外混合": "qdii",
 }
 
 
