@@ -31,9 +31,17 @@ def classify_fund_for_quant(fund_type_raw: str, fund_name: str = "") -> FundType
     if "FOF" in fund_type_raw or "基金中基金" in fund_type_raw:
         return FundType.FOF
 
-    # 3. 商品/黄金
-    if any(kw in fund_type_raw for kw in ["商品", "黄金"]):
+    # 3. 商品/黄金（含场内黄金ETF，按名称判定）
+    if any(kw in fund_type_raw for kw in ["商品", "黄金"]) or "黄金" in fund_name:
         return FundType.COMMODITY
+
+    # 3.5 场内 ETF 按名称细分（标普/纳指/沪深300/中证500 → index；国债/债 → bond；货币 → money）
+    if "ETF" in fund_type_raw or "ETF" in fund_name:
+        if any(kw in fund_name for kw in ["债", "国债", "金融债"]):
+            return FundType.BOND
+        if "货币" in fund_name or "现金" in fund_name:
+            return FundType.MONEY
+        return FundType.INDEX
 
     # 4. keyword 映射
     return _classify_by_keywords(fund_type_raw)

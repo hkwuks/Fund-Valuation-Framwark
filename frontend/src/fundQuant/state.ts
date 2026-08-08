@@ -118,12 +118,16 @@ const DEFAULT_LAYOUT: LayoutConfig = {
   name: '默认布局',
   panels: {
     kpi: { visible: true, order: 0 },
-    allocation: { visible: true, order: 1, grid_pos: { x: 0, y: 1, w: 2, h: 1 } },
-    signal_list: { visible: true, order: 2, grid_pos: { x: 0, y: 2, w: 1, h: 1 } },
-    nav_chart: { visible: false, order: 3, grid_pos: { x: 0, y: 1, w: 2, h: 1 } },
-    fund_ranking: { visible: false, order: 4, grid_pos: { x: 1, y: 0, w: 1, h: 1 } },
-    attribution: { visible: false, order: 5, grid_pos: { x: 0, y: 3, w: 1, h: 1 } },
-    monthly_returns: { visible: false, order: 6, grid_pos: { x: 1, y: 3, w: 1, h: 1 } },
+    allocation: { visible: true, order: 1, grid_pos: { x: 0, y: 1, w: 3, h: 2 } },
+    signal_list: { visible: true, order: 2, grid_pos: { x: 0, y: 3, w: 1, h: 1 } },
+    detail: { visible: true, order: 3, grid_pos: { x: 1, y: 3, w: 2, h: 1 } },
+    nav_chart: { visible: false, order: 4, grid_pos: { x: 0, y: 1, w: 2, h: 1 } },
+    fund_ranking: { visible: false, order: 5, grid_pos: { x: 0, y: 3, w: 1, h: 1 } },
+    attribution: { visible: false, order: 6, grid_pos: { x: 1, y: 3, w: 1, h: 1 } },
+    monthly_returns: { visible: false, order: 7, grid_pos: { x: 2, y: 3, w: 1, h: 1 } },
+    backtest: { visible: false, order: 8, grid_pos: { x: 0, y: 4, w: 2, h: 1 } },
+    'param-scan': { visible: false, order: 9, grid_pos: { x: 2, y: 4, w: 1, h: 1 } },
+    'paper-trade': { visible: true, order: 10, grid_pos: { x: 0, y: 4, w: 3, h: 1 } },
   },
 }
 

@@ -57,6 +57,8 @@ export class FundQuantDashboard {
       const codes = state.get('fundPool').map(f => f.fund_code)
       if (codes.length) {
         fundQuantApi.collectNavData(codes, 5).catch(() => {})
+        // 触发批量信号评估（生成真实信号，落库+SSE推送）
+        fundQuantApi.evaluatePool(codes).catch(() => {})
       }
       this.layout!.refreshAll()
       this.startRefreshTimer()

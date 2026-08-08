@@ -75,11 +75,23 @@ class RiskParityStrategy(FundStrategyBase):
         max_w = self.params["max_weight"]
         min_w = self.params["min_weight"]
 
+        # 自适应最小权重：min_weight*n 必须 <= 1 才存在可行解
+        # 基金数多时降低下限，否则 SLSQP 无解回退等权
+        if min_w * n > 1.0:
+            min_w = 0.9 / n
+
         bounds = [(min_w, max_w) for _ in range(n)]
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
 
-        # 初始解: 等权
-        w0 = np.array([1.0 / n] * n)
+        # 初始解: 逆方差加权（比等权更接近风险平价解，避免 SLSQP 收敛到等权平坦区）
+        diag_var = np.diag(cov)
+        if np.all(diag_var > 0):
+            w0 = (1.0 / diag_var)
+            w0 = w0 / np.sum(w0)
+            w0 = np.clip(w0, min_w, max_w)
+            w0 = w0 / np.sum(w0)
+        else:
+            w0 = np.array([1.0 / n] * n)
 
         try:
             from scipy.optimize import minimize
