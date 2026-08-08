@@ -236,10 +236,13 @@ class FundManagerUI {
     const source = fund.signal_source || '';
     const sourceLabel = source === 'bond_yield' ? '基于债券收益率'
       : source === 'sp500_pe' ? '基于标普500 PE分位'
+      : source === 'sp500_pe_proxy' ? '以标普500PE近似'
+      : source === 'hsi_pe' ? '基于恒生指数PE分位'
       : source === 'overseas_price' ? '基于海外价格分位'
       : source === 'gold_price' ? '基于金价分位'
       : source === 'pe_lg' ? '基于历史PE分位'
-      : source === 'pe_csindex' ? '基于短周期PE分位'
+      : source === 'pe_csindex' ? '基于中证官网PE分位'
+      : source === 'pe_csindex_short' ? '基于短周期PE(仅20日)'
       : '';
     return `
       <div style="display: flex; flex-direction: column; gap: 2px;">
