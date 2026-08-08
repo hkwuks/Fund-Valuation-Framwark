@@ -357,3 +357,43 @@ async def clear_funds():
             "success": False,
             "message": f"清空基金列表失败: {str(e)}"
         }
+
+
+@router.get(
+    "/{fund_code}/nav-history",
+    summary="获取基金净值历史",
+    description="获取指定基金的净值历史数据（用于净值走势图）"
+)
+async def get_fund_nav_history(fund_code: str, limit: int = 250):
+    """
+    获取基金净值历史
+
+    - **fund_code**: 基金代码
+    - **limit**: 返回最近多少条记录（默认 250）
+    """
+    try:
+        from ..fund_quant.data.storage import get_nav_history
+        nav_data = await asyncio.to_thread(get_nav_history, fund_code)
+        if not nav_data:
+            # 尝试采集
+            try:
+                from ..fund_quant.data.collector import fund_data_collector
+                from ..fund_quant.data.storage import save_nav_points
+                points = await fund_data_collector.fetch_nav_history(
+                    fund_code=fund_code,
+                    start_date=(datetime.now() - timedelta(days=365 * 5)).strftime("%Y%m%d"),
+                )
+                if points:
+                    await asyncio.to_thread(save_nav_points, points)
+                    nav_data = await asyncio.to_thread(get_nav_history, fund_code)
+            except Exception as e:
+                logger.warning(f"自动采集净值失败 {fund_code}: {e}")
+
+        if not nav_data:
+            return {"success": False, "message": f"基金 {fund_code} 无净值数据", "data": []}
+
+        recent = nav_data[-limit:] if len(nav_data) > limit else nav_data
+        return {"success": True, "data": recent}
+    except Exception as e:
+        logger.error(f"获取净值历史失败: {fund_code}, {e}")
+        return {"success": False, "message": f"获取净值历史失败: {str(e)}", "data": []}

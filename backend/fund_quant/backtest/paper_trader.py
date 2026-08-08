@@ -285,6 +285,43 @@ class FundPaperTrader:
                         "date": today.isoformat(),
                         "status": "confirmed",
                     })
+            elif direction == "short":
+                # 做空开仓（融券卖出）：获得资金 + 建空头（负仓位）
+                proceeds = round(shares * nav, 2)
+                state.cash += proceeds
+                state.positions[code] = state.positions.get(code, 0.0) - shares
+                state.trade_log.append({
+                    "fund_code": code,
+                    "direction": "short",
+                    "shares": shares,
+                    "nav": nav,
+                    "amount": proceeds,
+                    "date": today.isoformat(),
+                    "status": "confirmed",
+                })
+            elif direction == "cover":
+                # 做空平仓（买券还券）：付出资金 + 减少空头（负仓位变正）
+                held_short = max(-state.positions.get(code, 0.0), 0.0)
+                actual = min(shares, held_short)
+                if actual <= 0:
+                    confirmed.append(order)
+                    continue
+                cost = round(actual * nav, 2)
+                if cost > state.cash:
+                    continue  # 资金不足，延迟平仓
+                state.cash -= cost
+                state.positions[code] = state.positions.get(code, 0.0) + actual
+                if abs(state.positions[code]) < 1e-9:
+                    del state.positions[code]
+                state.trade_log.append({
+                    "fund_code": code,
+                    "direction": "cover",
+                    "shares": actual,
+                    "nav": nav,
+                    "amount": cost,
+                    "date": today.isoformat(),
+                    "status": "confirmed",
+                })
             elif direction == "buy":
                 cost = round(shares * nav, 2)
                 if cost <= state.cash:
@@ -334,6 +371,7 @@ class FundPaperTrader:
         for code, shares in state.positions.items():
             nav = navs.get(code)
             if nav:
+                # 空头为负仓位（负债），多头正仓位
                 total += shares * nav
         return total
 

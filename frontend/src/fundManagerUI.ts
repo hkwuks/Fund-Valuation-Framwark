@@ -3,6 +3,7 @@ import { api } from './api';
 import { toast } from './toast';
 import { StorageService } from './storage';
 import type { Fund } from './types';
+import * as echarts from 'echarts';
 
 class FundManagerUI {
   private container: HTMLElement | null = null;
@@ -131,6 +132,7 @@ class FundManagerUI {
                   <tr>
                     <th>基金代码</th>
                     <th>基金名称</th>
+                    <th>市场</th>
                     <th>基金类型</th>
                     <th>持有份额</th>
                     <th>最新净值<span class="nav-date" style="font-weight: normal; margin-left: 4px;">(日期)</span></th>
@@ -144,6 +146,7 @@ class FundManagerUI {
                       </span>
                     </th>
                     <th>估值方法</th>
+                    <th>折溢价</th>
                     <th class="sortable-header" id="sort-pe-percentile" style="cursor: pointer; user-select: none;">
                       估值分位
                       <span class="sort-icons">
@@ -194,10 +197,28 @@ class FundManagerUI {
       ? `${fund.index_name || '指数'} 当前 PE ${fund.pe_value != null ? fund.pe_value.toFixed(2) : '--'}，历史分位 ${fund.pe_percentile.toFixed(1)}%`
       : this.getPercentileNaTitle(fund);
 
+    // 市场类型（场内/场外）
+    const marketType = this.getMarketType(fund);
+    const marketBadge = marketType === 'on_exchange'
+      ? `<span class="badge badge-info">场内</span>`
+      : marketType === 'off_exchange'
+        ? `<span class="badge badge-secondary">场外</span>`
+        : `<span class="badge badge-secondary">未知</span>`;
+
+    // 场内折溢价
+    const premiumDisplay = fund.premium_percent != null
+      ? (fund.premium_percent > 0.5
+          ? `<span class="premium-tag premium-positive" title="市价高于净值，溢价买入需谨慎">${fund.premium_percent.toFixed(2)}% 溢价</span>`
+          : fund.premium_percent < -0.5
+            ? `<span class="premium-tag premium-negative" title="市价低于净值，折价买入更划算">${fund.premium_percent.toFixed(2)}% 折价</span>`
+            : `<span class="premium-tag premium-flat" title="市价与净值接近">${fund.premium_percent.toFixed(2)}%</span>`)
+      : (marketType === 'on_exchange' ? '<span style="opacity:0.4">--</span>' : '<span style="opacity:0.3">-</span>');
+
     return `
       <tr class="fade-in" data-fund-code="${fund.fund_code}">
         <td><strong>${fund.fund_code}</strong></td>
         <td>${fund.fund_name}</td>
+        <td>${marketBadge}</td>
         <td><span class="badge badge-secondary">${fund.fund_type}</span></td>
         <td>${this.formatNumber(fund.total_shares)}</td>
         <td>${navDisplay} ${navDateDisplay}</td>
@@ -207,6 +228,7 @@ class FundManagerUI {
           ${changePercentDisplay}
         </td>
         <td><span class="valuation-method-tag">${valuationMethodDisplay}</span></td>
+        <td>${premiumDisplay}</td>
         <td title="${pePercentileTitle}">${pePercentileDisplay}</td>
         <td>${this.renderSignal(fund)}</td>
         <td>
@@ -216,6 +238,25 @@ class FundManagerUI {
         </td>
       </tr>
     `;
+  }
+
+  // 市场类型判定（与后端 determine_market_type 逻辑一致）
+  private getMarketType(fund: Fund): 'on_exchange' | 'off_exchange' | 'unknown' {
+    const code = fund.fund_code || '';
+    const name = fund.fund_name || '';
+    const type = fund.fund_type || '';
+    if (!code) return 'unknown';
+    if (name.includes('联接')) return 'off_exchange';
+    if (/ETF|LOF|封闭式/.test(name)) return 'on_exchange';
+    if (/ETF|LOF|封闭式/.test(type)) return 'on_exchange';
+    const p2 = code.slice(0, 2);
+    if (['15', '16', '18'].includes(p2)) return 'on_exchange';
+    if (p2 === '51') {
+      return ['510', '511', '512', '513', '515', '516', '517', '518'].includes(code.slice(0, 3)) ? 'on_exchange' : 'off_exchange';
+    }
+    if (p2 === '50' || p2 === '52') return 'on_exchange';
+    if (code.startsWith('0')) return 'off_exchange';
+    return 'unknown';
   }
 
   // 定投信号显示
@@ -244,10 +285,18 @@ class FundManagerUI {
       : source === 'pe_csindex' ? '基于中证官网PE分位'
       : source === 'pe_csindex_short' ? '基于短周期PE(仅20日)'
       : '';
+
+    // 场内基金高估 → 加做空提示线（融券门槛高，仅作提示）
+    const isOnExchange = this.getMarketType(fund) === 'on_exchange';
+    const shortHint = (isOnExchange && (signal === '高估' || signal === '偏高'))
+      ? `<span style="font-size: 10px; color: #e74c3c; font-weight: 600;" title="场内基金可融券做空（需两融账户且标的为两融标的）">🛑 可融券做空</span>`
+      : '';
+
     return `
       <div style="display: flex; flex-direction: column; gap: 2px;">
         <span class="badge ${colorClass}" style="font-size: 11px;" title="${sourceLabel}">${signal}</span>
         <span style="font-size: 10px; color: var(--muted-color, #888);">${action}</span>
+        ${shortHint}
       </div>
     `;
   }
@@ -341,14 +390,24 @@ class FundManagerUI {
         if (fundCode) {
           this.handleDeleteFund(fundCode);
         }
+        return; // 删除按钮不触发行点击弹窗
       }
 
       if (target.id === 'sort-change-percent' || target.closest('#sort-change-percent')) {
         this.handleSortChangePercent();
+        return;
       }
 
       if (target.id === 'sort-pe-percentile' || target.closest('#sort-pe-percentile')) {
         this.handleSortPePercentile();
+        return;
+      }
+
+      // 点击基金行 → 弹出基金全量信息
+      const row = target.closest<HTMLElement>('tr[data-fund-code]');
+      if (row) {
+        const fundCode = row.dataset.fundCode;
+        if (fundCode) this.showFundDetail(fundCode);
       }
     });
 
@@ -552,6 +611,11 @@ class FundManagerUI {
                 fund.valuation_signal = result.valuation_signal;
                 fund.signal_action = result.signal_action;
                 fund.signal_source = result.signal_source;
+              }
+              // 更新场内折溢价
+              if (result.premium_percent != null) {
+                fund.premium_percent = result.premium_percent;
+                fund.iopv = result.iopv;
               }
               // 实时更新单个基金行
               this.updateFundRow(result.fund_code);
@@ -767,6 +831,131 @@ class FundManagerUI {
     }
     this.sortColumn = 'pe_percentile';
     this.sortAndRender();
+  }
+
+  // ═══ 基金全量信息弹窗 ═══
+
+  private async showFundDetail(fundCode: string): Promise<void> {
+    const fund = fundManager.getFund(fundCode);
+    if (!fund) return;
+
+    // 创建遮罩和弹窗
+    const overlay = document.createElement('div');
+    overlay.className = 'fund-modal-overlay';
+    overlay.innerHTML = `
+      <div class="fund-modal">
+        <div class="fund-modal-header">
+          <h3>${fund.fund_name} <span style="font-weight:400;font-size:13px;color:var(--text-tertiary);">${fund.fund_code}</span></h3>
+          <button class="fund-modal-close" style="background:none;border:none;font-size:24px;cursor:pointer;color:var(--text-secondary);">&times;</button>
+        </div>
+        <div class="fund-modal-body">
+          <div class="fund-modal-loading">加载中...</div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    // 绑定关闭
+    const close = () => overlay.remove();
+    overlay.querySelector('.fund-modal-close')?.addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    // 加载数据
+    try {
+      const navRes = await api.getFundNavHistory(fundCode);
+      const navData = navRes?.success && navRes?.data ? navRes.data : [];
+      this.renderFundDetailModal(fund, navData, overlay);
+    } catch (e) {
+      overlay.querySelector('.fund-modal-body')!.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text-tertiary);">加载失败</div>';
+    }
+  }
+
+  private renderFundDetailModal(fund: Fund, navData: any[], overlay: HTMLElement): void {
+    const body = overlay.querySelector('.fund-modal-body')!;
+
+    // 基本信息
+    const isDark = document.body.classList.contains('dark-mode');
+    const signalColor = (s: string) => s === '深度低估' || s === '低估' ? 'var(--success-color)' : s === '高估' ? 'var(--danger-color)' : s === '偏高' ? 'var(--warning-color)' : 'var(--text-secondary)';
+    const marketType = this.getMarketType(fund);
+    const marketLabel = marketType === 'on_exchange' ? '场内' : marketType === 'off_exchange' ? '场外' : '未知';
+
+    body.innerHTML = `
+      <div class="fund-modal-info">
+        <div class="info-grid">
+          <div class="info-item"><span class="label">基金类型</span><span class="value">${fund.fund_type}</span></div>
+          <div class="info-item"><span class="label">市场类型</span><span class="value">${marketLabel}</span></div>
+          <div class="info-item"><span class="label">最新净值</span><span class="value">${fund.nav ? fund.nav.toFixed(4) : '-'}</span></div>
+          <div class="info-item"><span class="label">净值日期</span><span class="value">${fund.nav_date || '-'}</span></div>
+          <div class="info-item"><span class="label">预估涨跌</span><span class="value" style="color:${fund.estimated_change_percent && fund.estimated_change_percent >= 0 ? 'var(--danger-color)' : 'var(--success-color)'}">${fund.estimated_change_percent != null ? (fund.estimated_change_percent >= 0 ? '+' : '') + fund.estimated_change_percent.toFixed(2) + '%' : '-'}</span></div>
+          ${fund.premium_percent != null ? `<div class="info-item"><span class="label">折溢价</span><span class="value" style="color:${fund.premium_percent > 0.5 ? 'var(--danger-color)' : fund.premium_percent < -0.5 ? 'var(--success-color)' : 'var(--text-secondary)'}">${fund.premium_percent.toFixed(2)}%</span></div>` : ''}
+          <div class="info-item"><span class="label">持有份额</span><span class="value">${this.formatNumber(fund.total_shares)}</span></div>
+        </div>
+      </div>
+      <div class="fund-modal-section">
+        <h4>📈 净值走势</h4>
+        <div class="fund-modal-chart"></div>
+      </div>
+      <div class="fund-modal-section">
+        <h4>📊 估值信号</h4>
+        <div class="fund-modal-signals">
+          <div class="info-grid">
+            ${fund.pe_percentile != null ? `
+              <div class="info-item"><span class="label">估值分位</span><span class="value" style="color:${fund.pe_percentile > 70 ? 'var(--danger-color)' : fund.pe_percentile > 50 ? 'var(--warning-color)' : 'var(--success-color)'}">${fund.pe_percentile.toFixed(1)}%</span></div>
+              <div class="info-item"><span class="label">PE</span><span class="value">${fund.pe_value != null ? fund.pe_value.toFixed(2) : '-'}</span></div>
+              <div class="info-item"><span class="label">跟踪指数</span><span class="value">${fund.index_name || '-'}</span></div>
+            ` : ''}
+            ${fund.valuation_signal ? `
+              <div class="info-item"><span class="label">定投信号</span><span class="value" style="font-weight:700;color:${signalColor(fund.valuation_signal)}">${fund.valuation_signal}</span></div>
+              <div class="info-item"><span class="label">建议操作</span><span class="value">${fund.signal_action || '-'}</span></div>
+            ` : ''}
+          </div>
+        </div>
+      </div>`;
+
+    // 渲染净值走势图
+    const chartEl = body.querySelector<HTMLElement>('.fund-modal-chart');
+    if (chartEl && navData.length > 1) {
+      this.renderModalChart(chartEl, navData, isDark, fund.fund_name);
+    } else if (chartEl) {
+      chartEl.innerHTML = '<div style="padding:30px;text-align:center;color:var(--text-tertiary);font-size:13px;">暂无净值数据</div>';
+    }
+  }
+
+  private renderModalChart(chartEl: HTMLElement, navData: any[], isDark: boolean, fundName: string): void {
+    const dates = navData.map((d: any) => (d.date || '').slice(0, 10));
+    const navValues = navData.map((d: any) => d.nav || d.adjusted_nav || 0);
+
+    const chart = echarts.init(chartEl);
+    const axColor = isDark ? '#8494ad' : '#64748b';
+    const axLineColor = isDark ? '#1e2d42' : '#cbd5e1';
+    const gridColor = isDark ? '#152238' : '#e2e8f0';
+    const navColor = isDark ? '#4a90d9' : '#3b82f6';
+    const navAreaColor = isDark ? 'rgba(74,144,217,0.2)' : 'rgba(59,130,246,0.12)';
+
+    chart.setOption({
+      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+      grid: { left: '3%', right: '4%', bottom: '8%', top: '4%', containLabel: true },
+      xAxis: {
+        type: 'category', data: dates,
+        axisLabel: { rotate: 45, fontSize: 11, color: axColor },
+        axisLine: { lineStyle: { color: axLineColor } },
+        splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+      },
+      yAxis: {
+        type: 'value', scale: true,
+        axisLabel: { color: axColor },
+        splitLine: { lineStyle: { color: gridColor, type: 'dashed' as const } },
+      },
+      dataZoom: [{ type: 'inside', xAxisIndex: 0 }],
+      series: [{
+        type: 'line', name: fundName,
+        data: navValues, smooth: true,
+        lineStyle: { width: 2, color: navColor },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: navAreaColor },
+          { offset: 1, color: isDark ? 'rgba(74,144,217,0)' : 'rgba(59,130,246,0)' },
+        ]) },
+      }],
+    });
   }
 }
 

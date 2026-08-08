@@ -8,7 +8,7 @@ export class Allocation extends PanelBase {
   private chartType: 'pie' | 'treemap' = 'pie'
 
   constructor() {
-    super({ id: 'allocation', title: '组合配置', defaultGridPos: { x: 1, y: 2, w: 1, h: 1 } })
+    super({ id: 'allocation', title: '建议仓位', defaultGridPos: { x: 0, y: 1, w: 2, h: 1 } })
   }
 
   render(): HTMLElement {
@@ -16,10 +16,11 @@ export class Allocation extends PanelBase {
     el.className = 'panel-allocation'
     el.innerHTML = `
       <div class="panel-header">
-        <h3>组合配置</h3>
+        <h3>💰 建议仓位</h3>
         <div class="panel-toolbar">
+          <span style="font-size:11px;color:var(--text-tertiary);">基于组合优化，给出每只基金的建议配置比例</span>
           <button class="btn btn-sm btn-outline alloc-toggle-chart" title="切换图表类型">📊</button>
-          <button class="btn btn-sm btn-outline alloc-optimize">优化</button>
+          <button class="btn btn-sm btn-primary alloc-optimize" style="font-weight:600;">⚡ 一键优化</button>
           <button class="btn btn-sm btn-outline btn-save-layout alloc-save-layout">保存</button>
         </div>
       </div>
@@ -140,12 +141,20 @@ export class Allocation extends PanelBase {
     if (!el) return
     const pool = state.get('fundPool')
     const sorted = Object.entries(weights).sort((a, b) => b[1] - a[1])
+    const total = sorted.reduce((s, [, w]) => s + w, 0)
     el.innerHTML = `<table class="alloc-table">
-      <thead><tr><th>基金</th><th class="text-right">权重</th></tr></thead>
-      <tbody>${sorted.map(([code, w]) => `
-        <tr><td class="alloc-name">${pool.find(f => f.fund_code === code)?.fund_name || code}</td>
-        <td class="text-right alloc-weight">${(w * 100).toFixed(1)}%</td></tr>
-      `).join('')}</tbody></table>`
+      <thead><tr><th>#</th><th>基金</th><th class="text-right">建议权重</th><th class="text-right">仓位建议</th></tr></thead>
+      <tbody>${sorted.map(([code, w], i) => {
+        const fund = pool.find(f => f.fund_code === code)
+        const pct = w * 100
+        const suggestion = pct > 25 ? '重仓' : pct > 10 ? '标准仓' : pct > 3 ? '轻仓' : pct > 0 ? '观察仓' : '清仓'
+        const color = pct > 25 ? 'var(--danger-color)' : pct > 10 ? 'var(--warning-color)' : pct > 0 ? 'var(--success-color)' : 'var(--text-tertiary)'
+        return `<tr><td style="color:var(--text-tertiary);font-size:12px;">${i + 1}</td>
+          <td class="alloc-name"><strong>${fund?.fund_name || code}</strong><span style="font-size:11px;color:var(--text-tertiary);margin-left:4px;">${code}</span></td>
+          <td class="text-right alloc-weight" style="font-weight:700;color:${color};">${pct.toFixed(1)}%</td>
+          <td class="text-right"><span style="color:${color};font-weight:600;">${suggestion}</span></td></tr>`
+      }).join('')}</tbody></table>
+      <div style="text-align:right;font-size:11px;color:var(--text-tertiary);margin-top:6px;">合计仓位 ${(total * 100).toFixed(1)}%（其余为现金/低配）</div>`
   }
 
   async refresh(): Promise<void> {

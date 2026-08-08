@@ -79,6 +79,9 @@ class ValuationResult(BaseModel):
     valuation_signal: Optional[str] = Field(None, description="定投信号：深度低估/低估/合理/偏高/高估")
     signal_action: Optional[str] = Field(None, description="建议操作：加倍定投/正常定投/持有/止盈/卖出")
     signal_source: Optional[str] = Field(None, description="信号数据来源：PE分位/债券收益率/价格分位/黄金价格")
+    # 场内折溢价
+    iopv: Optional[float] = Field(None, description="场内ETF IOPV 实时估值")
+    premium_percent: Optional[float] = Field(None, description="场内ETF折溢价率(%，正=溢价)")
 
 
 class MarketData(BaseModel):

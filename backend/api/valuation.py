@@ -238,6 +238,8 @@ async def get_fund_valuation_batch_stream(request: ValuationBatchRequest):
                             "valuation_signal": result.valuation_signal,
                             "signal_action": result.signal_action,
                             "signal_source": result.signal_source,
+                            "iopv": result.iopv,
+                            "premium_percent": result.premium_percent,
                             "timestamp": result.timestamp.isoformat()
                             if result.timestamp
                             else None,

@@ -2247,7 +2247,7 @@ class ETFPriceAPI:
             logger.debug(f"ETF {code} 使用缓存数据（TTL={ttl}s）")
             return cached_data
 
-        # ===== 数据源 1: 腾讯财经 API (最稳定) =====
+        # ===== 数据源 1: 腾讯财经 API (最稳定，且自带 IOPV 可算折溢价) =====
         try:
             # 腾讯 API 格式：sh510300, sz159915
             exchange = 'sh' if code.startswith('51') or code.startswith('50') else 'sz'
@@ -2255,6 +2255,7 @@ class ETFPriceAPI:
             content = await self._request_with_retry("GET", url, timeout=aiohttp.ClientTimeout(total=5.0))
             if content:
                 # 解析腾讯格式：v_sh510300="1~名称~代码~price~previous_close~..."
+                # ETF 完整 88 字段格式中，位置 78 为 IOPV 实时估值（如无则跳过折溢价）
                 match = re.search(r'"([^"]+)"', content)
                 if match:
                     parts = match.group(1).split("~")
@@ -2265,6 +2266,17 @@ class ETFPriceAPI:
                         change = price - previous_close
                         change_percent = (change / previous_close * 100) if previous_close else 0
 
+                        # IOPV → 折溢价率（溢价为正 = 市价高于净值）
+                        iopv = None
+                        premium_percent = None
+                        if len(parts) > 78 and parts[78]:
+                            try:
+                                iopv = float(parts[78])
+                                if iopv > 0:
+                                    premium_percent = round((price - iopv) / iopv * 100, 2)
+                            except ValueError:
+                                pass
+
                         result = {
                             "code": code,
                             "name": name,
@@ -2272,6 +2284,8 @@ class ETFPriceAPI:
                             "change": change,
                             "change_percent": round(change_percent, 2),
                             "previous_close": previous_close,
+                            "iopv": iopv,
+                            "premium_percent": premium_percent,
                         }
                         logger.debug(f"ETF {code} 数据获取成功（腾讯）：price={price}, change={change_percent}%")
                         self._cache.set(cache_key, result, ttl)
@@ -2279,7 +2293,51 @@ class ETFPriceAPI:
         except Exception as e:
             logger.debug(f"Tencent ETF API error for {code}: {e}")
 
-        # ===== 数据源 2: 新浪财经 API =====
+        # ===== 数据源 2: 东方财富 Push API =====
+        try:
+            # 修复 secid 构造逻辑：
+            # 1xxxxx = 上交所证券 (510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 516xxx, 517xxx, 518xxx, 50xxxx)
+            # 0xxxxx = 深交所证券 (15xxxx, 16xxxx, 18xxxx)
+            if code.startswith("51") or code.startswith("50"):
+                secid = f"1.{code}"
+            elif code.startswith("15") or code.startswith("16") or code.startswith("18"):
+                secid = f"0.{code}"
+            else:
+                # 默认尝试上交所格式，失败时会自动尝试深交所
+                secid = f"1.{code}"
+
+            url = "https://push2.eastmoney.com/api/qt/stock/get"
+            # fltt=2 时 f43 直接返回小数价格；f170=涨跌幅(%)，f169=涨跌额
+            params = {"secid": secid, "fields": "f43,f44,f45,f46,f47,f48,f49,f14,f169,f170", "fltt": "2", "invt": "2"}
+
+            content = await self._request_with_retry("GET", url, params=params, timeout=aiohttp.ClientTimeout(total=5.0))
+            if content:
+                data = json.loads(content)
+                if data.get("data"):
+                    tick = data["data"]
+                    price = float(tick.get("f43", 0))
+                    change_percent = float(tick.get("f170", 0))  # f170 = 涨跌幅(%)
+                    change = float(tick.get("f169", 0))          # f169 = 涨跌额
+                    previous_close = float(tick.get("f46", 0)) if tick.get("f46") else price - change
+
+                    result = {
+                        "code": code,
+                        "name": tick.get("f14", code),
+                        "price": price,
+                        "change": change,
+                        "change_percent": change_percent,
+                        "volume": float(tick.get("f47", 0)),
+                        "previous_close": previous_close,
+                        "iopv": None,
+                        "premium_percent": None,
+                    }
+                    logger.debug(f"ETF {code} 数据获取成功（东方财富）：price={price}, change={change_percent}%")
+                    self._cache.set(cache_key, result, ttl)
+                    return result
+        except Exception as e:
+            logger.debug(f"EastMoney ETF API error for {code}: {e}")
+
+        # ===== 数据源 3: 新浪财经 API =====
         try:
             exchange = 'sh' if code.startswith('51') or code.startswith('50') else 'sz'
             url = f"https://hq.sinajs.cn/list={exchange}{code}"
@@ -2302,95 +2360,14 @@ class ETFPriceAPI:
                             "change": change,
                             "change_percent": round(change_percent, 2),
                             "previous_close": previous_close,
+                            "iopv": None,
+                            "premium_percent": None,
                         }
                         logger.debug(f"ETF {code} 数据获取成功（新浪）：price={price}, change={change_percent}%")
                         self._cache.set(cache_key, result, ttl)
                         return result
         except Exception as e:
             logger.debug(f"Sina ETF API error for {code}: {e}")
-
-        # ===== 数据源 3: 东方财富 Push API (备用) =====
-        try:
-            # 修复 secid 构造逻辑：
-            # 1xxxxx = 上交所证券 (510xxx, 511xxx, 512xxx, 513xxx, 515xxx, 516xxx, 517xxx, 518xxx, 50xxxx)
-            # 0xxxxx = 深交所证券 (15xxxx, 16xxxx, 18xxxx)
-            if code.startswith("51") or code.startswith("50"):
-                secid = f"1.{code}"
-            elif code.startswith("15") or code.startswith("16") or code.startswith("18"):
-                secid = f"0.{code}"
-            else:
-                # 默认尝试上交所格式，失败时会自动尝试深交所
-                secid = f"1.{code}"
-
-            url = "https://push2.eastmoney.com/api/qt/stock/get"
-            params = {"secid": secid, "fields": "f43,f44,f45,f46,f47,f48,f49,f14,f169,f170"}
-
-            content = await self._request_with_retry("GET", url, params=params, timeout=aiohttp.ClientTimeout(total=5.0))
-            if content:
-                data = json.loads(content)
-                if data.get("data"):
-                    tick = data["data"]
-                    price = float(tick.get("f43", 0)) / 100
-                    # f44 是涨跌幅，直接使用更准确
-                    change_percent = float(tick.get("f44", 0))  # 东方财富直接返回百分比
-                    previous_close = float(tick.get("f45", 0)) / 100 if tick.get("f45") else float(tick.get("f46", 0)) / 100
-
-                    result = {
-                        "code": code,
-                        "name": tick.get("f14", code),
-                        "price": price,
-                        "change": price * change_percent / 100 if change_percent else 0,
-                        "change_percent": change_percent,
-                        "volume": float(tick.get("f47", 0)),
-                        "previous_close": previous_close,
-                    }
-                    logger.debug(f"ETF {code} 数据获取成功（东方财富）：price={price}, change={change_percent}%")
-                    self._cache.set(cache_key, result, ttl)
-                    return result
-        except Exception as e:
-            logger.debug(f"EastMoney ETF API error for {code}: {e}")
-
-        # ===== 数据源 3: 腾讯财经 API =====
-        try:
-            # 腾讯财经 API 格式：prefix + code
-            prefix = "sh" if code.startswith('51') or code.startswith('50') else "sz"
-            url = f"https://qt.gtimg.cn/q={prefix}{code}"
-            content = await self._request_with_retry("GET", url)
-            if content:
-                # 解析腾讯格式：v_sh510880="1~名称~代码~price~previous_close~open~high~low..."
-                # 完整格式参考：https://qt.gtimg.cn/q=sh510880
-                match = re.search(r'"([^"]+)"', content)
-                if match:
-                    parts = match.group(1).split("~")
-                    if len(parts) >= 5:
-                        # 腾讯格式详解：
-                        # 0: 未知标识
-                        # 1: 名称
-                        # 2: 代码
-                        # 3: 当前价
-                        # 4: 昨收价
-                        # 5: 开盘价
-                        # ...
-                        # 33: 涨跌幅 (带% 符号)
-                        name = parts[1] if len(parts) > 1 else code
-                        price = float(parts[3]) if len(parts) > 3 and parts[3] else 0
-                        previous_close = float(parts[4]) if len(parts) > 4 and parts[4] else 0
-                        change = price - previous_close
-                        change_percent = (change / previous_close * 100) if previous_close else 0
-
-                        result = {
-                            "code": code,
-                            "name": name,
-                            "price": price,
-                            "change": change,
-                            "change_percent": change_percent,
-                            "previous_close": previous_close,
-                        }
-                        logger.debug(f"ETF {code} 数据获取成功（腾讯财经）：price={price}, change={change_percent}%")
-                        self._cache.set(cache_key, result, ttl)
-                        return result
-        except Exception as e:
-            logger.debug(f"Tencent ETF API error for {code}: {e}")
 
         # ===== 数据源 4: AkShare 基金 ETF 实时行情 =====
         # 注意：AkShare 可能需要较长时间加载，作为最后的备用方案
@@ -2408,6 +2385,8 @@ class ETFPriceAPI:
                             'change_percent': float(row.get('涨跌幅', 0)),
                             'previous_close': float(row.get('昨收', 0)) if '昨收' in row else float(row.get('昨收价', 0)),
                             'name': row.get('名称', code),
+                            'iopv': row.get('IOPV实时估值'),
+                            'premium_percent': float(row.get('基金折价率', 0)) if row.get('基金折价率') not in (None, '-') else None,
                         }
                 return None
 
@@ -2426,6 +2405,8 @@ class ETFPriceAPI:
                     "change": result['price'] * result['change_percent'] / 100 if result['change_percent'] else 0,
                     "change_percent": result['change_percent'],
                     "previous_close": result['previous_close'],
+                    "iopv": result.get('iopv'),
+                    "premium_percent": result.get('premium_percent'),
                 }
                 self._cache.set(cache_key, result_data, ttl)
                 return result_data
