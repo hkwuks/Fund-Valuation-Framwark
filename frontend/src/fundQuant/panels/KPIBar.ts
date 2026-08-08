@@ -58,7 +58,7 @@ export class KPIBar extends PanelBase {
     this.popupEl?.remove()
     const overlay = document.createElement('div')
     overlay.className = 'signal-popup-overlay'
-    const dirLabel: Record<string, string> = { buy: '↑买入', sell: '↓卖出', hold: '→持有' }
+    const dirLabel: Record<string, string> = { buy: '↑买入', sell: '↓卖出', hold: '→持有', short: '🛑做空', close_short: '↩平空' }
     overlay.innerHTML = `
       <div class="signal-popup-modal">
         <div class="signal-popup-header">
@@ -69,7 +69,7 @@ export class KPIBar extends PanelBase {
           ${signals.map(s => `
             <div class="signal-popup-row">
               <span style="font-weight:600;">${s.fund_name || s.fund_code}</span>
-              <span style="color:${s.direction === 'buy' ? 'var(--danger-color)' : s.direction === 'sell' ? 'var(--success-color)' : 'var(--text-secondary)'}">${dirLabel[s.direction] || s.direction}</span>
+              <span style="color:${s.direction === 'buy' ? 'var(--danger-color)' : (s.direction === 'sell' || s.direction === 'short') ? 'var(--success-color)' : 'var(--text-secondary)'}">${dirLabel[s.direction] || s.direction}</span>
               <span style="color:var(--text-secondary);font-size:12px;">${s.strategy_name}</span>
               <span style="color:var(--text-tertiary);font-size:11px;">${(s.timestamp || '').slice(5, 16)}</span>
             </div>

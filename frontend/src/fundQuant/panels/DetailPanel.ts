@@ -80,8 +80,8 @@ export class DetailPanel extends PanelBase {
         container.innerHTML = '<span style="color:var(--text-tertiary);font-size:12px;">无信号数据</span>'
         return
       }
-      const dirLabel: Record<string, string> = { buy: '↑买入', sell: '↓卖出', hold: '→持有' }
-      const dirColor: Record<string, string> = { buy: 'var(--danger-color)', sell: 'var(--success-color)', hold: 'var(--text-secondary)' }
+      const dirLabel: Record<string, string> = { buy: '↑买入', sell: '↓卖出', hold: '→持有', short: '🛑做空', close_short: '↩平空' }
+      const dirColor: Record<string, string> = { buy: 'var(--danger-color)', sell: 'var(--success-color)', short: 'var(--warning-color)', hold: 'var(--text-secondary)' }
       container.innerHTML = signals.map(s => `
         <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border-light);font-size:12px;">
           <span style="color:${dirColor[s.direction] || 'var(--text-secondary)'};font-weight:600;">${dirLabel[s.direction] || s.direction}</span>

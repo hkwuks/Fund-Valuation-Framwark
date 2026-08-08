@@ -18,21 +18,29 @@ from .disclosure import DisclosureCalendar
 
 
 class SimPosition:
-    """模拟持仓"""
-    def __init__(self, fund_code: str, shares: float, buy_date: date, buy_nav: float):
+    """模拟持仓（支持多空）"""
+    def __init__(self, fund_code: str, shares: float, buy_date: date, buy_nav: float,
+                 direction: str = "long"):
         self.fund_code = fund_code
         self.shares = shares
         self.buy_date = buy_date
         self.buy_nav = buy_nav
         self.cost = shares * buy_nav
+        self.direction = direction  # "long" 或 "short"
 
     def current_value(self, nav: float) -> float:
+        """持仓市值（空头为负值，表示负债）"""
+        if self.direction == "short":
+            return -self.shares * nav
         return self.shares * nav
 
     def holding_days(self, current_date: date) -> int:
         return (current_date - self.buy_date).days
 
     def pnl(self, nav: float) -> float:
+        """未实现盈亏（多头=nav-buy_nav, 空头=buy_nav-nav）"""
+        if self.direction == "short":
+            return self.shares * (self.buy_nav - nav)
         return self.shares * (nav - self.buy_nav)
 
 
@@ -323,13 +331,40 @@ class FundBacktester:
             pos = self._positions.get(sig.fund_code)
             if pos is None:
                 return
-            pct = sig.suggested_pct
+            pct = abs(sig.suggested_pct) if sig.suggested_pct is not None else None
             if pct is None:
                 pct = 1.0  # 默认全卖
             shares = pos.shares * pct
             if shares > 0:
                 self.submit_order(sig.fund_code, "sell", shares, current_date, 1)
                 logger.debug(f"下单卖出 {sig.fund_code}: {shares:.2f}份")
+
+        elif sig.direction == Direction.SHORT.value or sig.direction == Direction.SHORT:
+            # 做空开仓（融券卖出）：无持仓也可卖
+            target_amt = sig.suggested_amount
+            if target_amt is None and sig.suggested_pct is not None:
+                target_amt = abs(sig.suggested_pct) * total
+            if target_amt is None:
+                target_amt = total * 0.1
+            if target_amt <= 0:
+                return
+            shares = target_amt / nav_price
+            if shares > 0:
+                self.submit_order(sig.fund_code, "short", shares, current_date, 1)
+                logger.debug(f"下单做空 {sig.fund_code}: {shares:.2f}份 @ {nav_price}")
+
+        elif sig.direction == Direction.CLOSE_SHORT.value or sig.direction == Direction.CLOSE_SHORT:
+            # 做空平仓（买券还券）：减少空头仓位
+            pos = self._positions.get(sig.fund_code)
+            if pos is None or pos.direction != "short":
+                return
+            pct = abs(sig.suggested_pct) if sig.suggested_pct is not None else None
+            if pct is None:
+                pct = 1.0
+            shares = pos.shares * pct
+            if shares > 0:
+                self.submit_order(sig.fund_code, "cover", shares, current_date, 1)
+                logger.debug(f"下单平空 {sig.fund_code}: {shares:.2f}份 @ {nav_price}")
 
         elif sig.direction == Direction.REBALANCE.value or sig.direction == Direction.REBALANCE:
             # 再平衡: 由 strategy 负责给出每个基金的买卖信号
@@ -390,6 +425,59 @@ class FundBacktester:
                         "cost": round(cost, 2),
                         "nav_date": confirm_key,
                     })
+            elif order.order_type == "short":
+                # 做空开仓（融券卖出）：获得资金 + 建空头
+                proceeds = order.shares * nav_price
+                self._cash += proceeds
+                existing = self._positions.get(order.fund_code)
+                if existing and existing.direction == "short":
+                    # 空头加仓（合并）：负债总额 = 原负债 + 新卖券所得
+                    total_shares = existing.shares + order.shares
+                    total_liability = existing.cost + proceeds
+                    avg_nav = total_liability / total_shares if total_shares > 0 else 0
+                    self._positions[order.fund_code] = SimPosition(
+                        order.fund_code, total_shares, existing.buy_date, avg_nav, direction="short",
+                    )
+                else:
+                    self._positions[order.fund_code] = SimPosition(
+                        order.fund_code, order.shares, order.submit_date, nav_price, direction="short",
+                    )
+                self._trade_log.append({
+                    "date": current_date.isoformat(),
+                    "fund_code": order.fund_code,
+                    "action": "short_confirmed",
+                    "shares": order.shares,
+                    "price": nav_price,
+                    "proceeds": round(proceeds, 2),
+                    "nav_date": confirm_key,
+                })
+            elif order.order_type == "cover":
+                # 做空平仓（买券还券）：付出资金 + 减少空头
+                cost = order.shares * nav_price
+                pos = self._positions.get(order.fund_code)
+                if pos is None or pos.direction != "short":
+                    still_pending.append(order)
+                    continue
+                if cost > self._cash:
+                    still_pending.append(order)  # 资金不足，延迟到有资金时平仓
+                    continue
+                self._cash -= cost
+                remaining = pos.shares - order.shares
+                if remaining <= 0:
+                    del self._positions[order.fund_code]
+                else:
+                    sell_ratio = order.shares / pos.shares
+                    pos.cost *= (1 - sell_ratio)
+                    pos.shares = remaining
+                self._trade_log.append({
+                    "date": current_date.isoformat(),
+                    "fund_code": order.fund_code,
+                    "action": "cover_confirmed",
+                    "shares": order.shares,
+                    "price": nav_price,
+                    "cost": round(cost, 2),
+                    "nav_date": confirm_key,
+                })
             elif order.order_type == "sell":
                 # 巨额赎回限制检查
                 total_shares = self._calc_fund_total_shares(order.fund_code)
@@ -573,7 +661,7 @@ class FundBacktester:
 
     def _calc_total_value(self, date_str: str,
                            code_nav_map: Dict[str, Dict[str, dict]]) -> float:
-        """计算组合总价值"""
+        """计算组合总价值（支持多空持仓）"""
         total = self._cash
         for code, pos in self._positions.items():
             nav_data = None
@@ -582,7 +670,7 @@ class FundBacktester:
                     nav_data = nm.get(date_str)
                     break
             cur_nav = nav_data.get("nav", pos.buy_nav) if nav_data else pos.buy_nav
-            total += pos.shares * cur_nav
+            total += pos.current_value(cur_nav)
         return total
 
     def submit_order(self, fund_code: str, order_type: str,
@@ -779,7 +867,7 @@ def _build_portfolio_snapshot(positions, cash, total) -> "Portfolio":
     """构建策略可读的 Portfolio 快照 (Dict[str, float]: fund_code -> weight)"""
     from ..core.models import Portfolio
     pos_dict = {
-        code: (p.shares * p.buy_nav) / total if total > 0 else 0
+        code: (p.shares * p.buy_nav * (1 if p.direction != "short" else -1)) / total if total > 0 else 0
         for code, p in positions.items()
     }
     return Portfolio(
@@ -796,6 +884,8 @@ def _signal_to_core(sig) -> Any:
         dir_map = {
             "buy": CoreDir.LONG,
             "sell": CoreDir.CLOSE_LONG,
+            "short": CoreDir.SHORT,
+            "close_short": CoreDir.CLOSE_SHORT,
             "hold": CoreDir.NONE,
         }
         d = sig.direction.value if hasattr(sig.direction, 'value') else sig.direction

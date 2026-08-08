@@ -17,6 +17,8 @@ class Direction(str, Enum):
     SELL = "sell"
     HOLD = "hold"
     REBALANCE = "rebalance"
+    SHORT = "short"          # 做空开仓（融券卖出）
+    CLOSE_SHORT = "close_short"  # 做空平仓（买券还券）
 
 
 class FundType(str, Enum):

@@ -18,6 +18,7 @@ class ValuationDeviationStrategy(FundStrategyBase):
         "lookback_days": 60,
         "momentum_confirm_days": 3,
         "cooldown_days": 5,
+        "allow_short": False,  # 高估时是否发 SHORT 做空信号（仅场内ETF有效）
     }
     param_ranges = {
         "z_threshold": {"min": 1.0, "max": 3.0},
@@ -68,10 +69,10 @@ class ValuationDeviationStrategy(FundStrategyBase):
 
         # 方向判定 (均值回归逻辑)
         if z_score > z_threshold:
-            # 偏差偏高, 预期回归 → 卖出
-            direction = Direction.SELL
+            # 偏差偏高, 预期回归 → 卖出或做空
+            direction = Direction.SHORT if self.params.get("allow_short") else Direction.SELL
             reason = (f"估值偏差偏高 (z={z_score:.2f} > {z_threshold}), "
-                      f"预期净值回落, 建议减仓")
+                      f"{'预期净值回落, 建议做空' if self.params.get('allow_short') else '预期净值回落, 建议减仓'}")
         elif z_score < -z_threshold:
             # 偏差偏低, 预期反弹 → 买入
             direction = Direction.BUY

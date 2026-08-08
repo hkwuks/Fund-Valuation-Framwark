@@ -362,6 +362,41 @@ tr:hover { background: var(--bg-tertiary); }
 .badge-info { background: rgba(59,130,246,.12); color: var(--info-color); }
 .badge-gradient { background: var(--primary-color); color: var(--text-inverse); }
 
+/* ═══ 折溢价标签 ═══ */
+.premium-tag { display: inline-flex; align-items: center; padding: 1px 5px; border-radius: 2px; font-size: 11px; font-weight: 600; }
+.premium-positive { background: rgba(239,68,68,.12); color: var(--danger-color); }
+.premium-negative { background: rgba(34,197,94,.12); color: var(--success-color); }
+.premium-flat { background: rgba(128,128,128,.08); color: var(--text-secondary); }
+
+/* ═══ 基金详情弹窗 ═══ */
+.fund-modal-overlay {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center;
+  animation: fadeIn .15s ease;
+}
+.fund-modal {
+  background: var(--bg-primary); border-radius: 8px; max-width: 720px; width: 90%;
+  max-height: 85vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,.3);
+  animation: slideUp .2s ease;
+}
+.fund-modal-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border-light);
+  position: sticky; top: 0; background: var(--bg-primary); z-index: 1;
+}
+.fund-modal-header h3 { margin: 0; font-size: 16px; }
+.fund-modal-body { padding: 16px 20px; }
+.fund-modal-body .info-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.fund-modal-body .info-item { display: flex; flex-direction: column; gap: 2px; }
+.fund-modal-body .info-item .label { font-size: 11px; color: var(--text-tertiary); }
+.fund-modal-body .info-item .value { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.fund-modal-section { margin-top: 20px; }
+.fund-modal-section h4 { margin: 0 0 10px; font-size: 14px; color: var(--text-primary); }
+.fund-modal-chart { height: 320px; width: 100%; }
+.fund-modal-loading { padding: 40px; text-align: center; color: var(--text-tertiary); }
+
+@keyframes slideUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+
 /* ═══ 涨跌 ═══ */
 .positive { color: var(--danger-color) !important; font-weight: 600; }
 .negative { color: var(--success-color) !important; font-weight: 600; }

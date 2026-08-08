@@ -743,6 +743,8 @@ class FundValuationService:
                 confidence=1.0,
                 confidence_note="场内ETF实时价格，100%准确",
                 timestamp=datetime.now(),
+                iopv=realtime_data.get("iopv"),
+                premium_percent=realtime_data.get("premium_percent"),
             )
         except Exception as e:
             logger.exception(f"ETF 估值计算异常 {fund_code}: {e}")
@@ -1848,6 +1850,19 @@ class FundValuationService:
                 result.valuation_signal = signal_data.get("signal")
                 result.signal_action = signal_data.get("signal_action")
                 result.signal_source = signal_data.get("source", "")
+
+        # 场内基金统一附加折溢价（包括 QDII ETF 等走 index_based 路径的）
+        if result and result.premium_percent is None:
+            try:
+                mkt = await market_data_service.get_fund_data(fund_code)
+                if mkt and mkt.market_type == MarketType.ON_EXCHANGE:
+                    etf_data = await market_data_service.get_etf_realtime_data(fund_code)
+                    if etf_data:
+                        result.iopv = etf_data.get("iopv")
+                        result.premium_percent = etf_data.get("premium_percent")
+            except Exception:
+                pass
+
         return result
 
 

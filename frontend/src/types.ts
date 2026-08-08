@@ -50,6 +50,9 @@ export interface Fund {
   valuation_signal?: string;  // 深度低估/低估/合理/偏高/高估
   signal_action?: string;  // 加倍定投/正常定投/持有/止盈/卖出
   signal_source?: string;  // 信号数据来源
+  // 场内折溢价
+  iopv?: number;  // 场内ETF IOPV 实时估值
+  premium_percent?: number;  // 场内ETF折溢价率(%，正=溢价)
 }
 
 export interface FundData {
@@ -97,6 +100,9 @@ export interface ValuationResult {
   valuation_signal?: string;  // 深度低估/低估/合理/偏高/高估
   signal_action?: string;  // 加倍定投/正常定投/持有/止盈/卖出
   signal_source?: string;  // 信号数据来源
+  // 场内折溢价
+  iopv?: number;  // 场内ETF IOPV 实时估值
+  premium_percent?: number;  // 场内ETF折溢价率(%，正=溢价)
 }
 
 export interface MarketData {
