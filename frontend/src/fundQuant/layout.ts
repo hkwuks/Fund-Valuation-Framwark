@@ -105,6 +105,10 @@ export class LayoutManager {
     const layoutCfg = state.get('layout').panels[panel.id]
     if (layoutCfg?.visible === false) return
 
+    // layout 配置的 grid_pos 优先于面板默认位置（可由保存的布局覆盖）
+    if (layoutCfg?.grid_pos) {
+      panel.gridPos = { ...panel.gridPos, ...layoutCfg.grid_pos }
+    }
     const freePos = this.findFreeSlot(panel)
     panel.gridPos.x = freePos.x
     panel.gridPos.y = freePos.y
