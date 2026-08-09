@@ -1824,8 +1824,9 @@ tr:hover { background: var(--bg-tertiary); }
   border-radius: 8px;
   display: flex; flex-direction: column;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  height: 420px;
 }
-.panel-detail .detail-body { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 10px 12px; min-height: 160px; }
+.panel-detail .detail-body { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 10px 12px; min-height: 160px; overflow-y: auto; }
 .panel-detail .detail-section h4 { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .3px; }
 .panel-detail .detail-section table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .panel-detail .detail-section th { padding: 3px 4px; text-align: left; color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; }
@@ -1900,6 +1901,7 @@ tr:hover { background: var(--bg-tertiary); }
   display: flex; flex-direction: column;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
   overflow: hidden;
+  height: 420px;
 }
 
 .sig-filter {
@@ -1911,7 +1913,7 @@ tr:hover { background: var(--bg-tertiary); }
   color: var(--text-primary);
 }
 
-.sig-table-wrapper { overflow-y: auto; flex: 1; min-height: 0; max-height: 300px; }
+.sig-table-wrapper { overflow-y: auto; flex: 1; min-height: 0; }
 .sig-table-wrapper table { margin: 0; width: 100%; }
 
 .sig-table { width: 100%; border-collapse: collapse; font-size: 18px; }

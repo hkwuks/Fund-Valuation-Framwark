@@ -126,24 +126,27 @@ export class SignalList extends PanelBase {
       }
 
       // 去重：每只基金只保留一条信号
-      // 优先真实择时策略（momentum/valuation_deviation/interest_rate/credit_spread/fx/gold）的信号，
-      // smart_dca 是定投建议、固定置信度 0.7，会顶掉真实方向信号，仅作为兜底
+      // 融合信号(signal_fusion)最优先——它是所有策略的加权综合，含贡献策略说明；
+      // 其次真实择时策略（momentum/valuation_deviation/interest_rate/credit_spread/fx/gold）；
+      // smart_dca 是定投建议、固定置信度 0.7，仅作为兜底
+      const FUSION_STRATEGY = 'signal_fusion'
       const TIMING_STRATEGIES = new Set([
         'momentum', 'valuation_deviation', 'interest_rate', 'credit_spread',
         'fx_momentum', 'gold_momentum',
       ])
       const bestByFund = new Map<string, any>()
       for (const s of signals) {
-        const isTiming = TIMING_STRATEGIES.has(s.strategy_name)
+        const score = s.strategy_name === FUSION_STRATEGY ? 3
+          : TIMING_STRATEGIES.has(s.strategy_name) ? 2
+          : s.strategy_name === 'smart_dca' ? 1 : 0
         const existing = bestByFund.get(s.fund_code)
         if (!existing) {
           bestByFund.set(s.fund_code, s)
         } else {
-          const existingIsTiming = TIMING_STRATEGIES.has(existing.strategy_name)
-          // 真实择时信号优先于 smart_dca；同级别时取置信度更高者
-          if (isTiming && !existingIsTiming) {
-            bestByFund.set(s.fund_code, s)
-          } else if (isTiming === existingIsTiming && (s.confidence || 0) > (existing.confidence || 0)) {
+          const existingScore = existing.strategy_name === FUSION_STRATEGY ? 3
+            : TIMING_STRATEGIES.has(existing.strategy_name) ? 2
+            : existing.strategy_name === 'smart_dca' ? 1 : 0
+          if (score > existingScore || (score === existingScore && (s.confidence || 0) > (existing.confidence || 0))) {
             bestByFund.set(s.fund_code, s)
           }
         }
@@ -185,7 +188,11 @@ export class SignalList extends PanelBase {
               </div>
             </div>
           </td>
-          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);font-size:12px;">${s.strategy_name || '-'}</td>
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);color:var(--text-secondary);font-size:12px;">
+            ${s.strategy_name === 'signal_fusion'
+              ? `<span title="${s.reason || ''}" style="cursor:help;color:var(--primary-color);font-weight:600;">融合</span>`
+              : s.strategy_name || '-'}
+          </td>
           <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:right;color:var(--text-tertiary);font-size:11px;">${(s.created_at || '').slice(5, 16)}</td>
           <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:center;">
             <button class="btn btn-sm btn-ghost sig-study-btn" data-code="${s.fund_code}" data-direction="${s.direction}" data-confidence="${s.confidence}" data-strategy="${s.strategy_name || ''}" data-timestamp="${s.created_at || ''}" title="研究此信号" style="font-size:11px;padding:1px 4px;">🔍</button>

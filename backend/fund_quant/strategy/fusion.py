@@ -34,9 +34,11 @@ class SignalFusion:
         if not fund_signals:
             return None
 
-        # 按策略类型分组
+        # 按策略类型分组（排除 smart_dca——它是定投建议，非择时方向信号，会污染融合方向）
         grouped = {}
         for s in fund_signals:
+            if s.strategy_name == "smart_dca":
+                continue
             key = s.signal_type.value if hasattr(s.signal_type, 'value') else str(s.signal_type)
             grouped.setdefault(key, []).append(s)
 

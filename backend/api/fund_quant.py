@@ -793,7 +793,35 @@ async def evaluate_pool(req: EvaluatePoolRequest):
                 except Exception as e:
                     logger.warning(f"批量评估策略 [{s_info['name']}] 异常 [{code}]: {e}")
 
-            # 落库 + SSE 推送
+            # 落库 + SSE 推送（先融合再持久化，前端展示融合信号 + 各策略贡献）
+            # 融合所有策略信号 → 一条最终建议（而非过滤掉）
+            try:
+                from ..fund_quant.strategy.fusion import signal_fusion
+                fused = signal_fusion.fuse(fund_signals, fund_type=fund_type)
+            except Exception as e:
+                logger.warning(f"信号融合失败 [{code}]: {e}")
+                fused = None
+
+            if fused and fused.contributing_strategies:
+                # 只有在有实际非 smart_dca 策略参与时才 emit 融合信号
+                fusion_sig = FundSignal(
+                    signal_id=f"fusion_{uuid.uuid4().hex[:8]}",
+                    fund_code=code,
+                    fund_name=fund_name,
+                    fund_type=fund_type,
+                    signal_type=SignalType.ALLOCATION,
+                    direction=fused.direction,
+                    confidence=fused.confidence,
+                    reason=fused.reason,
+                    strategy_name="signal_fusion",
+                    suggested_pct=0.05 if fused.direction in (Direction.BUY, Direction.SELL) else None,
+                )
+                contrib = [c["strategy"] for c in fused.contributing_strategies]
+                fusion_sig.reason = f"融合 {len(contrib)} 个策略: {', '.join(contrib)}"
+                signal_output_service.emit_signal(fusion_sig)
+                emitted += 1
+
+            # 各策略原始信号也落库（供明细/研究用）
             for sig in fund_signals:
                 sig.fund_name = fund_name
                 sig.fund_type = fund_type
@@ -802,7 +830,10 @@ async def evaluate_pool(req: EvaluatePoolRequest):
 
             results.append({
                 "fund_code": code, "fund_name": fund_name, "fund_type": fund_type,
-                "status": "ok", "signals": len(fund_signals), "nav_count": len(nav_values),
+                "status": "ok", "signals": len(fund_signals),
+                "fused_direction": fused.direction.value if fused else None,
+                "contributors": [c["strategy"] for c in fused.contributing_strategies] if fused else [],
+                "nav_count": len(nav_values),
             })
         except Exception as e:
             logger.warning(f"批量评估失败 [{code}]: {e}")
