@@ -534,6 +534,166 @@ class AuroraEtfRotation(Strategy):
                 ))
 
 
+# ── 全天候策略（AuroraCore 版）──
+
+@StrategyRegistry.register("all_weather_aurora")
+class AllWeatherAurora(Strategy):
+    """桥水全天候策略（AuroraCore 版）— 月度再平衡 + 固定权重/风险平价双模式
+
+    on_data 逐点积累多基金净值，每月调用 AllWeatherStrategy.optimize() 算权重，
+    然后 emit LONG/CLOSE_LONG 信号使持仓回到目标权重。
+    """
+    name = "all_weather_aurora"
+    strategy_type = "allocation"
+    description = "全天候策略: 四象限风险平价 + 月度再平衡, 走统一引擎"
+    default_params = {
+        "mode": "fixed",
+        "asset_template": {
+            "510300": {"name": "沪深300ETF", "asset_class": "equity", "fixed_weight": 0.10},
+            "513500": {"name": "标普500ETF", "asset_class": "equity", "fixed_weight": 0.10},
+            "513100": {"name": "纳指ETF",   "asset_class": "equity", "fixed_weight": 0.10},
+            "511520": {"name": "5年国债ETF", "asset_class": "bond_medium", "fixed_weight": 0.15},
+            "511260": {"name": "10年国债ETF","asset_class": "bond_long",   "fixed_weight": 0.40},
+            "518880": {"name": "黄金ETF",    "asset_class": "gold",     "fixed_weight": 0.075},
+            "159985": {"name": "豆粕ETF",    "asset_class": "commodity","fixed_weight": 0.075},
+        },
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 756,
+        "max_weight": 0.50,
+        "min_weight": 0.02,
+        "bond_vol_multiplier": "auto",
+        "leverage": 1.0,
+    }
+    min_history_days = 60
+
+    def __init__(self):
+        merged = {**self.default_params}
+        super().__init__()
+        self.params = merged
+        self._hist: dict[str, list[tuple[str, float]]] = {}  # fund_code -> [(date, nav)]
+        self._cur_date = ""
+        self._last_rebalance_month = ""
+        self._first_rebalance = True  # 首次数据够就立即再平衡
+
+    def _pool_codes(self) -> list[str]:
+        template = self.params.get("asset_template", {})
+        config_pool = list(template.keys())
+        seen = list(self._hist.keys())
+        merged = list(dict.fromkeys(config_pool + seen))
+        return merged or config_pool
+
+    def on_data(self, data):
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+        self._hist.setdefault(code, []).append((date_str, nav))
+
+        if date_str != self._cur_date:
+            self._cur_date = date_str
+            self._check_rebalance(date_str)
+
+    def _check_rebalance(self, date_str: str):
+        """判断是否触发再平衡：首次或跨月"""
+        cur_month = date_str[:7]
+        if self._first_rebalance and len(self._hist) >= 3:
+            self._first_rebalance = False
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+            return
+        if cur_month != self._last_rebalance_month and self._last_rebalance_month:
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+
+    def _rebalance(self, date_str: str):
+        """用 AllWeatherStrategy 算权重 → 调仓至目标"""
+        from .strategy.allocation.all_weather import AllWeatherStrategy
+        from .data.storage import get_nav_history
+
+        pool = self._pool_codes()
+        # 收集截至该日的净值序列
+        nav_series: dict[str, list[float]] = {}
+        for code in pool:
+            series = [n for d, n in self._hist.get(code, []) if d <= date_str]
+            if len(series) >= 20:
+                nav_series[code] = series
+
+        if not nav_series:
+            return
+
+        valid_codes = list(nav_series.keys())
+        if len(valid_codes) < 2:
+            return
+
+        # 调用 AllWeatherStrategy 计算权重
+        strategy = AllWeatherStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=valid_codes)
+        weights = result.get("weights", {})
+        if not weights:
+            return
+
+        # 总权益
+        pv = self.ctx.portfolio_value or 0
+        if pv <= 0:
+            return
+
+        all_codes = self._hist.keys()
+        target_codes = {c for c, w in weights.items() if w > 0}
+
+        # 先清仓不在目标内的
+        for code in list(all_codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if code not in target_codes and pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"全天候调仓: 权重为0, 清仓",
+                ))
+
+        # 再平衡：调整目标基金的持仓至目标权重
+        for code, weight in weights.items():
+            if weight <= 0:
+                continue
+            last_nav = nav_series.get(code, [])
+            if not last_nav:
+                continue
+            price = last_nav[-1]
+            if price <= 0:
+                continue
+
+            target_amt = pv * weight
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            current_amt = pos.volume * price if pos and pos.volume > 0 else 0
+            diff = target_amt - current_amt
+            threshold = self.params.get("rebalance_threshold", 0.05) * pv
+
+            if abs(diff) < threshold:
+                continue  # 偏离不超阈值，跳过
+
+            if diff > 0:
+                # 买入
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.LONG, price=price,
+                    volume=diff / price, confidence=1.0,
+                    reason=f"全天候调仓: 目标权重{weight:.1%}, 当前不足",
+                ))
+            else:
+                # 卖出超配部分
+                sell_vol = pos.volume if pos else 0
+                if sell_vol > 0:
+                    sell_vol = min(sell_vol, pos.volume)
+                    self.ctx.emit(Signal(
+                        id="", strategy=self.name, symbol=code,
+                        direction=Direction.CLOSE_LONG, price=price,
+                        volume=sell_vol, confidence=1.0,
+                        reason=f"全天候调仓: 超配, 减仓至{weight:.1%}",
+                    ))
+
+
 def demo():
     """基金领域适配自检"""
     from core import BacktestEngine, BacktestConfig
