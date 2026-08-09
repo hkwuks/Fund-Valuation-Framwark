@@ -28,13 +28,16 @@ class TestFundQuantAPI:
         data = res.json()
         assert data["success"] is True
         strategies = data["data"]
-        assert len(strategies) >= 9
+        # timing 策略已废弃删除，剩余 selection(3) + allocation(4) = 7
+        assert len(strategies) >= 7
+        names = {s["name"] for s in strategies}
+        assert "momentum" not in names, "废弃的 timing 策略不应在列表中"
 
     def test_strategy_params(self, client):
-        res = client.get("/api/fund-quant/strategy/params/momentum")
+        res = client.get("/api/fund-quant/strategy/params/multi_factor")
         assert res.status_code == 200
         data = res.json()["data"]
-        assert data["name"] == "momentum"
+        assert data["name"] == "multi_factor"
         assert "default_params" in data
 
     def test_strategy_params_not_found(self, client):

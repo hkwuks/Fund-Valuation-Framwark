@@ -15,8 +15,6 @@ import { FundRanking } from './panels/FundRanking'
 import { MonthlyReturns } from './panels/MonthlyReturns'
 import { Attribution } from './panels/Attribution'
 import { DetailPanel } from './panels/DetailPanel'
-import { BacktestPanel } from './panels/BacktestPanel'
-import { ParamScanPanel } from './panels/ParamScanPanel'
 import { PaperTradePanel } from './panels/PaperTradePanel'
 import { ResearchPanel } from './research-panel'
 
@@ -41,8 +39,6 @@ export class FundQuantDashboard {
     this.layout.register(new MonthlyReturns())
     this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
-    this.layout.register(new BacktestPanel())
-    this.layout.register(new ParamScanPanel())
     this.layout.register(new PaperTradePanel())
 
     // L3 研究区容器（在 grid 下方）
@@ -57,8 +53,6 @@ export class FundQuantDashboard {
       const codes = state.get('fundPool').map(f => f.fund_code)
       if (codes.length) {
         fundQuantApi.collectNavData(codes, 5).catch(() => {})
-        // 触发批量信号评估（生成真实信号，落库+SSE推送）
-        fundQuantApi.evaluatePool(codes).catch(() => {})
       }
       this.layout!.refreshAll()
       this.startRefreshTimer()

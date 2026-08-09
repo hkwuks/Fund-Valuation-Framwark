@@ -429,7 +429,12 @@ class AuroraEtfRotation(Strategy):
         self._last_rebalance_day = 0
 
     def _pool_codes(self) -> list[str]:
-        return list(self.params.get("etf_pool", {}))
+        """候选池 = 配置 etf_pool ∪ 实际收到数据的基金（自适应传入的 fund_codes）"""
+        config_pool = list(self.params.get("etf_pool", {}))
+        seen = list(self._hist.keys())
+        # 保持稳定顺序：先配置后实际，去重
+        merged = list(dict.fromkeys(config_pool + seen))
+        return merged or config_pool
 
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")

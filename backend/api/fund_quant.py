@@ -124,7 +124,8 @@ def _prices_to_returns(prices: list[float]) -> list[float]:
 
 @router.post("/timing/evaluate")
 async def timing_evaluate(req: TimingRequest):
-    """单基金择时评估 (并行运行所有择时策略)"""
+    """择时策略已废弃（timing 策略验证无法赚钱，已从策略库删除）"""
+    raise HTTPException(status_code=410, detail="timing 择时策略已废弃，请使用 allocation 配置策略")
     from ..fund_quant.strategy.base import StrategyRegistry
     from ..fund_quant.strategy.fusion import signal_fusion
 
@@ -235,6 +236,8 @@ async def timing_evaluate(req: TimingRequest):
 
 @router.post("/timing/explain")
 async def timing_explain(req: ExplainRequest):
+    """择时策略已废弃"""
+    raise HTTPException(status_code=410, detail="timing 择时策略已废弃")
     """信号解释 — 返回指定策略对指定基金产生的信号逻辑和数据快照"""
     from ..fund_quant.strategy.base import StrategyRegistry
     registry = StrategyRegistry()
@@ -301,6 +304,8 @@ async def timing_explain(req: ExplainRequest):
 
 @router.post("/timing/batch")
 async def timing_batch(fund_codes: List[str] = Query(...)):
+    """择时策略已废弃"""
+    raise HTTPException(status_code=410, detail="timing 择时策略已废弃")
     """批量择时评估 (并行)"""
     async def evaluate_one(code: str) -> dict:
         try:
@@ -732,138 +737,8 @@ def _fund_type_matches(applicable: list, fund_type: str) -> bool:
 
 @router.post("/signal/evaluate-pool")
 async def evaluate_pool(req: EvaluatePoolRequest):
-    """遍历基金池跑择时策略，生成真实信号并落库+SSE推送"""
-    from ..fund_quant.strategy.base import StrategyRegistry
-    from ..fund_quant.data.classifier import classify_fund_for_quant
-    from ..fund_quant.data.storage import get_fund_meta
-    from ..market_data import determine_market_type, MarketType
-    from .funds import _load_funds_sync
-
-    registry = StrategyRegistry()
-    all_timing = await asyncio.to_thread(registry.list_by_type, "timing")
-
-    # 预取宏观数据（DXY/US10Y/VIX）供黄金策略复用 gold 系统的数据源
-    # 失败时降级为 None，黄金策略只用动量/修正，不阻塞主流程
-    macro_data = None
-    try:
-        from backend.gold.data.gateway import GoldDataGateway
-        df = await GoldDataGateway().get_macro_data(start="2025-01-01")
-        if df is not None and not df.empty:
-            macro_data = {}
-            for col in ("DXY_value", "US10Y_value", "VIX_value"):
-                key = col.replace("_value", "")
-                series = {}
-                for _, row in df.iterrows():
-                    d = str(row.get("date", ""))[:10]
-                    v = row.get(col)
-                    if d and v is not None and not (isinstance(v, float) and v != v):
-                        series[d] = float(v)
-                macro_data[key] = series
-    except Exception as e:
-        logger.warning(f"宏观数据获取失败，黄金策略降级为纯动量: {e}")
-
-    # 从 funds.json 加载基金元数据（fund_metadata 表可能为空）
-    fund_meta_map: dict[str, dict] = {}
-    try:
-        all_funds = await asyncio.to_thread(_load_funds_sync)
-        for f in all_funds:
-            fund_meta_map[f["fund_code"]] = f
-    except Exception:
-        logger.warning("无法加载 funds.json，降级使用空元数据")
-
-    emitted = 0
-    results = []
-
-    for code in req.fund_codes:
-        try:
-            nav_data = await asyncio.to_thread(get_nav_history, code)
-            if not nav_data:
-                continue
-            nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
-            if len(nav_values) < 30:
-                results.append({"fund_code": code, "status": "skip", "reason": "净值不足"})
-                continue
-
-            # 确定基金类型：优先 funds.json 的原始类型，再 fallback DB 元数据
-            f_info = fund_meta_map.get(code, {})
-            fund_name = f_info.get("fund_name", "")
-            raw_type = f_info.get("fund_type", "")
-            if not raw_type:
-                meta = await asyncio.to_thread(get_fund_meta, code)
-                raw_type = (meta or {}).get("fund_type", "")
-                fund_name = (meta or {}).get("fund_name", fund_name)
-            fund_type = classify_fund_for_quant(raw_type, fund_name).value
-
-            # 场内 index 类 ETF 才允许做空（场外 ETF联接不可做空）
-            market_type = await asyncio.to_thread(determine_market_type, code, fund_name, raw_type)
-            allow_short = fund_type == "index" and market_type == MarketType.ON_EXCHANGE
-
-            fund_signals = []
-            for s_info in all_timing:
-                if not _fund_type_matches(s_info.get("applicable_fund_types", []), fund_type):
-                    continue
-                strategy = await asyncio.to_thread(registry.get_strategy, s_info["name"])
-                if not strategy:
-                    continue
-                try:
-                    strategy._state["nav_values"] = nav_values
-                    strategy._state["nav_dates"] = [r["date"] for r in nav_data if r.get("nav")]
-                    strategy._state["fund_code"] = code
-                    if macro_data is not None:
-                        strategy._state["macro_data"] = macro_data
-                    if allow_short and s_info["name"] == "valuation_deviation":
-                        strategy.params["allow_short"] = True
-                    sigs = await asyncio.to_thread(strategy.on_evaluate, None, None) or []
-                    fund_signals.extend(sigs)
-                except Exception as e:
-                    logger.warning(f"批量评估策略 [{s_info['name']}] 异常 [{code}]: {e}")
-
-            # 落库 + SSE 推送（先融合再持久化，前端展示融合信号 + 各策略贡献）
-            # 融合所有策略信号 → 一条最终建议（而非过滤掉）
-            try:
-                from ..fund_quant.strategy.fusion import signal_fusion
-                fused = signal_fusion.fuse(fund_signals, fund_type=fund_type)
-            except Exception as e:
-                logger.warning(f"信号融合失败 [{code}]: {e}")
-                fused = None
-
-            if fused and fused.contributing_strategies:
-                # 只有在有实际非 smart_dca 策略参与时才 emit 融合信号
-                fusion_sig = FundSignal(
-                    signal_id=f"fusion_{uuid.uuid4().hex[:8]}",
-                    fund_code=code,
-                    fund_name=fund_name,
-                    fund_type=fund_type,
-                    signal_type=SignalType.ALLOCATION,
-                    direction=fused.direction,
-                    confidence=fused.confidence,
-                    reason=fused.reason,
-                    strategy_name="signal_fusion",
-                    suggested_pct=0.05 if fused.direction in (Direction.BUY, Direction.SELL) else None,
-                )
-                contrib = [c["strategy"] for c in fused.contributing_strategies]
-                fusion_sig.reason = f"融合 {len(contrib)} 个策略: {', '.join(contrib)}"
-                signal_output_service.emit_signal(fusion_sig)
-                emitted += 1
-
-            # 各策略原始信号也落库（供明细/研究用）
-            for sig in fund_signals:
-                sig.fund_name = fund_name
-                sig.fund_type = fund_type
-                signal_output_service.emit_signal(sig)
-                emitted += 1
-
-            results.append({
-                "fund_code": code, "fund_name": fund_name, "fund_type": fund_type,
-                "status": "ok", "signals": len(fund_signals),
-                "fused_direction": fused.direction.value if fused else None,
-                "contributors": [c["strategy"] for c in fused.contributing_strategies] if fused else [],
-                "nav_count": len(nav_values),
-            })
-        except Exception as e:
-            logger.warning(f"批量评估失败 [{code}]: {e}")
-
-    return {"success": True, "data": {"results": results, "emitted": emitted}}
+    """信号批量评估已废弃（timing 策略已删除，不再批量生成信号）"""
+    raise HTTPException(status_code=410, detail="timing 择时策略已废弃，不再支持批量信号评估")
 
 
 # ── 组合 ──

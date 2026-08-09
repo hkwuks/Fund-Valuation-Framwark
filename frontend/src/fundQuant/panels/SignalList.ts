@@ -128,25 +128,21 @@ export class SignalList extends PanelBase {
 
       // 去重：每只基金只保留一条信号
       // 融合信号(signal_fusion)最优先——它是所有策略的加权综合，含贡献策略说明；
-      // 其次真实择时策略（momentum/valuation_deviation/interest_rate/credit_spread/fx/gold）；
-      // smart_dca 是定投建议、固定置信度 0.7，仅作为兜底
+      // 其余信号作为兜底（旧 timing 策略已废弃删除）
       const FUSION_STRATEGY = 'signal_fusion'
-      const TIMING_STRATEGIES = new Set([
-        'momentum', 'valuation_deviation', 'interest_rate', 'credit_spread',
-        'fx_momentum', 'gold_momentum', 'gold_reversion',
-      ])
+      const TIMING_STRATEGIES = new Set<string>([])
       const bestByFund = new Map<string, any>()
       for (const s of signals) {
         const score = s.strategy_name === FUSION_STRATEGY ? 3
           : TIMING_STRATEGIES.has(s.strategy_name) ? 2
-          : s.strategy_name === 'smart_dca' ? 1 : 0
+          : 0
         const existing = bestByFund.get(s.fund_code)
         if (!existing) {
           bestByFund.set(s.fund_code, s)
         } else {
           const existingScore = existing.strategy_name === FUSION_STRATEGY ? 3
             : TIMING_STRATEGIES.has(existing.strategy_name) ? 2
-            : existing.strategy_name === 'smart_dca' ? 1 : 0
+            : 0
           if (score > existingScore || (score === existingScore && (s.confidence || 0) > (existing.confidence || 0))) {
             bestByFund.set(s.fund_code, s)
           }
@@ -231,11 +227,7 @@ export class SignalList extends PanelBase {
     const dir = s.direction
     if (dir === 'hold') return '<span style="color:var(--text-tertiary);">建议持有</span>'
 
-    // 定投信号单独文案
-    if (s.strategy_name === 'smart_dca') {
-      if (dir === 'buy') return '<span style="color:var(--primary-color);">建议定投</span>'
-      return '<span style="color:var(--text-tertiary);">暂停定投</span>'
-    }
+    // 定投信号单独文案（smart_dca 已废弃）
 
     // 融合信号：提取策略数
     const isFusion = s.strategy_name === 'signal_fusion'
