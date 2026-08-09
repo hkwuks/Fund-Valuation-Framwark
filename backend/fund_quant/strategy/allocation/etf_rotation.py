@@ -103,15 +103,15 @@ class EtfGlobalRotationStrategy(FundStrategyBase):
 
         # 4. 选Top-N
         top_codes = sorted_codes[:top_n]
-        # 检查最高得分是否满足买入阈值
+        # 检查最高得分是否满足买入阈值（动量需为正才建仓）
         if top_codes:
             top_score = scores[top_codes[0]]["score"]
-            if top_score < self.params["sell_threshold"]:
-                # 所有ETF动量为负 → 全部卖出
+            if top_score < self.params["buy_threshold"]:
+                # 最高动量低于买入阈值 → 全部卖出持币
                 return {
                     "strategy": self.strategy_name,
                     "status": "all_sell",
-                    "reason": f"最高动量得分 {top_score:.4f} 低于卖出阈值，全部卖出",
+                    "reason": f"最高动量得分 {top_score:.4f} 低于买入阈值 {self.params['buy_threshold']}，全部卖出",
                     "weights": {c: 0.0 for c in etf_pool},
                     "rankings": ranked,
                 }

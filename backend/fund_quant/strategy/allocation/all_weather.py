@@ -210,6 +210,11 @@ class AllWeatherStrategy(FundStrategyBase):
         n = len(valid)
         max_w = self.params["max_weight"]
         min_w = self.params["min_weight"]
+        # 自适应：保证可行域非空（n 小时 max_w 下限、n 大时 min_w 上限）
+        if max_w * n < 1.0:
+            max_w = 1.0 / n
+        if min_w * n > 1.0:
+            min_w = 0.9 / n
         bounds = [(min_w, max_w) for _ in range(n)]
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
         w0 = np.array([1.0 / n] * n)

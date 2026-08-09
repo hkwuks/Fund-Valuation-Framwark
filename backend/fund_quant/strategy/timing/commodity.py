@@ -94,7 +94,7 @@ class GoldMomentumStrategy(FundStrategyBase):
                 SignalType.TIMING, fund_code, Direction.BUY,
                 confidence=confidence,
                 reason=(f"黄金动量 {momentum_score:.4f} "
-                        f"(COT {cot_signal:.2f}" if cot_signal is not None else
+                        f"(COT {cot_signal:.2f})" if cot_signal is not None else
                         f"黄金动量 {momentum_score:.4f}"),
             )]
         elif effective_score < sell_th:

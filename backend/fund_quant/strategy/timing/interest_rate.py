@@ -34,12 +34,6 @@ class InterestRateStrategy(FundStrategyBase):
         if len(nav_values) < self.params["lookback_days"] + 10:
             return []
 
-        arr = np.array(nav_values, dtype=np.float64)
-        returns = np.diff(arr) / arr[:-1]
-
-        if len(returns) < self.params["lookback_days"]:
-            return []
-
         # 尝试从state获取国债收益率数据
         yield_data = self._state.get("yield_10y_history", None)
         lookback = self.params["lookback_days"]
@@ -49,9 +43,12 @@ class InterestRateStrategy(FundStrategyBase):
             # 利率变化动量
             rate_momentum = (yields[-1] - yields[0]) / max(yields[0], 1e-6)
         else:
-            # 无收益率数据时用净值反向推断 (简化)
-            bond_returns = returns[-lookback:]
-            rate_momentum = -float(np.mean(bond_returns)) * lookback  # 利率↑净值↓
+            # 无收益率数据：不伪造利率推断（NAV 反推的 scale 与真实利率不匹配，会导致阈值失效）
+            return [self.emit_signal(
+                SignalType.TIMING, fund_code, Direction.HOLD,
+                confidence=0.0,
+                reason="国债收益率数据未就绪, 持有",
+            )]
 
         threshold = self.params["momentum_threshold"]
 
