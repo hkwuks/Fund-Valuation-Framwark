@@ -742,6 +742,26 @@ async def evaluate_pool(req: EvaluatePoolRequest):
     registry = StrategyRegistry()
     all_timing = await asyncio.to_thread(registry.list_by_type, "timing")
 
+    # 预取宏观数据（DXY/US10Y/VIX）供黄金策略复用 gold 系统的数据源
+    # 失败时降级为 None，黄金策略只用动量/修正，不阻塞主流程
+    macro_data = None
+    try:
+        from backend.gold.data.gateway import GoldDataGateway
+        df = await GoldDataGateway().get_macro_data(start="2025-01-01")
+        if df is not None and not df.empty:
+            macro_data = {}
+            for col in ("DXY_value", "US10Y_value", "VIX_value"):
+                key = col.replace("_value", "")
+                series = {}
+                for _, row in df.iterrows():
+                    d = str(row.get("date", ""))[:10]
+                    v = row.get(col)
+                    if d and v is not None and not (isinstance(v, float) and v != v):
+                        series[d] = float(v)
+                macro_data[key] = series
+    except Exception as e:
+        logger.warning(f"宏观数据获取失败，黄金策略降级为纯动量: {e}")
+
     # 从 funds.json 加载基金元数据（fund_metadata 表可能为空）
     fund_meta_map: dict[str, dict] = {}
     try:
@@ -789,6 +809,8 @@ async def evaluate_pool(req: EvaluatePoolRequest):
                     strategy._state["nav_values"] = nav_values
                     strategy._state["nav_dates"] = [r["date"] for r in nav_data if r.get("nav")]
                     strategy._state["fund_code"] = code
+                    if macro_data is not None:
+                        strategy._state["macro_data"] = macro_data
                     if allow_short and s_info["name"] == "valuation_deviation":
                         strategy.params["allow_short"] = True
                     sigs = await asyncio.to_thread(strategy.on_evaluate, None, None) or []
