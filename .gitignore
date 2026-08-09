@@ -39,6 +39,8 @@ logs/
 
 # Data files (contain user portfolio data)
 data/funds.json
+data/backend/
+data/
 
 # Environment variables
 .env
@@ -52,7 +54,7 @@ mcp_config.json
 Thumbs.db
 
 # Docs (not committed)
-docs/
+# docs/
 
 # Testing
 .pytest_cache/
