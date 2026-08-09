@@ -1,4 +1,4 @@
-"""商品型（黄金）择时策略 — 中长期动量 + 均值回归修正 + 波动率状态过滤"""
+"""商品型（黄金）择时策略 — 中长期动量 + 宏观覆层 + 波动率状态过滤"""
 from typing import Optional, List
 import numpy as np
 from ..base import FundStrategyBase, StrategyRegistry
@@ -7,17 +7,18 @@ from ...core.models import FundSignal, Portfolio, InformationSet
 
 
 class GoldMomentumStrategy(FundStrategyBase):
-    """黄金动量择时策略: 中长期动量 + 极端偏离修正 + 波动率状态过滤
+    """黄金动量择时策略: 中长期动量 + 宏观覆层 + 波动率状态过滤
 
     商品型基金（黄金ETF/联接）的净值跟踪金价。
     - 动量用 60/120/250 日（3/6/12月），匹配黄金主趋势周期
     - skip_days=15 过滤短期反转噪音
-    - 偏离 120 日均线超 2σ 时给均值回归修正（超卖看多 / 超买看空）
+    - 宏观覆层复用 gold 系统的 DXY/US10Y/VIX（逆/逆/正相关）
     - 高波动率状态降置信度
+    - 均值回归反转由独立策略 gold_reversion 承担，融合层权衡
     """
     strategy_name = "gold_momentum"
     strategy_type = "timing"
-    description = "黄金基金择时: 中长期动量 + 宏观覆层 + 超卖/超买修正 + 波动率过滤"
+    description = "黄金基金择时: 中长期动量 + 宏观覆层 + 波动率过滤"
     default_params = {
         "momentum_periods": [60, 120, 250],
         "weights": [0.4, 0.35, 0.25],
@@ -26,9 +27,6 @@ class GoldMomentumStrategy(FundStrategyBase):
         "sell_threshold": -0.03,
         "vol_regime_lookback": 252,
         "vol_high_percentile": 0.8,
-        "mean_reversion_lookback": 120,
-        "deviation_threshold": 0.08,
-        "mr_weight": 0.3,
         "macro_lookback_days": 20,
         "macro_weight": 0.3,
     }
@@ -37,12 +35,10 @@ class GoldMomentumStrategy(FundStrategyBase):
         "sell_threshold": {"min": -0.1, "max": -0.01},
         "skip_days": {"min": 0, "max": 30},
         "vol_high_percentile": {"min": 0.5, "max": 0.95},
-        "deviation_threshold": {"min": 0.03, "max": 0.2},
-        "mr_weight": {"min": 0, "max": 0.5},
         "macro_lookback_days": {"min": 5, "max": 60},
         "macro_weight": {"min": 0, "max": 0.5},
     }
-    formula_description = "黄金基金中长期动量(60/120/250日) + 宏观覆层(DXY/US10Y/VIX) + 均值回归修正择时策略"
+    formula_description = "黄金基金中长期动量(60/120/250日) + 宏观覆层(DXY/US10Y/VIX)择时策略"
     applicable_fund_types = ["commodity"]
     min_history_days = 270
 
@@ -74,32 +70,13 @@ class GoldMomentumStrategy(FundStrategyBase):
             return []
         momentum_score = score / total_w
 
-        # 2. 均值回归修正：偏离 120 日均线超阈值时反向（超卖看多 / 超买看空）
-        # 用百分比偏离而非 z-score：黄金 z-score 分布右偏（长期上涨），
-        # 超卖方向需要极大偏离才到 -2σ，导致超卖修正永不触发
-        mr_score = 0.0
-        dev = 0.0
-        mr_lookback = self.params["mean_reversion_lookback"]
-        if len(arr) >= mr_lookback:
-            mu = float(np.mean(arr[-mr_lookback:]))
-            if mu > 0:
-                dev = arr[-1] / mu - 1.0
-                th = self.params["deviation_threshold"]
-                mr_w = self.params["mr_weight"]
-                if dev < -th:
-                    # 超卖（低于均线 8%+）→ 看多修正（最高 +mr_w）
-                    mr_score = min((-dev - th) / th, 1.0) * mr_w
-                elif dev > th:
-                    # 超买（高于均线 8%+）→ 看空修正（最高 -mr_w）
-                    mr_score = -min((dev - th) / th, 1.0) * mr_w
-
-        # 3. 宏观覆层：复用 gold 系统的 DXY/US10Y/VIX 数据
+        # 2. 宏观覆层：复用 gold 系统的 DXY/US10Y/VIX 数据
         #    DXY 上升 → 美元走强 → 黄金承压（逆相关）
         #    US10Y 上升 → 利率上行 → 黄金承压（逆相关）
         #    VIX 上升 → 避险需求 → 黄金利好（正相关）
         macro_score, dxy_chg, yld_chg, vix_lvl = self._macro_score()
 
-        # 4. 波动率状态过滤 — 高波动时降低置信度
+        # 3. 波动率状态过滤 — 高波动时降低置信度
         vol_regime = 0.0
         if len(returns) >= self.params["vol_regime_lookback"]:
             recent_vol = float(np.std(returns[-20:]))
@@ -109,7 +86,7 @@ class GoldMomentumStrategy(FundStrategyBase):
                 pct = sum(1 for v in hist_vols if v < recent_vol) / len(hist_vols)
                 vol_regime = pct  # 0=低波动, 1=高波动
 
-        # 5. 合成信号：动量为主(1.0)，宏观覆层与极端偏离做修正
+        # 4. 合成信号：动量为主，宏观覆层做修正
         buy_th = self.params["buy_threshold"]
         sell_th = self.params["sell_threshold"]
 
@@ -118,13 +95,8 @@ class GoldMomentumStrategy(FundStrategyBase):
         if vol_regime > self.params["vol_high_percentile"]:
             vol_multiplier = 0.5
 
-        effective_score = momentum_score + mr_score + macro_score
+        effective_score = momentum_score + macro_score
 
-        mr_reason = ""
-        if mr_score > 0:
-            mr_reason = f", 超卖修正(偏离均线{dev:+.1%})"
-        elif mr_score < 0:
-            mr_reason = f", 超买修正(偏离均线{dev:+.1%})"
         macro_reason = f", 宏观DXY{dxy_chg:+.1%}/US10Y{yld_chg:+.1%}/VIX{vix_lvl:.0f}" if macro_score != 0 else ""
 
         if effective_score > buy_th:
@@ -132,18 +104,18 @@ class GoldMomentumStrategy(FundStrategyBase):
             return [self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.BUY,
                 confidence=confidence,
-                reason=f"黄金动量 {momentum_score:.4f} 超买阈值，建议加仓{mr_reason}{macro_reason}",
+                reason=f"黄金动量 {momentum_score:.4f} 超买阈值，建议加仓{macro_reason}",
             )]
         elif effective_score < sell_th:
             confidence = min(abs(effective_score) / (abs(sell_th) * 2), 1.0) * vol_multiplier
             return [self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.SELL,
                 confidence=confidence,
-                reason=f"黄金动量 {momentum_score:.4f} 跌破卖出阈值，建议减仓{mr_reason}{macro_reason}",
+                reason=f"黄金动量 {momentum_score:.4f} 跌破卖出阈值，建议减仓{macro_reason}",
             )]
         return [self.emit_signal(
             SignalType.TIMING, fund_code, Direction.HOLD,
-            confidence=0.5, reason=f"黄金动量 {momentum_score:.4f} 中性{mr_reason}{macro_reason}",
+            confidence=0.5, reason=f"黄金动量 {momentum_score:.4f} 中性{macro_reason}",
         )]
 
     def _macro_score(self) -> tuple:

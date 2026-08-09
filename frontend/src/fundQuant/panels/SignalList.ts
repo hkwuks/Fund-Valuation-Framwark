@@ -132,7 +132,7 @@ export class SignalList extends PanelBase {
       const FUSION_STRATEGY = 'signal_fusion'
       const TIMING_STRATEGIES = new Set([
         'momentum', 'valuation_deviation', 'interest_rate', 'credit_spread',
-        'fx_momentum', 'gold_momentum',
+        'fx_momentum', 'gold_momentum', 'gold_reversion',
       ])
       const bestByFund = new Map<string, any>()
       for (const s of signals) {

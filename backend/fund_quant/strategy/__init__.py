@@ -8,6 +8,7 @@ from .timing import interest_rate
 from .timing import fx_momentum
 from .timing import smart_dca
 from .timing import commodity
+from .timing import gold_reversion
 from .timing import credit_spread
 from .selection import multi_factor
 from .selection import rating_enhanced
