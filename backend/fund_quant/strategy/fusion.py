@@ -34,9 +34,11 @@ class SignalFusion:
         if not fund_signals:
             return None
 
-        # 按策略类型分组
+        # 按策略类型分组（排除 smart_dca——它是定投建议，非择时方向信号，会污染融合方向）
         grouped = {}
         for s in fund_signals:
+            if s.strategy_name == "smart_dca":
+                continue
             key = s.signal_type.value if hasattr(s.signal_type, 'value') else str(s.signal_type)
             grouped.setdefault(key, []).append(s)
 
@@ -68,6 +70,7 @@ class SignalFusion:
                 effective_conf = sig.confidence * getattr(sig, '_balanced_weight', 1.0)
                 weighted_score += weight * dir_score * effective_conf
                 weight_sum_confidence += weight * effective_conf
+                total_weight += weight
                 contributors.append({
                     "strategy": sig.strategy_name,
                     "type": s_type,
@@ -87,8 +90,12 @@ class SignalFusion:
             )
 
         composite_score = weighted_score / weight_sum_confidence
-        # 置信度计算
-        confidence = min(abs(weighted_score) / weight_sum_confidence, 1.0)
+        # 置信度 = 平均信号置信度 × 方向一致度
+        #   平均置信度 avg_conf = Σ(w·conf)/Σw   反映信号本身强弱
+        #   一致度 agreement   = |Σ(w·dir·conf)|/Σ(w·conf)  全同向=1，完全对冲=0
+        avg_conf = weight_sum_confidence / total_weight if total_weight > 0 else 0.0
+        agreement = abs(weighted_score) / weight_sum_confidence if weight_sum_confidence > 0 else 0.0
+        confidence = min(avg_conf * agreement, 1.0)
 
         # 方向判定
         if composite_score > 0:

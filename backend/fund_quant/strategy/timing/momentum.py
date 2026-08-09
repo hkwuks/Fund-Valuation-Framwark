@@ -80,6 +80,8 @@ class MomentumStrategy(FundStrategyBase):
                 # 长期向上但短期已反转: 动量衰减
                 weighted_score *= 0.5  # 减半置信度
                 reason_suffix = f" (短期反转信号: {reversal:.4f})"
+            else:
+                reason_suffix = ""
 
         # 4. 信号判定
         buy_threshold = self.params["buy_threshold"]
@@ -91,21 +93,21 @@ class MomentumStrategy(FundStrategyBase):
             return [self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.BUY,
                 confidence=confidence,
-                reason=f"动量得分 {weighted_score:.4f} > 买入阈值 {buy_threshold}, 建议加仓",
+                reason=f"动量得分 {weighted_score:.4f} > 买入阈值 {buy_threshold}, 建议加仓{reason_suffix}",
                 suggested_pct=min(weighted_score / buy_threshold * 0.15, 0.3),
             )]
         elif weighted_score < sell_threshold:
             return [self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.SELL,
                 confidence=confidence,
-                reason=f"动量得分 {weighted_score:.4f} < 卖出阈值 {sell_threshold}, 建议减仓",
+                reason=f"动量得分 {weighted_score:.4f} < 卖出阈值 {sell_threshold}, 建议减仓{reason_suffix}",
                 suggested_pct=max(weighted_score / sell_threshold * -0.15, -0.3),
             )]
         else:
             return [self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.HOLD,
                 confidence=confidence,
-                reason=f"动量得分 {weighted_score:.4f} 在阈值区间内, 持有",
+                reason=f"动量得分 {weighted_score:.4f} 在阈值区间内, 持有{reason_suffix}",
             )]
 
 

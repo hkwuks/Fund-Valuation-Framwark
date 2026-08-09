@@ -359,7 +359,10 @@ async def selection_screen(req: SelectionRequest):
         return {"success": True, "data": result}
 
     # 校验请求的 fund_type 是否在策略适用范围内
-    if fund_type not in strategy.applicable_fund_types:
+    # TYPE_COMPAT 会把 "stock"→"equity" 等旧名映射到新名，而 applicable_fund_types
+    # 用的是策略原始类型名，两者都校验，避免误判（否则多因子策略永远返回空）
+    if (req.fund_type not in strategy.applicable_fund_types
+            and fund_type not in strategy.applicable_fund_types):
         # commodity/fof 等无 selection 策略的类型 → 返回空结果而非 400
         return {"success": True, "data": {
             "strategy": strategy.strategy_name,
@@ -367,7 +370,7 @@ async def selection_screen(req: SelectionRequest):
             "top_n": req.top_n,
             "rankings": [],
             "total_candidates": 0,
-            "message": f"所选类型 '{fund_type}' 暂不支持 selection 策略",
+            "message": f"所选类型 '{req.fund_type}' 暂不支持 selection 策略",
         }}
 
     result = await asyncio.to_thread(partial(strategy.screen, fund_type=fund_type, top_n=req.top_n, params=req.params))
@@ -679,8 +682,8 @@ async def export_backtest(backtest_id: str, fmt: str = "json"):
 @router.get("/signal/latest")
 async def get_latest_signals(fund_code: Optional[str] = None,
                               signal_type: Optional[str] = None):
-    """获取最新信号"""
-    signals = await asyncio.to_thread(partial(get_signals, fund_code=fund_code, signal_type=signal_type, limit=20))
+    """获取最新信号（返回足够多，前端按基金去重保留最佳信号）"""
+    signals = await asyncio.to_thread(partial(get_signals, fund_code=fund_code, signal_type=signal_type, limit=200))
     return {"success": True, "data": signals}
 
 
@@ -793,7 +796,35 @@ async def evaluate_pool(req: EvaluatePoolRequest):
                 except Exception as e:
                     logger.warning(f"批量评估策略 [{s_info['name']}] 异常 [{code}]: {e}")
 
-            # 落库 + SSE 推送
+            # 落库 + SSE 推送（先融合再持久化，前端展示融合信号 + 各策略贡献）
+            # 融合所有策略信号 → 一条最终建议（而非过滤掉）
+            try:
+                from ..fund_quant.strategy.fusion import signal_fusion
+                fused = signal_fusion.fuse(fund_signals, fund_type=fund_type)
+            except Exception as e:
+                logger.warning(f"信号融合失败 [{code}]: {e}")
+                fused = None
+
+            if fused and fused.contributing_strategies:
+                # 只有在有实际非 smart_dca 策略参与时才 emit 融合信号
+                fusion_sig = FundSignal(
+                    signal_id=f"fusion_{uuid.uuid4().hex[:8]}",
+                    fund_code=code,
+                    fund_name=fund_name,
+                    fund_type=fund_type,
+                    signal_type=SignalType.ALLOCATION,
+                    direction=fused.direction,
+                    confidence=fused.confidence,
+                    reason=fused.reason,
+                    strategy_name="signal_fusion",
+                    suggested_pct=0.05 if fused.direction in (Direction.BUY, Direction.SELL) else None,
+                )
+                contrib = [c["strategy"] for c in fused.contributing_strategies]
+                fusion_sig.reason = f"融合 {len(contrib)} 个策略: {', '.join(contrib)}"
+                signal_output_service.emit_signal(fusion_sig)
+                emitted += 1
+
+            # 各策略原始信号也落库（供明细/研究用）
             for sig in fund_signals:
                 sig.fund_name = fund_name
                 sig.fund_type = fund_type
@@ -802,7 +833,10 @@ async def evaluate_pool(req: EvaluatePoolRequest):
 
             results.append({
                 "fund_code": code, "fund_name": fund_name, "fund_type": fund_type,
-                "status": "ok", "signals": len(fund_signals), "nav_count": len(nav_values),
+                "status": "ok", "signals": len(fund_signals),
+                "fused_direction": fused.direction.value if fused else None,
+                "contributors": [c["strategy"] for c in fused.contributing_strategies] if fused else [],
+                "nav_count": len(nav_values),
             })
         except Exception as e:
             logger.warning(f"批量评估失败 [{code}]: {e}")

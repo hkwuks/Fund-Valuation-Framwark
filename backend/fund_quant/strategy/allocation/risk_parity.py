@@ -79,6 +79,9 @@ class RiskParityStrategy(FundStrategyBase):
         # 基金数多时降低下限，否则 SLSQP 无解回退等权
         if min_w * n > 1.0:
             min_w = 0.9 / n
+        # 自适应最大权重：max_weight*n 必须 >= 1（n=2 时 max_weight=0.4 会让可行域为空）
+        if max_w * n < 1.0:
+            max_w = 1.0 / n
 
         bounds = [(min_w, max_w) for _ in range(n)]
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]

@@ -97,19 +97,17 @@ class RatingEnhancedSelection(FundStrategyBase):
         return 0.5
 
     def _calc_deviation_score(self, nav_values: list) -> float:
-        """基于净值计算估值偏差z-score并映射到得分"""
+        """基于净值偏离历史均值的 z-score → 估值偏差得分（同 valuation_deviation 语义）"""
         arr = np.array(nav_values, dtype=np.float64)
-        if len(arr) < 30:
+        if len(arr) < 120:
             return 0.5
-        returns = np.diff(arr) / arr[:-1]
-        if len(returns) < 20:
-            return 0.5
-        window = returns[-int(min(self.params["z_deviation_threshold"] * 40, len(returns))):]
+        lookback = min(120, len(arr))
+        window = arr[-lookback:]
         mu = float(np.mean(window))
         sigma = float(np.std(window, ddof=1))
         if sigma < 1e-10:
             return 0.5
-        z = (returns[-1] - mu) / sigma
+        z = (arr[-1] - mu) / sigma
         return self._deviation_to_score(z)
 
     # ── 综合评分 ────────────────────────────────────────────────
