@@ -12,10 +12,12 @@ from loguru import logger
 from .env import GoldTradingEnv
 from .agent import PPOAgent
 from ..features import FeatureEngineer
+from .walk_forward import RLWalkForwardValidator, FoldResult
 
 
 # 模型保存目录
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "backend", "gold", "rl_models")
+# 模型保存目录 — 从 `backend/gold/ml/rl/` 到 `data/backend/gold/rl_models/`
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "data", "backend", "gold", "rl_models")
 
 
 def ensure_model_dir():
@@ -37,7 +39,6 @@ def bars_to_dataframe(bars: list) -> pd.DataFrame:
         })
     df = pd.DataFrame(rows)
 
-    # 生成技术指标特征
     fe = FeatureEngineer()
     try:
         df_feat = fe.create_technical_features(df)
@@ -45,18 +46,6 @@ def bars_to_dataframe(bars: list) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"Feature engineering failed: {e}")
         df_feat = df
-
-    # 模拟订单流特征（从OHLC反推）
-    df_feat["tick_count"] = np.random.poisson(500, len(df_feat))  # 模拟tick数
-    df_feat["buy_ratio"] = 0.5 + 0.1 * np.tanh(df_feat.get("returns", pd.Series([0] * len(df_feat))) * 10)
-    df_feat["vol_imbalance"] = df_feat.get("obv", pd.Series([0] * len(df_feat))).diff().fillna(0)
-    df_feat["vol_imbalance"] = np.tanh(df_feat["vol_imbalance"] / 1e6)
-    df_feat["spread"] = (df_feat["high"] - df_feat["low"]) / (df_feat["close"] + 1e-8) * 0.01
-
-    # 模拟宏观因子
-    for col in ["DXY_change", "US10Y_change", "VIX_value", "gold_dxy_ratio"]:
-        if col not in df_feat.columns:
-            df_feat[col] = 0.0
 
     df_feat = df_feat.replace([np.inf, -np.inf], np.nan).fillna(0)
     return df_feat
@@ -82,11 +71,9 @@ class RLTrainer:
 
     def init_agent(self, agent_config: Optional[dict] = None):
         """初始化PPO智能体"""
-        if self.env is None:
-            raise ValueError("Call prepare_env first")
         ac = {
-            "obs_dim": self.env.obs_dim,
-            "n_actions": self.env.n_actions,
+            "obs_dim": self.env.obs_dim if self.env else 30,
+            "n_actions": self.env.n_actions if self.env else 12,
             "model_dir": ensure_model_dir(),
             **(self.config.get("agent", {})),
             **(agent_config or {}),
