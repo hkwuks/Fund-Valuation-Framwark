@@ -156,6 +156,18 @@ class FundBacktester:
                 config=config, status="failed",
             )
 
+        # 只回测 config 指定窗口（注入净值仍保留窗口前数据供策略预热算动量）
+        # 之前忽略 start/end → 若调用方传入全量 nav_dict，回测会从最早日期开始
+        if config.start_date:
+            trading_days = [d for d in trading_days if d >= str(config.start_date)]
+        if config.end_date:
+            trading_days = [d for d in trading_days if d <= str(config.end_date)]
+        if not trading_days:
+            return BacktestResult(
+                backtest_id=f"bt_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                config=config, status="failed",
+            )
+
         # ── 数据质量检查 ──
         total_trading_days = len(trading_days)
         for code, records in self._nav_data.items():
@@ -257,17 +269,16 @@ class FundBacktester:
                         logger.warning(f"风控异常(portfolio): {e}")
 
                 if not risk_blocked:
-                    # 构建策略上下文 (state 注入全量 nav 序列供策略评估)
+                    # 构建策略上下文 — 只注入截至 prev_date 的主基金净值（防前视偏差）
+                    # 原实现把全部基金/全部日期的净值拼接后注入，策略读 nav_values[-1]
+                    # 会看到回测期末数据 = 前视。此处按 info_set.nav_available_up_to 截断。
                     if hasattr(self._strategy, '_state'):
-                        all_navs = []
-                        all_dates_data = []
-                        for code, records in self._nav_data.items():
-                            for r in records:
-                                all_navs.append(r.get("nav", 0))
-                                all_dates_data.append(r.get("date", ""))
-                        self._strategy._state["nav_values"] = all_navs
-                        self._strategy._state["nav_dates"] = all_dates_data
-                        self._strategy._state["fund_code"] = list(self._nav_data.keys())[0] if self._nav_data else ""
+                        target_code = list(self._nav_data.keys())[0] if self._nav_data else ""
+                        records = self._nav_data.get(target_code, [])
+                        visible = [r for r in records if r["date"] <= prev_date_str]
+                        self._strategy._state["nav_values"] = [r.get("nav", 0) for r in visible]
+                        self._strategy._state["nav_dates"] = [r.get("date", "") for r in visible]
+                        self._strategy._state["fund_code"] = target_code
 
                     # 调用策略
                     try:
