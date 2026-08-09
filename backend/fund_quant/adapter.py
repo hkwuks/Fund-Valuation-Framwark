@@ -393,6 +393,142 @@ class AdpatedMomentumFund(Strategy):
             ))
 
 
+@StrategyRegistry.register("etf_rotation_aurora")
+class AuroraEtfRotation(Strategy):
+    """ETF 全球资产轮动（AuroraCore 版）— 多基金动量评分 + Top-N 持仓
+
+    与 fund_quant.allocation.etf_rotation 同逻辑，但走统一引擎:
+      - on_data 逐点积累多基金净值（只用已到数据，无前视）
+      - 每 rebalance_days 个交易日调仓，emit LONG/CLOSE_LONG 信号
+      - 目标金额 = 权重 × ctx.portfolio_value（引擎每 bar 更新）
+    """
+    name = "etf_rotation_aurora"
+    strategy_type = "allocation"
+    description = "ETF全球资产轮动: 动量评分(年化收益×R²) + Top-N 轮动"
+    default_params = {
+        "etf_pool": {
+            "518880": "黄金ETF", "513100": "纳指ETF", "159915": "创业板ETF",
+            "510180": "上证180ETF", "510300": "沪深300ETF", "510500": "中证500ETF",
+            "511880": "银华日利ETF",
+        },
+        "momentum_days": 25,
+        "top_n": 1,
+        "rebalance_days": 5,
+        "buy_threshold": 0.0,
+        "max_single_weight": 1.0,
+    }
+    min_history_days = 60
+
+    def __init__(self):
+        merged = {**self.default_params}
+        super().__init__()
+        self.params = merged
+        self._hist: dict[str, list[tuple[str, float]]] = {}  # fund_code -> [(date, nav)]
+        self._cur_date = ""
+        self._day_count = 0
+        self._last_rebalance_day = 0
+
+    def _pool_codes(self) -> list[str]:
+        return list(self.params.get("etf_pool", {}))
+
+    def on_data(self, data):
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+        self._hist.setdefault(code, []).append((date_str, nav))
+
+        # 新交易日 → 计数 + 判断是否调仓
+        if date_str != self._cur_date:
+            self._cur_date = date_str
+            self._day_count += 1
+            freq = max(int(self.params.get("rebalance_days", 5)), 1)
+            if (self._day_count - self._last_rebalance_day) >= freq:
+                self._rebalance(date_str)
+                self._last_rebalance_day = self._day_count
+
+    def _score(self, navs: list[float], momentum_days: int) -> float:
+        """动量得分 = 年化收益率 × R²（log价格线性回归）"""
+        import numpy as np
+        recent = navs[-(momentum_days + 5):]
+        arr = np.array(recent, dtype=np.float64)
+        log_prices = np.log(arr)
+        x = np.arange(len(log_prices))
+        slope, intercept = np.polyfit(x, log_prices, 1)
+        annualized = np.exp(slope * 250) - 1
+        y_pred = slope * x + intercept
+        ss_res = float(np.sum((log_prices - y_pred) ** 2))
+        ss_tot = float(np.sum((log_prices - np.mean(log_prices)) ** 2))
+        r2 = max(0.0, min(1.0, 1 - (ss_res / max(ss_tot, 1e-10))))
+        return annualized * r2
+
+    def _rebalance(self, date_str: str):
+        momentum_days = int(self.params.get("momentum_days", 25))
+        top_n = int(self.params.get("top_n", 1))
+        buy_th = float(self.params.get("buy_threshold", 0.0))
+        pool = self._pool_codes()
+
+        # 各基金截至该日的净值序列
+        navs: dict[str, list[float]] = {}
+        for code in pool:
+            series = [n for d, n in self._hist.get(code, []) if d <= date_str]
+            if len(series) >= momentum_days + 5:
+                navs[code] = series
+        if not navs:
+            return
+
+        scores = {c: self._score(v, momentum_days) for c, v in navs.items()}
+        ranked = sorted(scores, key=lambda c: scores[c], reverse=True)
+        top = ranked[:top_n]
+        all_codes = self._hist.keys()
+
+        # 无前视：本调仓日用的是截至 date_str 的净值，T+1 由引擎按最新价确认
+        if not top or scores[top[0]] < buy_th:
+            # 全部卖出持币
+            self._emit_all_close(all_codes, f"最高动量 {scores[top[0]]:.4f}" if top else "无数据")
+            return
+
+        target = set(top)
+        # 先清仓不在目标内的，再买入目标
+        for code in list(all_codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if code not in target and pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"跌出Top{top_n}, 清仓",
+                ))
+        for code in target:
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if pos is not None and pos.volume > 0:
+                continue  # 已持有
+            nav = self._hist[code][-1][1] if self._hist.get(code) else 0
+            if nav <= 0:
+                continue
+            weight = min(float(self.params.get("max_single_weight", 1.0)),
+                         1.0 / max(top_n, 1))
+            target_amt = self.ctx.portfolio_value * weight
+            self.ctx.emit(Signal(
+                id="", strategy=self.name, symbol=code,
+                direction=Direction.LONG, price=nav,
+                volume=target_amt / nav, confidence=1.0,
+                reason=f"动量Top{top_n}: score={scores[code]:.4f}",
+            ))
+
+    def _emit_all_close(self, codes, reason: str):
+        for code in list(codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"全部清仓({reason})",
+                ))
+
+
 def demo():
     """基金领域适配自检"""
     from core import BacktestEngine, BacktestConfig

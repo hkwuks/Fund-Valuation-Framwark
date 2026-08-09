@@ -1535,7 +1535,9 @@ async def run_vectorized_backtest(req: VectorizedBacktestRequest):
 
     nav_dict: dict[str, list[float]] = {}
     for code in req.fund_codes:
-        navs = await asyncio.to_thread(get_nav_history, code)
+        navs = await asyncio.to_thread(
+            get_nav_history, code, req.start_date, req.end_date
+        )
         if navs:
             nav_dict[code] = [r.get("nav", 0) for r in navs if r.get("nav")]
 
@@ -1571,6 +1573,92 @@ async def run_vectorized_backtest(req: VectorizedBacktestRequest):
             "n_trading_days": vr.n_trading_days,
             "funds": req.fund_codes,
             "strategy": "equal_weight",
+        },
+    }
+
+
+@router.post("/backtest/aurora-run")
+async def run_aurora_backtest(req: VectorizedBacktestRequest):
+    """AuroraCore 统一引擎回测（配置策略用）"""
+    from ..fund_quant.data.storage import get_nav_history
+    from core import BacktestEngine, BacktestConfig, BacktestReport
+    from core import T1ExecutionEngine, FundNavPoint, Direction
+    from core.strategy import StrategyRegistry
+    import numpy as np
+
+    # 1. 加载多基金净值
+    nav_dict: dict[str, list[dict]] = {}
+    for code in req.fund_codes:
+        navs = await asyncio.to_thread(get_nav_history, code, req.start_date, req.end_date)
+        if navs:
+            nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)} for r in navs if r.get("nav")]
+
+    if not nav_dict:
+        raise HTTPException(status_code=400, detail="无净值数据")
+
+    # 2. 按日期交错构造 FundNavPoint 列表
+    from datetime import date
+    all_points: list[FundNavPoint] = []
+    for code, records in nav_dict.items():
+        for r in records:
+            all_points.append(FundNavPoint(
+                fund_code=code,
+                date=date.fromisoformat(r["date"]),
+                nav=r["nav"],
+            ))
+    all_points.sort(key=lambda p: (p.date, p.fund_code))
+
+    # 3. 构建引擎（注册策略：adapter 导入触发注册）
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+    strategy_cls = StrategyRegistry.get("etf_rotation_aurora")
+    if not strategy_cls:
+        raise HTTPException(status_code=404, detail="etf_rotation_aurora 策略未注册")
+
+    strategy = strategy_cls()
+    execution = T1ExecutionEngine(confirmation_delay=1)
+    execution.set_capital(req.initial_capital)
+
+    engine = BacktestEngine(BacktestConfig(initial_capital=req.initial_capital))
+    engine.set_strategy(strategy)
+    engine.set_executor(execution)
+    engine.set_data(all_points)
+
+    # 4. 运行
+    report = engine.run()
+    eq = report.equity_curve
+    prices = [e.get("close", 0) for e in eq]
+    equities = [e.get("equity", 0) for e in eq]
+
+    # 5. 计算指标
+    total_return = (equities[-1] / equities[0] - 1) if equities and equities[0] > 0 else 0
+    n_date = len(set(p.date for p in all_points))  # 实际交易日数（去重基金）
+    total_days = max(n_date, 1)
+    ann_return = (1 + total_return) ** (252 / total_days) - 1 if total_days > 0 else 0
+    daily_ret = [(equities[i] - equities[i - 1]) / equities[i - 1]
+                 for i in range(1, len(equities)) if equities[i - 1] > 0]
+    vol = float(np.std(daily_ret, ddof=1)) * np.sqrt(252) if len(daily_ret) > 1 else 0
+    sharpe = ann_return / vol if vol > 0 else 0
+
+    # 最大回撤
+    peak = equities[0]
+    mdd = 0
+    for e in equities:
+        if e > peak: peak = e
+        dd = (peak - e) / peak if peak > 0 else 0
+        mdd = max(mdd, dd)
+
+    return {
+        "success": True,
+        "data": {
+            "total_return": round(total_return, 4),
+            "annual_return": round(ann_return, 4),
+            "sharpe_ratio": round(sharpe, 4),
+            "max_drawdown": round(mdd, 4),
+            "volatility": round(vol, 4),
+            "n_trading_days": n_date,
+            "n_trades": report.total_trades,
+            "funds": req.fund_codes,
+            "strategy": "etf_rotation_aurora",
         },
     }
 

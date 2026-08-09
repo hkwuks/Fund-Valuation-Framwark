@@ -17,10 +17,21 @@ class StrategyContext:
         self._event_bus = event_bus
         self._mode = mode
         self._data: dict[str, Any] = {}  # 策略私有状态
+        self._portfolio_value: float = 0.0  # 组合总权益（引擎每 bar 更新）
+        self.execution: Any = None  # 执行引擎引用（策略可查询持仓）
 
     @property
     def mode(self) -> str:
         return self._mode
+
+    @property
+    def portfolio_value(self) -> float:
+        """当前组合总权益（含持仓市值 + 可用资金）"""
+        return self._portfolio_value
+
+    @portfolio_value.setter
+    def portfolio_value(self, value: float):
+        self._portfolio_value = value
 
     def emit(self, signal: Signal) -> str:
         """发布信号 → EventBus"""
