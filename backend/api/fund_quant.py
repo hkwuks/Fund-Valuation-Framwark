@@ -359,7 +359,10 @@ async def selection_screen(req: SelectionRequest):
         return {"success": True, "data": result}
 
     # 校验请求的 fund_type 是否在策略适用范围内
-    if fund_type not in strategy.applicable_fund_types:
+    # TYPE_COMPAT 会把 "stock"→"equity" 等旧名映射到新名，而 applicable_fund_types
+    # 用的是策略原始类型名，两者都校验，避免误判（否则多因子策略永远返回空）
+    if (req.fund_type not in strategy.applicable_fund_types
+            and fund_type not in strategy.applicable_fund_types):
         # commodity/fof 等无 selection 策略的类型 → 返回空结果而非 400
         return {"success": True, "data": {
             "strategy": strategy.strategy_name,
@@ -367,7 +370,7 @@ async def selection_screen(req: SelectionRequest):
             "top_n": req.top_n,
             "rankings": [],
             "total_candidates": 0,
-            "message": f"所选类型 '{fund_type}' 暂不支持 selection 策略",
+            "message": f"所选类型 '{req.fund_type}' 暂不支持 selection 策略",
         }}
 
     result = await asyncio.to_thread(partial(strategy.screen, fund_type=fund_type, top_n=req.top_n, params=req.params))

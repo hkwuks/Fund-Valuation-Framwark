@@ -47,11 +47,8 @@ class MultiFactorSelection(FundStrategyBase):
 
     def screen(self, fund_type: str = "stock", top_n: int = 10,
                params: Optional[dict] = None) -> dict:
-        """筛选基金 — 使用因子引擎"""
-        from backend.core.factor import (
-            FactorRegistry, EvaluationEngine, EvalConfig,
-        )
-        from ...data.storage import get_all_fund_codes, get_fund_meta, get_nav_history
+        """筛选基金 — 使用因子引擎（真实 NAV 前瞻收益评价）"""
+        from ...data.storage import get_all_fund_codes
 
         if params:
             self.params.update(params)
@@ -65,7 +62,8 @@ class MultiFactorSelection(FundStrategyBase):
         # 1. 获取因子评价结果
         active = self._load_active_factors(candidates)
         if not active:
-            logger.warning("没有通过评价的可用因子，回退等权")
+            # 无通过显著性评价的因子：诚实降级为等权多因子（非规模排序）
+            logger.warning("没有通过评价的可用因子，回退等权多因子评分")
             return self._fallback_screen(fund_type, top_n)
 
         # 2. 动态权重
@@ -74,37 +72,7 @@ class MultiFactorSelection(FundStrategyBase):
             weights = self._compute_weights(active)
 
         # 3. 计算每只基金评分
-        fund_scores = []
-        for code in candidates:
-            meta = get_fund_meta(code)
-            if meta and meta.get("fund_type") != fund_type and fund_type != "all":
-                continue
-
-            navs = get_nav_history(code)
-            if len(navs) < 60:
-                continue
-
-            # 从因子注册中心获取各因子值
-            total = 0.0
-            factor_values = {}
-            for f, _ in active:
-                try:
-                    # 使用简化计算（基于净值数据）
-                    val = self._compute_factor_simple(f.meta.name, navs, meta)
-                    factor_values[f.meta.name] = val
-                    w = weights.get(f.meta.name, 0)
-                    direction = f.meta.direction
-                    total += w * val * direction
-                except Exception:
-                    continue
-
-            if total != 0 or factor_values:
-                fund_scores.append({
-                    "fund_code": code,
-                    "total_score": total,
-                    "factors": {k: round(v, 4) for k, v in factor_values.items()},
-                    "meta": meta,
-                })
+        fund_scores = self._score_funds(fund_type, active, weights)
 
         if not fund_scores:
             return {"strategy": self.strategy_name, "fund_type": fund_type,
@@ -126,7 +94,7 @@ class MultiFactorSelection(FundStrategyBase):
             rankings.append({
                 "rank": i + 1,
                 "fund_code": fs["fund_code"],
-                "fund_name": fs["meta"]["fund_name"] if fs["meta"] else "",
+                "fund_name": fs.get("fund_name") or (fs["meta"]["fund_name"] if fs["meta"] else ""),
                 "total_score": round(fs["total_score"], 4),
                 "factors": fs["factors"],
             })
@@ -141,28 +109,92 @@ class MultiFactorSelection(FundStrategyBase):
             "rankings": rankings,
         }
 
+    def _score_funds(self, fund_type: str, factors: list,
+                     weights: dict[str, float]) -> list[dict]:
+        """对候选基金计算多因子总分（共享给 active / fallback 两条路径）"""
+        from ...data.storage import get_all_fund_codes, get_fund_meta, get_nav_history
+
+        # 基金名兜底：fund_metadata 表可能为空，从 funds.json 解析
+        names = {}
+        try:
+            import json, os
+            # multi_factor.py → selection → strategy → fund_quant → backend → 项目根
+            fp = os.path.abspath(os.path.join(
+                os.path.dirname(__file__), "..", "..", "..", "..",
+                "data", "backend", "funds.json"))
+            if os.path.exists(fp):
+                for f in json.load(open(fp, encoding="utf-8")) or []:
+                    if f.get("fund_code"):
+                        names[f["fund_code"]] = f.get("fund_name", "")
+        except Exception:
+            pass
+
+        fund_scores = []
+        for code in get_all_fund_codes() or []:
+            meta = get_fund_meta(code)
+            if meta and meta.get("fund_type") != fund_type and fund_type != "all":
+                continue
+
+            navs = get_nav_history(code)
+            if len(navs) < 60:
+                continue
+
+            total = 0.0
+            factor_values = {}
+            for f, _ in factors:
+                try:
+                    val = self._compute_factor_simple(f.meta.name, navs, meta)
+                    factor_values[f.meta.name] = val
+                    w = weights.get(f.meta.name, 0)
+                    direction = f.meta.direction
+                    total += w * val * direction
+                except Exception:
+                    continue
+
+            if total != 0 or factor_values:
+                fund_scores.append({
+                    "fund_code": code,
+                    "fund_name": names.get(code, ""),
+                    "total_score": total,
+                    "factors": {k: round(v, 4) for k, v in factor_values.items()},
+                    "meta": meta,
+                })
+        return fund_scores
+
     def _load_active_factors(self, symbols: list[str]) -> list[tuple]:
-        """加载经过IC评价的可用因子"""
+        """加载经过IC评价的可用因子（基于真实净值数据）"""
         from backend.core.factor import FactorRegistry, EvaluationEngine, EvalConfig
+        from ...data.feed import NavFactorFeed
 
         from datetime import date, timedelta
         lookback = self.params.get("lookback_years", 3)
         start = date.today() - timedelta(days=int(lookback) * 365)
         end = date.today()
 
-        class _DummyFeed:
-            def get_forward_returns(self, symbols, from_date, to_date):
-                return {s: 0.01 for s in symbols[:5]} if symbols else {}
+        # 确保基金域因子已注册（首次调用时注册一次）
+        if FactorRegistry.count() == 0:
+            try:
+                from backend.fund_quant.adapter import FundDomainAdapter
+                FundDomainAdapter().register_factors()
+            except Exception:
+                pass
 
-        feed = _DummyFeed()
-        ee = EvaluationEngine(feed)
+        # 真实数据源：NAV 前瞻收益 + 因子输入
+        # forward_periods=[21] 与 feed.horizon 一致（约1个月前瞻收益）
+        # min_stocks_per_period=5 适配基金池规模（远小于股票截面）
+        feed = NavFactorFeed(horizon=21)
+        ee = EvaluationEngine(feed, EvalConfig(
+            forward_periods=[21],
+            min_stocks_per_period=5,
+        ))
 
+        metas = FactorRegistry.list(domain="fund") or []
         active = []
-        for meta in FactorRegistry.list(domain="fund"):
+        for meta in metas:
             try:
                 f_cls = FactorRegistry.get(meta.name)
                 f = f_cls()
-                report = ee.run(f, symbols[:max(30, len(symbols)//10)],
+                report = ee.run(f, symbols[:max(10, len(symbols))],
                                 start, end)
             except Exception:
                 continue
@@ -262,26 +294,53 @@ class MultiFactorSelection(FundStrategyBase):
         return 0.0
 
     def _fallback_screen(self, fund_type: str, top_n: int) -> dict:
-        """回退到默认评分（无因子引擎时）"""
-        from ...data.storage import get_all_fund_codes, get_fund_meta
-        fund_scores = []
-        for code in get_all_fund_codes() or []:
-            meta = get_fund_meta(code)
-            if meta and meta.get("fund_type") != fund_type and fund_type != "all":
+        """等权多因子回退：无因子通过显著性评价时的诚实降级
+
+        用全部注册因子、等权打分（而非只按规模排序），产出真实的多因子评分。
+        """
+        from backend.core.factor import FactorRegistry
+        from ...data.feed import NavFactorFeed  # noqa: F401 确保注册路径
+
+        # 确保因子已注册
+        if FactorRegistry.count() == 0:
+            try:
+                from backend.fund_quant.adapter import FundDomainAdapter
+                FundDomainAdapter().register_factors()
+            except Exception:
+                pass
+
+        metas = FactorRegistry.list(domain="fund") or []
+        if not metas:
+            # 连因子都不可用：空结果（不假装按规模排序）
+            return self._empty_result(fund_type, top_n)
+
+        all_factors = []
+        for meta in metas:
+            try:
+                all_factors.append((FactorRegistry.get(meta.name)(), None))
+            except Exception:
                 continue
-            fund_scores.append({
-                "fund_code": code,
-                "total_score": float(meta.get("scale", 0)) if meta else 0,
-                "meta": meta,
-            })
+
+        weights = {f.meta.name: 1.0 / len(all_factors) for f, _ in all_factors}
+        fund_scores = self._score_funds(fund_type, all_factors, weights)
         fund_scores.sort(key=lambda x: x["total_score"], reverse=True)
-        rankings = [{"rank": i + 1, "fund_code": fs["fund_code"],
-                      "fund_name": fs["meta"]["fund_name"] if fs["meta"] else "",
-                      "total_score": 0.0, "factors": {}}
-                     for i, fs in enumerate(fund_scores[:top_n])]
+
+        rankings = [{
+            "rank": i + 1,
+            "fund_code": fs["fund_code"],
+            "fund_name": fs.get("fund_name") or (fs["meta"]["fund_name"] if fs["meta"] else ""),
+            "total_score": round(fs["total_score"], 4),
+            "factors": fs["factors"],
+        } for i, fs in enumerate(fund_scores[:top_n])]
+
         return {"strategy": self.strategy_name, "fund_type": fund_type,
                 "top_n": top_n, "total_candidates": len(fund_scores),
-                "rankings": rankings}
+                "rankings": rankings, "fallback": "equal_weight"}
+
+    @staticmethod
+    def _empty_result(fund_type: str, top_n: int) -> dict:
+        return {"strategy": "multi_factor", "fund_type": fund_type,
+                "top_n": top_n, "rankings": [], "total_candidates": 0}
 
     def score(self, fund_type: str = "stock",
               params: Optional[dict] = None) -> dict:
