@@ -67,7 +67,7 @@ class SmartDcaStrategy(FundStrategyBase):
                 reason=f"定投金额 ¥{actual_amount:.0f} (z-score={z_score:.2f})",
                 suggested_amount=actual_amount,
             ))
-        elif z_score <= 1.5:
+        else:
             signals.append(self.emit_signal(
                 SignalType.TIMING, fund_code, Direction.HOLD,
                 confidence=0.6,

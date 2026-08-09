@@ -6,6 +6,26 @@ from unittest.mock import patch
 import pytest
 from backend.fund_quant.core.models import BacktestConfig, InformationSet
 from backend.fund_quant.backtest.engine import FundBacktester
+from backend.fund_quant.strategy.base import FundStrategyBase
+from backend.fund_quant.core.enums import SignalType, Direction
+
+
+class _DummyStrategy(FundStrategyBase):
+    """最小策略：任何评估都返回 HOLD，仅用于驱动引擎构建 InformationSet"""
+    strategy_name = "_dummy_qdii_test"
+    strategy_type = "timing"
+    description = "dummy"
+    default_params = {}
+    min_history_days = 1
+
+    def on_evaluate(self, portfolio, info_set):
+        return [self.emit_signal(SignalType.TIMING, self._state.get("fund_code", ""),
+                                 Direction.HOLD, confidence=0.5, reason="dummy")]
+
+
+def _dummy_strategy():
+    """直接实例化，不注册 registry（避免污染单例）"""
+    return _DummyStrategy()
 
 
 class TestQdiiTimezoneModels:
@@ -51,6 +71,7 @@ class TestQdiiTimezoneEngine:
             qdii_fund_codes=["000001"],
         )
         engine = FundBacktester()
+        engine.set_strategy(_dummy_strategy())
         with patch(
             "backend.fund_quant.backtest.engine.InformationSet",
             wraps=InformationSet,
@@ -73,6 +94,7 @@ class TestQdiiTimezoneEngine:
             start_date="2020-01-01", end_date="2020-01-10",
         )
         engine = FundBacktester()
+        engine.set_strategy(_dummy_strategy())
         with patch(
             "backend.fund_quant.backtest.engine.InformationSet",
             wraps=InformationSet,
@@ -100,6 +122,7 @@ class TestQdiiTimezoneEngine:
             qdii_fund_codes=["000001"],
         )
         engine = FundBacktester()
+        engine.set_strategy(_dummy_strategy())
         with patch(
             "backend.fund_quant.backtest.engine.InformationSet",
             wraps=InformationSet,

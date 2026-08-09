@@ -36,6 +36,7 @@ export class SignalList extends PanelBase {
               <th>方向</th>
               <th class="text-right">置信度</th>
               <th>策略</th>
+              <th>建议</th>
               <th class="text-right">时间</th>
               <th style="width:40px;"></th>
             </tr>
@@ -132,7 +133,7 @@ export class SignalList extends PanelBase {
       const FUSION_STRATEGY = 'signal_fusion'
       const TIMING_STRATEGIES = new Set([
         'momentum', 'valuation_deviation', 'interest_rate', 'credit_spread',
-        'fx_momentum', 'gold_momentum',
+        'fx_momentum', 'gold_momentum', 'gold_reversion',
       ])
       const bestByFund = new Map<string, any>()
       for (const s of signals) {
@@ -159,7 +160,7 @@ export class SignalList extends PanelBase {
       if (!tbody) return
 
       if (!signals.length) {
-        tbody.innerHTML = `<tr><td colspan="5" style="padding:24px;text-align:center;color:var(--text-tertiary);font-size:13px;">暂无信号数据</td></tr>`
+        tbody.innerHTML = `<tr><td colspan="7" style="padding:24px;text-align:center;color:var(--text-tertiary);font-size:13px;">暂无信号数据</td></tr>`
         state.set('signals', [])
         return
       }
@@ -193,6 +194,9 @@ export class SignalList extends PanelBase {
               ? `<span title="${s.reason || ''}" style="cursor:help;color:var(--primary-color);font-weight:600;">融合</span>`
               : s.strategy_name || '-'}
           </td>
+          <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);font-size:12px;">
+            ${this.adviceHtml(s)}
+          </td>
           <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:right;color:var(--text-tertiary);font-size:11px;">${(s.created_at || '').slice(5, 16)}</td>
           <td style="padding:2px 6px;border-bottom:1px solid var(--border-light);text-align:center;">
             <button class="btn btn-sm btn-ghost sig-study-btn" data-code="${s.fund_code}" data-direction="${s.direction}" data-confidence="${s.confidence}" data-strategy="${s.strategy_name || ''}" data-timestamp="${s.created_at || ''}" title="研究此信号" style="font-size:11px;padding:1px 4px;">🔍</button>
@@ -219,5 +223,50 @@ export class SignalList extends PanelBase {
 
   onActivated(): void {
     this.refresh()
+  }
+
+  /** 根据方向+置信度+策略数生成建议文字 */
+  private adviceHtml(s: any): string {
+    const conf = s.confidence || 0
+    const dir = s.direction
+    if (dir === 'hold') return '<span style="color:var(--text-tertiary);">建议持有</span>'
+
+    // 定投信号单独文案
+    if (s.strategy_name === 'smart_dca') {
+      if (dir === 'buy') return '<span style="color:var(--primary-color);">建议定投</span>'
+      return '<span style="color:var(--text-tertiary);">暂停定投</span>'
+    }
+
+    // 融合信号：提取策略数
+    const isFusion = s.strategy_name === 'signal_fusion'
+    let n = 1
+    if (isFusion && s.reason) {
+      const m = s.reason.match(/融合 (\d+) 个策略/)
+      if (m) n = parseInt(m[1], 10)
+    }
+
+    const buy = dir === 'buy'
+    const isStrong = conf >= 0.7
+    const isMedium = conf >= 0.5
+
+    let text: string
+    let color: string
+
+    if (isStrong) {
+      text = buy ? '建议加仓/买入' : '建议减仓/卖出'
+      color = buy ? '#10b981' : '#ef4444'
+    } else if (isMedium && isFusion && n >= 2) {
+      // 多策略一致 → 升级
+      text = buy ? '建议加仓' : '建议减仓'
+      color = buy ? '#10b981' : '#ef4444'
+    } else if (isMedium) {
+      text = buy ? '可小幅加仓' : '可小幅减仓'
+      color = '#f59e0b'
+    } else {
+      text = '建议观望'
+      color = 'var(--text-tertiary)'
+    }
+
+    return `<span style="color:${color};font-weight:600;">${text}</span>`
   }
 }

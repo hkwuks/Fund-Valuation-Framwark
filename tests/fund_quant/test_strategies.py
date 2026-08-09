@@ -18,7 +18,7 @@ class TestStrategyRegistry:
         names = {s["name"] for s in strategies}
         expected = {
             "valuation_deviation", "momentum", "interest_rate",
-            "fx_momentum", "smart_dca", "gold_momentum", "credit_spread", "multi_factor",
+            "fx_momentum", "smart_dca", "gold_momentum", "gold_reversion", "credit_spread", "multi_factor",
             "rating_enhanced", "index_selection", "risk_parity", "black_litterman",
             "etf_global_rotation", "all_weather",
         }
@@ -29,7 +29,7 @@ class TestStrategyRegistry:
         by_type = {}
         for s in strategies:
             by_type.setdefault(s["type"], []).append(s["name"])
-        assert len(by_type.get("timing", [])) == 7, "择时策略应为7个"
+        assert len(by_type.get("timing", [])) == 8, "择时策略应为8个"
         assert len(by_type.get("selection", [])) == 3, "选基策略应为3个"
         assert len(by_type.get("allocation", [])) == 4, "配置策略应为4个（risk_parity, black_litterman, etf_global_rotation, all_weather）"
 
@@ -134,6 +134,13 @@ class TestStrategies:
     def test_gold_momentum(self, setup_strategy):
         """黄金动量策略能生成信号"""
         s = setup_strategy("gold_momentum")
+        # gold_momentum 需 270 天历史，补充长序列
+        np.random.seed(3)
+        long_vals = [1.0]
+        for _ in range(300):
+            long_vals.append(long_vals[-1] * (1 + abs(np.random.normal(0.001, 0.008))))
+        s._state["nav_values"] = long_vals
+        s._state["nav_dates"] = [f"2023-{i//30+1:02d}-{(i%30)+1:02d}" for i in range(len(long_vals))]
         signals = s.on_evaluate(None, None)
         assert len(signals) >= 1
         sig = signals[0]

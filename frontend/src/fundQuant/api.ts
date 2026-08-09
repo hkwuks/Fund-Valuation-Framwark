@@ -78,6 +78,7 @@ export interface SignalRecord {
   confidence: number
   strategy_name: string
   created_at: string
+  reason?: string
 }
 
 export interface PortfolioStatus {

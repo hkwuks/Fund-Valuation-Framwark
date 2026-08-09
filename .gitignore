@@ -63,7 +63,10 @@ htmlcov/
 
 # Test code (not committed)
 backend/gold/tests/
-
-# Node
-node_modules/
+data/
 frontend/node_modules/
+
+# Frontend ignore file (should not be committed)
+frontend/.gitignore
+.codegraph/
+.claude/
