@@ -694,6 +694,156 @@ class AllWeatherAurora(Strategy):
                     ))
 
 
+# ── BL+四象限观点策略（AuroraCore 版）──
+
+@StrategyRegistry.register("bl_quadrant_aurora")
+class AuroraBlQuadrant(Strategy):
+    """BL+四象限观点（AuroraCore 版）— 月度再平衡 + 四象限观点注入
+
+    on_data 逐点积累多基金净值，每月调用 BlackLittermanQuadrant.optimize()
+    算权重，然后 emit LONG/CLOSE_LONG 信号使持仓回到目标权重。
+    优化只用截至当日的净值（nav_series），无前视偏差。
+    """
+    name = "bl_quadrant_aurora"
+    strategy_type = "allocation"
+    description = "BL+四象限观点: 桥水30/40/15/15比例作为相对观点 + 月度再平衡, 走统一引擎"
+    default_params = {
+        "mode": "quadrant",
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 756,
+        "risk_aversion": 2.5,
+        "tau": 0.05,
+        "max_weight": 0.4,
+        "min_weight": 0.05,
+        "view_confidence": 0.6,
+        "growth_underperform": -0.03,
+        "inflation_outperform": 0.04,
+        "leverage": 1.0,
+    }
+    min_history_days = 60
+
+    def __init__(self):
+        merged = {**self.default_params}
+        super().__init__()
+        self.params = merged
+        self._hist: dict[str, list[tuple[str, float]]] = {}  # fund_code -> [(date, nav)]
+        self._cur_date = ""
+        self._last_rebalance_month = ""
+        self._first_rebalance = True  # 首次数据够就立即再平衡
+
+    def _pool_codes(self) -> list[str]:
+        return list(self._hist.keys()) or list(self.params.get("fund_codes", []))
+
+    def on_data(self, data):
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+        self._hist.setdefault(code, []).append((date_str, nav))
+
+        if date_str != self._cur_date:
+            self._cur_date = date_str
+            self._check_rebalance(date_str)
+
+    def _check_rebalance(self, date_str: str):
+        """判断是否触发再平衡：首次或跨月"""
+        cur_month = date_str[:7]
+        if self._first_rebalance and len(self._hist) >= 3:
+            self._first_rebalance = False
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+            return
+        if cur_month != self._last_rebalance_month and self._last_rebalance_month:
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+
+    def _rebalance(self, date_str: str):
+        from .strategy.allocation.bl_quadrant import BlackLittermanQuadrant
+
+        pool = self._pool_codes()
+        # 收集截至该日的净值序列（只用已到数据，无前视）
+        nav_series: dict[str, list[float]] = {}
+        for code in pool:
+            series = [n for d, n in self._hist.get(code, []) if d <= date_str]
+            if len(series) >= 20:
+                nav_series[code] = series
+
+        if not nav_series:
+            return
+
+        valid_codes = list(nav_series.keys())
+        if len(valid_codes) < 2:
+            return
+
+        # 调用 BlackLittermanQuadrant 计算权重（nav_series 避免 DB 前视）
+        strategy = BlackLittermanQuadrant(params=dict(self.params))
+        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
+        weights = result.get("weights", {})
+        if not weights:
+            return
+
+        # 总权益
+        pv = self.ctx.portfolio_value or 0
+        if pv <= 0:
+            return
+
+        all_codes = self._hist.keys()
+        target_codes = {c for c, w in weights.items() if w > 0}
+
+        # 先清仓不在目标内的
+        for code in list(all_codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if code not in target_codes and pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"BL四象限调仓: 权重为0, 清仓",
+                ))
+
+        # 再平衡：调整目标基金的持仓至目标权重
+        for code, weight in weights.items():
+            if weight <= 0:
+                continue
+            last_nav = nav_series.get(code, [])
+            if not last_nav:
+                continue
+            price = last_nav[-1]
+            if price <= 0:
+                continue
+
+            target_amt = pv * weight
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            current_amt = pos.volume * price if pos and pos.volume > 0 else 0
+            diff = target_amt - current_amt
+            threshold = self.params.get("rebalance_threshold", 0.05) * pv
+
+            if abs(diff) < threshold:
+                continue  # 偏离不超阈值，跳过
+
+            if diff > 0:
+                # 买入
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.LONG, price=price,
+                    volume=diff / price, confidence=1.0,
+                    reason=f"BL四象限调仓: 目标权重{weight:.1%}, 当前不足",
+                ))
+            else:
+                # 卖出超配部分
+                sell_vol = pos.volume if pos else 0
+                if sell_vol > 0:
+                    sell_vol = min(sell_vol, pos.volume)
+                    self.ctx.emit(Signal(
+                        id="", strategy=self.name, symbol=code,
+                        direction=Direction.CLOSE_LONG, price=price,
+                        volume=sell_vol, confidence=1.0,
+                        reason=f"BL四象限调仓: 超配, 减仓至{weight:.1%}",
+                    ))
+
+
 def demo():
     """基金领域适配自检"""
     from core import BacktestEngine, BacktestConfig
