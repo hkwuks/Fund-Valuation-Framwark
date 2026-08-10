@@ -1,7 +1,7 @@
 /**
  * L3 研究区容器 — 在 Dashboard 网格下方展开，不占用 grid 位置
  *
- * 包含 Tab 切换：因子暴露（择时研究已废弃移除）
+ * 包含 Tab 切换：策略暴露
  * 从信号列表/净值图点击信号时展开。
  */
 
@@ -34,7 +34,7 @@ export class ResearchPanel {
       <div class="research-panel" style="display:none;">
         <div class="research-header">
           <div class="research-tabs">
-            <button class="research-tab active" data-tab="exposure">因子暴露</button>
+            <button class="research-tab active" data-tab="exposure">策略暴露</button>
           </div>
           <div class="research-info">
             <span class="research-fund-name"></span>

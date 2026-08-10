@@ -36,14 +36,6 @@ export interface FundRanking {
   factors: Record<string, number>
 }
 
-export interface AllocationResult {
-  weights: Record<string, number>
-  expected_return: number
-  portfolio_volatility: number
-  sharpe_ratio: number
-  method: string
-}
-
 export interface BacktestResult {
   backtest_id: string
   status: string
@@ -57,6 +49,38 @@ export interface BacktestResult {
     equity_curve: { date: string; total_value: number }[]
     period_returns: Record<string, number>
   }
+}
+
+export interface AuroraBacktestResult {
+  total_return: number
+  annual_return: number
+  sharpe_ratio: number
+  max_drawdown: number
+  volatility: number
+  n_trading_days: number
+  n_trades: number
+  funds: string[]
+  strategy: string
+  mode?: string
+}
+
+export interface StrategyAllocationSignal {
+  strategy: string
+  direction: 'buy' | 'hold' | 'sell'
+  weights: Record<string, number>
+  confidence: number
+  reason: string
+  mode?: string
+  capital?: number
+  buy_amounts: Record<string, number>
+  top_holdings: { fund_code: string; weight: number; score?: number; fund_name?: string }[]
+  momentum_rank?: { fund_code: string; score: number; rank: number }[]
+  asset_allocation?: Record<string, number>
+}
+
+export interface StrategyAllocationResult {
+  strategies: StrategyAllocationSignal[]
+  fund_codes: string[]
 }
 
 export interface SignalRecord {
@@ -253,10 +277,6 @@ export const fundQuantApi = {
   },
   getLatestSignals: () => get<{ success: boolean; data: SignalRecord[] }>('/signal/latest'),
 
-  // Allocation
-  optimizeAllocation: (fund_codes: string[], params?: any) =>
-    post<{ success: boolean; data: AllocationResult }>('/allocation/optimize', { fund_codes, params: params || {} }),
-
   // Selection
   screenFunds: (fund_type: string, top_n = 10) =>
     post<{ success: boolean; data: { rankings: FundRanking[] } }>('/selection/screen', { fund_type, top_n }),
@@ -269,6 +289,17 @@ export const fundQuantApi = {
     if (strategy_name) params.set('strategy_name', strategy_name)
     return get<{ success: boolean; data: BacktestResult[]; total: number }>(`/backtest/list?${params}`)
   },
+  // — AuroraCore 引擎回测（etf_rotation / all_weather） —
+  runAuroraBacktest: (req: {
+    fund_codes: string[]; start_date: string; end_date: string;
+    initial_capital?: number; strategy_name?: string; params?: Record<string, any>;
+  }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/aurora-run', req),
+
+  // — 策略资产配置信号（以策略为中心） —
+  getStrategyAllocation: (fund_codes: string[], capital?: number, params?: Record<string, any>) =>
+    post<{ success: boolean; data: StrategyAllocationResult }>(
+      '/strategy/allocation/current', { fund_codes, capital: capital || 100000, params: params || {} },
+    ),
 
   // — 新增接口 —
   getAttribution: (fund_codes: string[], start: string, end: string, method = 'brinson') =>
@@ -282,7 +313,7 @@ export const fundQuantApi = {
   getStrategyList: () =>
     get<{ success: boolean; data: StrategyInfo[] }>('/strategy/list'),
 
-  // — 新增：因子暴露接口 —
+  // — 新增：策略暴露接口 —
   getFactorExposure: (fund_code: string) =>
     get<FactorExposureResult>(`/factors/exposure/${fund_code}`),
 

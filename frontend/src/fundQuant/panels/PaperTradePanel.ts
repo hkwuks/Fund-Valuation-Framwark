@@ -65,7 +65,7 @@ export class PaperTradePanel extends PanelBase {
     if (!sel) return
     try {
       fundQuantApi.getStrategyList().then(res => {
-        const strategies = (res.data || []).filter(s => s.type === 'timing')
+        const strategies = (res.data || []).filter(s => s.type === 'allocation')
         sel.innerHTML = `<option value="">策略</option>
           ${strategies.map(s => `<option value="${s.name}">${s.display_name || s.name}</option>`).join('')}`
       }).catch(() => {})

@@ -1,8 +1,8 @@
 /**
- * P10 因子暴露面板 — L3 研究区内的因子分析面板
+ * P10 策略暴露面板 — L3 研究区内的策略分析面板
  *
  * 功能：
- * 1. 因子贡献雷达图 — 当前基金的因子暴露度可视化
+ * 1. 策略暴露雷达图 — 当前基金的因子暴露度可视化
  * 2. 因子历史变化 — 近 1 年各因子暴露度折线图
  * 3. 同类对比 — 同类基金中各因子的百分位
  */
@@ -62,7 +62,7 @@ export class FactorExposure {
 
         <!-- 历史变化折线图 -->
         <div>
-          <div class="research-section-title">历史因子暴露变化（近1年）</div>
+          <div class="research-section-title">历史策略暴露变化（近1年）</div>
           <div class="fx-history-chart" style="height:160px;"></div>
         </div>
       </div>`

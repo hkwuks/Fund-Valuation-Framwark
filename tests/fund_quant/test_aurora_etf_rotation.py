@@ -93,3 +93,51 @@ class TestAuroraEtfRotation:
         points = _make_points(codes, 60, {"510300": 1, "510500": -1})
         report = _run_engine(points, params={"rebalance_days": 5})
         assert report.total_trades > 0
+
+
+def _run_all_weather_engine(points, initial_capital=100000, params=None):
+    """用 AuroraCore 引擎跑 all_weather_aurora"""
+    from core import BacktestEngine, BacktestConfig, T1ExecutionEngine
+    from core.strategy import StrategyRegistry
+
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+
+    strategy_cls = StrategyRegistry.get("all_weather_aurora")
+    strategy = strategy_cls()
+    if params:
+        strategy.params.update(params)
+
+    execution = T1ExecutionEngine(confirmation_delay=1)
+    execution.set_capital(initial_capital)
+    engine = BacktestEngine(BacktestConfig(initial_capital=initial_capital))
+    engine.set_strategy(strategy)
+    engine.set_executor(execution)
+    engine.set_data(points)
+    return engine.run()
+
+
+class TestAllWeatherAurora:
+    """AuroraCore 全天候策略端到端测试"""
+
+    def test_registered(self):
+        """all_weather_aurora 已注册到 AuroraCore registry"""
+        from core.strategy import StrategyRegistry
+        import backend.fund_quant.adapter as _adapter  # noqa: F401
+        assert StrategyRegistry.get("all_weather_aurora") is not None
+
+    def test_fixed_mode_rebalances(self):
+        """fixed 模式在多头市场应产生交易且持有收益为正"""
+        codes = ["510300", "510500", "518880"]
+        points = _make_points(codes, 120, {"510300": 1, "510500": 1, "518880": 1})
+        report = _run_all_weather_engine(points, params={"mode": "fixed"})
+        assert report.total_trades > 0, "fixed 模式月度再平衡应产生交易"
+        final = report.equity_curve[-1]["equity"]
+        assert final > report.equity_curve[0]["equity"], "全上涨应赚钱"
+
+    def test_risk_parity_mode_runs(self):
+        """risk_parity 模式应能运行（可能因数据少回退 fixed，但不报错）"""
+        codes = ["510300", "510500", "518880"]
+        points = _make_points(codes, 120, {"510300": 1, "510500": 1, "518880": 1})
+        report = _run_all_weather_engine(points, params={"mode": "risk_parity"})
+        assert report.total_trades >= 0
+        assert len(report.equity_curve) > 1

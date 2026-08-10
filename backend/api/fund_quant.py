@@ -54,11 +54,6 @@ class SelectionRequest(BaseModel):
     params: dict = {}
 
 
-class AllocationRequest(BaseModel):
-    fund_codes: List[str]
-    params: dict = {}
-
-
 class BacktestRequest(BaseModel):
     strategy_name: str
     fund_codes: List[str]
@@ -391,73 +386,148 @@ async def selection_score(req: SelectionRequest):
     return {"success": True, "data": result}
 
 
-# ── 配置优化 ──
+# ── 策略资产配置信号（策略为中心，非 per-fund）──
 
-@router.post("/allocation/optimize")
-async def allocation_optimize(req: AllocationRequest):
-    """组合配置优化（默认使用风险平价策略）
+class StrategyAllocationRequest(BaseModel):
+    fund_codes: List[str] = []
+    capital: float = 100000  # 总资产（用于计算买入金额）
+    params: dict = {}
 
-    可选策略: risk_parity, black_litterman, etf_global_rotation, all_weather
-    通过 req.params.strategy 指定。
+def _load_recent_navs(fund_codes: list[str], days: int = 250) -> dict[str, list[dict]]:
+    """加载每个基金最近 days 个交易日的净值（按日期升序）"""
+    from ..fund_quant.data.storage import get_nav_history
+    nav_dict: dict[str, list[dict]] = {}
+    for code in fund_codes:
+        navs = get_nav_history(code)
+        if not navs:
+            continue
+        recent = navs[-days:]
+        nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)} for r in recent if r.get("nav")]
+    return nav_dict
+
+
+def _etf_rotation_current_signal(fund_codes: list[str], params: dict, capital: float = 100000) -> dict:
+    """etf_rotation 当前配置：动量评分 → Top-N 权重 + 买入金额"""
+    import numpy as np
+    momentum_days = int(params.get("momentum_days", 25))
+    top_n = int(params.get("top_n", 1))
+    buy_th = float(params.get("buy_threshold", 0.0))
+
+    nav_dict = _load_recent_navs(fund_codes, momentum_days + 10)
+    scores: dict[str, float] = {}
+    for code, records in nav_dict.items():
+        vals = [r["nav"] for r in records if r["nav"] > 0]
+        if len(vals) < momentum_days + 5:
+            continue
+        recent = vals[-(momentum_days + 5):]
+        arr = np.array(recent, dtype=np.float64)
+        log_p = np.log(arr)
+        x = np.arange(len(log_p))
+        slope, _ = np.polyfit(x, log_p, 1)
+        annualized = np.exp(slope * 250) - 1
+        y_pred = slope * x + (np.mean(log_p) - slope * np.mean(x))
+        ss_res = float(np.sum((log_p - y_pred) ** 2))
+        ss_tot = float(np.sum((log_p - np.mean(log_p)) ** 2))
+        r2 = max(0.0, min(1.0, 1 - (ss_res / max(ss_tot, 1e-10))))
+        scores[code] = annualized * r2
+
+    if not scores:
+        return {"strategy": "etf_rotation_aurora", "direction": "hold", "weights": {},
+                "confidence": 0, "reason": "净值数据不足", "top_holdings": [], "buy_amounts": {},
+                "momentum_rank": []}
+
+    ranked = sorted(scores, key=lambda c: scores[c], reverse=True)
+    # 动量排名（全部，供前端展示候选）
+    momentum_rank = [{"fund_code": c, "score": round(scores[c], 4), "rank": i + 1}
+                     for i, c in enumerate(ranked) if scores[c] != 0]
+    top = ranked[:top_n]
+
+    if scores[top[0]] < buy_th:
+        return {"strategy": "etf_rotation_aurora", "direction": "hold", "weights": {},
+                "confidence": 0, "buy_amounts": {},
+                "reason": f"最高动量 {scores[top[0]]:.4f} 低于阈值 {buy_th}，空仓持币",
+                "top_holdings": [], "momentum_rank": momentum_rank}
+
+    weight = 1.0 / len(top)
+    top_holdings = [{"fund_code": c, "weight": round(weight, 4),
+                     "score": round(scores[c], 4)} for c in top]
+    buy_amounts = {c: round(capital * weight, 2) for c in top}
+    return {"strategy": "etf_rotation_aurora", "direction": "buy",
+            "weights": {c: round(weight, 4) for c in top},
+            "confidence": min(abs(scores[top[0]]) * 10, 1.0),
+            "capital": round(capital, 2),
+            "buy_amounts": buy_amounts,
+            "reason": f"动量Top{top_n}: {'  '.join(f'{c}({scores[c]:.3f})' for c in top)}",
+            "top_holdings": top_holdings, "momentum_rank": momentum_rank}
+
+
+def _all_weather_current_signal(fund_codes: list[str], params: dict, capital: float = 100000) -> dict:
+    """all_weather 当前配置：固定权重/风险平价 → 权重向量 + 买入金额
+
+    全天候是固定资产池策略（四象限），不因前端传入的基金池而稀释权重。
+    用策略自带 asset_template（固定 Dalio 比例），fund_codes 仅用于补充名称。
     """
+    from ..fund_quant.strategy.allocation.all_weather import AllWeatherStrategy
+    strategy = AllWeatherStrategy(params=params)
+    # 不传 fund_codes → 用固定模板，保持四象限比例
+    result = strategy.optimize(fund_codes=None)
+    weights = result.get("weights", {})
+    mode = result.get("mode", params.get("mode", "fixed"))
+    asset_allocation = result.get("asset_allocation", {})
+
+    # 基金名称：优先模板，其次 fund_pool（传入了才查）
+    name_map = {}
+    for code, info in strategy.params.get("asset_template", {}).items():
+        name_map[code] = info.get("name", code)
+
+    top_holdings = []
+    for c, w in sorted(weights.items(), key=lambda kv: -kv[1]):
+        if w > 0:
+            top_holdings.append({
+                "fund_code": c, "weight": w,
+                "fund_name": name_map.get(c, c),
+            })
+    buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
+
+    # 类别配置中文说明
+    class_label = {"equity": "股票", "bond_long": "长期债券", "bond_medium": "中期债券",
+                   "bond": "债券", "gold": "黄金", "commodity": "商品"}
+    alloc_desc = '  '.join(f"{class_label.get(k, k)}:{v:.1%}" for k, v in
+                           sorted(asset_allocation.items(), key=lambda kv: -kv[1]) if v > 0)
+
+    return {"strategy": "all_weather_aurora", "direction": "hold",
+            "weights": weights, "confidence": 0.8, "capital": round(capital, 2),
+            "buy_amounts": buy_amounts, "mode": mode,
+            "asset_allocation": {k: round(v, 4) for k, v in asset_allocation.items()},
+            "reason": f"全天候({mode}) 四象限配置：{alloc_desc}",
+            "top_holdings": top_holdings}
+
+
+@router.post("/strategy/allocation/current")
+async def strategy_allocation_current(req: StrategyAllocationRequest):
+    """策略资产配置信号（按需实时计算，以策略为中心）
+
+    对每个 active 策略，用最新净值实时算当前配置建议：
+      - etf_rotation_aurora: 动量 Top-N 权重 + 排名
+      - all_weather_aurora: 固定权重 / 风险平价权重向量
+    返回权重 + 方向 + 买入金额 + 动量排名候选。
+    """
+    fund_codes = req.fund_codes or []
+    capital = req.capital or 100000
+    signals = []
     try:
-        strategy_name = req.params.get("strategy", "risk_parity")
-        from ..fund_quant.strategy.base import StrategyRegistry
-        registry = StrategyRegistry()
-        strategy_cls = registry.get_strategy_class(strategy_name)
-        if not strategy_cls:
-            raise HTTPException(status_code=404, detail=f"策略 {strategy_name} 未找到")
-
-        strategy = strategy_cls()
-        result = await asyncio.to_thread(
-            partial(strategy.optimize, fund_codes=req.fund_codes, params=req.params))
-        return {"success": True, "data": result}
-    except HTTPException:
-        raise
+        signals.append(_etf_rotation_current_signal(fund_codes, req.params, capital))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/allocation/run/{strategy_name}")
-async def allocation_run(strategy_name: str, req: AllocationRequest):
-    """运行指定的配置策略（显式路由）"""
+        signals.append({"strategy": "etf_rotation_aurora", "direction": "hold",
+                        "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
+                        "top_holdings": [], "buy_amounts": {}, "momentum_rank": []})
     try:
-        from ..fund_quant.strategy.base import StrategyRegistry
-        registry = StrategyRegistry()
-        strategy_cls = registry.get_strategy_class(strategy_name)
-        if not strategy_cls:
-            raise HTTPException(status_code=404, detail=f"策略 {strategy_name} 未找到")
-
-        strategy = strategy_cls()
-        result = await asyncio.to_thread(
-            partial(strategy.optimize, fund_codes=req.fund_codes, params=req.params))
-        return {"success": True, "data": result}
-    except HTTPException:
-        raise
+        signals.append(_all_weather_current_signal(fund_codes, req.params, capital))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/allocation/rebalance")
-async def allocation_rebalance(req: AllocationRequest):
-    """再平衡建议 (基于阈值偏离检测)"""
-    try:
-        from ..fund_quant.data.storage import get_nav_history
-        current_prices = {}
-        for code in req.fund_codes:
-            navs = await asyncio.to_thread(partial(get_nav_history, code, limit=1))
-            if navs:
-                current_prices[code] = navs[0].get("nav", 0)
-
-        return {"success": True, "data": {
-            "fund_codes": req.fund_codes,
-            "current_prices": current_prices,
-            "threshold": req.params.get("rebalance_threshold", 0.05),
-            "suggestion": "当前偏离在阈值范围内，无需再平衡",
-            "last_checked": datetime.now().isoformat(),
-        }}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        signals.append({"strategy": "all_weather_aurora", "direction": "hold",
+                        "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
+                        "top_holdings": [], "buy_amounts": {}})
+    return {"success": True, "data": {"strategies": signals, "fund_codes": fund_codes}}
 
 
 # ── 回测 ──
@@ -1401,6 +1471,8 @@ class VectorizedBacktestRequest(BaseModel):
     start_date: str
     end_date: str
     initial_capital: float = 100000.0
+    strategy_name: str = "etf_rotation_aurora"  # etf_rotation_aurora | all_weather_aurora
+    params: dict = {}  # 策略参数（如 all_weather 的 mode）
 
 @router.post("/backtest/run-vectorized")
 async def run_vectorized_backtest(req: VectorizedBacktestRequest):
@@ -1483,13 +1555,15 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
             ))
     all_points.sort(key=lambda p: (p.date, p.fund_code))
 
-    # 3. 构建引擎（注册策略：adapter 导入触发注册）
+    # 3. 构建引擎（adapter 导入触发注册）
     import backend.fund_quant.adapter as _adapter  # noqa: F401
-    strategy_cls = StrategyRegistry.get("etf_rotation_aurora")
+    strategy_cls = StrategyRegistry.get(req.strategy_name)
     if not strategy_cls:
-        raise HTTPException(status_code=404, detail="etf_rotation_aurora 策略未注册")
+        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未注册")
 
     strategy = strategy_cls()
+    strategy.params.update(req.params)
+    execution = T1ExecutionEngine(confirmation_delay=1)
     execution = T1ExecutionEngine(confirmation_delay=1)
     execution.set_capital(req.initial_capital)
 
@@ -1533,7 +1607,7 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
             "n_trading_days": n_date,
             "n_trades": report.total_trades,
             "funds": req.fund_codes,
-            "strategy": "etf_rotation_aurora",
+            "strategy": req.strategy_name,
         },
     }
 

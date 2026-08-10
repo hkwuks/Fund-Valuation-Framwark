@@ -7,7 +7,7 @@ export class DetailPanel extends PanelBase {
   private unsub: (() => void) | null = null
 
   constructor() {
-    super({ id: 'detail', title: '基金详情', defaultGridPos: { x: 0, y: 4, w: 2, h: 1 } })
+    super({ id: 'detail', title: '策略详情', defaultGridPos: { x: 0, y: 4, w: 2, h: 1 } })
   }
 
   render(): HTMLElement {
@@ -16,7 +16,7 @@ export class DetailPanel extends PanelBase {
     el.style.display = 'none'
     el.innerHTML = `
       <div class="panel-header">
-        <h3>基金详情</h3>
+        <h3>策略详情</h3>
         <button class="detail-close" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-secondary);padding:0 4px;" title="关闭">&#x2715;</button>
       </div>
       <div class="detail-body" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:12px 16px;">
@@ -37,7 +37,7 @@ export class DetailPanel extends PanelBase {
           <div class="detail-accuracy-body"></div>
         </div>
         <div class="detail-section detail-section-factors" style="grid-column:2/4;">
-          <h4 style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 8px;">因子暴露</h4>
+          <h4 style="font-size:13px;font-weight:600;color:var(--text-primary);margin:0 0 8px;">策略暴露</h4>
           <div class="detail-factors-body" style="height:140px;"></div>
         </div>
       </div>`
@@ -153,10 +153,10 @@ export class DetailPanel extends PanelBase {
     container.innerHTML = `
       <div style="padding:12px;text-align:center;">
         <button class="btn btn-sm btn-outline open-exposure-btn" style="font-size:12px;">
-          🔬 打开因子暴露面板
+          🔬 打开策略暴露面板
         </button>
         <div style="margin-top:8px;font-size:11px;color:var(--text-tertiary);">
-          查看当前基金的因子贡献雷达图 + 同类对比
+          查看当前基金的策略暴露雷达图 + 同类对比
         </div>
       </div>`
     container.querySelector('.open-exposure-btn')?.addEventListener('click', () => {

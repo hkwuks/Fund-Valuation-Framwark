@@ -73,10 +73,12 @@ class TestFundQuantAPI:
                           json={"fund_type": "stock"})
         assert res.status_code == 200
 
-    def test_allocation_optimize(self, client):
-        res = client.post("/api/fund-quant/allocation/optimize",
-                          json={"fund_codes": ["000001", "110011"]})
+    def test_strategy_allocation_current(self, client):
+        res = client.post("/api/fund-quant/strategy/allocation/current",
+                          json={"fund_codes": ["518880", "513100", "510300"]})
         assert res.status_code == 200
+        data = res.json()
+        assert "strategies" in data.get("data", {})
 
     def test_signal_history(self, client):
         res = client.get("/api/fund-quant/signal/history?limit=5")

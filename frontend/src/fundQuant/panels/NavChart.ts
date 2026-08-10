@@ -86,7 +86,7 @@ export class NavChart extends PanelBase {
       if (code) {
         const fundName = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || ''
         state.set('researchPanel', {
-          visible: true, activeTab: 'timing', fundCode: code,
+          visible: true, activeTab: 'exposure', fundCode: code,
           signal: { direction: 'hold' as any, confidence: 0, strategy_name: '', timestamp: '', fund_code: code, fund_name: fundName } as any,
         })
       }
@@ -374,7 +374,7 @@ export class NavChart extends PanelBase {
       if (sig && this.currentCode) {
         const fundName = state.get('fundPool').find(f => f.fund_code === this.currentCode)?.fund_name || ''
         state.set('researchPanel', {
-          visible: true, activeTab: 'timing', fundCode: this.currentCode,
+          visible: true, activeTab: 'exposure', fundCode: this.currentCode,
           signal: { direction: direction, confidence: 0, strategy_name: '', timestamp: date, fund_code: this.currentCode, fund_name: fundName } as any,
         })
       }
