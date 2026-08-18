@@ -108,11 +108,14 @@ class BlackLittermanStrategy(FundStrategyBase):
         """
         from ...data.storage import get_nav_history
 
+        # 截断 lookback（避免过多历史导致均衡权重退化为等权）
+        lb = self.params.get("lookback_days", 756)
+
         all_returns = {}
         for code in fund_codes:
             if nav_series and code in nav_series:
                 nav_values = [float(v) for v in nav_series[code]
-                              if v and v > 0]
+                              if v and v > 0][-lb:]
             else:
                 navs = get_nav_history(code)
                 if len(navs) < 60:

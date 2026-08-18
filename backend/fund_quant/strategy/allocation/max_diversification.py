@@ -40,11 +40,14 @@ class MaxDiversificationStrategy(FundStrategyBase):
             return {"strategy": self.strategy_name, "fund_codes": fund_codes,
                     "weights": {c: 1.0 for c in fund_codes}, "status": "single_fund"}
 
+        # 截断 lookback
+        lb = self.params.get("lookback_years", 3) * 252
+
         # 1. 获取收益率
         all_returns = {}
         for code in fund_codes:
             if nav_series and code in nav_series:
-                nav_values = [float(v) for v in nav_series[code] if v and v > 0]
+                nav_values = [float(v) for v in nav_series[code] if v and v > 0][-lb:]
             else:
                 navs = get_nav_history(code)
                 if len(navs) < 60:
