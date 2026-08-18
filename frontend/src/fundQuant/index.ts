@@ -10,14 +10,12 @@ import { fundQuantApi } from './api'
 import { KPIBar } from './panels/KPIBar'
 import { NavChart } from './panels/NavChart'
 import { SignalList } from './panels/SignalList'
-import { Allocation } from './panels/Allocation'
 import { FundRanking } from './panels/FundRanking'
 import { MonthlyReturns } from './panels/MonthlyReturns'
 import { Attribution } from './panels/Attribution'
 import { DetailPanel } from './panels/DetailPanel'
-import { BacktestPanel } from './panels/BacktestPanel'
-import { ParamScanPanel } from './panels/ParamScanPanel'
 import { PaperTradePanel } from './panels/PaperTradePanel'
+import { StrategyBacktest } from './panels/StrategyBacktest'
 import { ResearchPanel } from './research-panel'
 
 export class FundQuantDashboard {
@@ -36,14 +34,12 @@ export class FundQuantDashboard {
     this.layout.register(new KPIBar())
     this.layout.register(new NavChart())
     this.layout.register(new SignalList())
-    this.layout.register(new Allocation())
     this.layout.register(new FundRanking())
     this.layout.register(new MonthlyReturns())
     this.layout.register(new Attribution())
     this.layout.register(new DetailPanel())
-    this.layout.register(new BacktestPanel())
-    this.layout.register(new ParamScanPanel())
     this.layout.register(new PaperTradePanel())
+    this.layout.register(new StrategyBacktest())
 
     // L3 研究区容器（在 grid 下方）
     const researchContainer = document.createElement('div')
@@ -57,8 +53,6 @@ export class FundQuantDashboard {
       const codes = state.get('fundPool').map(f => f.fund_code)
       if (codes.length) {
         fundQuantApi.collectNavData(codes, 5).catch(() => {})
-        // 触发批量信号评估（生成真实信号，落库+SSE推送）
-        fundQuantApi.evaluatePool(codes).catch(() => {})
       }
       this.layout!.refreshAll()
       this.startRefreshTimer()

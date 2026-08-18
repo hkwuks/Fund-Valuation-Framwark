@@ -27,7 +27,8 @@ class BlackLittermanStrategy(FundStrategyBase):
     # ── 主入口 ────────────────────────────────────────────────
 
     def optimize(self, fund_codes: List[str],
-                 params: Optional[dict] = None) -> dict:
+                 params: Optional[dict] = None,
+                 nav_series: Optional[Dict[str, List[float]]] = None) -> dict:
         """Black-Litterman组合优化
 
         1. 均衡收益Π = δ * Σ * w_mkt
@@ -37,6 +38,8 @@ class BlackLittermanStrategy(FundStrategyBase):
         Args:
             fund_codes: 基金代码列表
             params: 覆盖默认参数
+            nav_series: {fund_code: [净值...]} — 引擎回测传入截至当日的净值序列，
+                        避免走 DB 全量历史造成前视偏差。None 时从 DB 拉取。
 
         Returns:
             dict: 含 weights, 状态信息的优化结果
@@ -51,7 +54,7 @@ class BlackLittermanStrategy(FundStrategyBase):
                     "weights": {c: 1.0 for c in fund_codes}, "status": "single_fund"}
 
         # 1. 获取收益率序列
-        all_returns, codes = self._fetch_returns(fund_codes)
+        all_returns, codes = self._fetch_returns(fund_codes, nav_series)
         if len(codes) < 2:
             return {"strategy": self.strategy_name, "fund_codes": fund_codes,
                     "weights": {c: 1.0 / len(fund_codes) for c in fund_codes},
@@ -66,6 +69,7 @@ class BlackLittermanStrategy(FundStrategyBase):
         pi = delta * cov @ w_mkt
 
         # 4. 从 _state 提取信号视图
+        self._state["_cov_matrix"] = cov  # 供 _build_views 复用
         views, has_views = self._build_views(codes)
 
         # 5. 后验预期收益
@@ -94,16 +98,27 @@ class BlackLittermanStrategy(FundStrategyBase):
 
     # ── 收益率获取 ────────────────────────────────────────────
 
-    def _fetch_returns(self, fund_codes: List[str]) -> Tuple[np.ndarray, List[str]]:
-        """获取对齐后的收益率矩阵"""
+    def _fetch_returns(self, fund_codes: List[str],
+                       nav_series: Optional[Dict[str, List[float]]] = None
+                       ) -> Tuple[np.ndarray, List[str]]:
+        """获取对齐后的收益率矩阵
+
+        nav_series: 提供时用其计算收益率（引擎回测传入截至当日的数据，无前视），
+                    否则从 DB 拉取全量历史。
+        """
         from ...data.storage import get_nav_history
 
         all_returns = {}
         for code in fund_codes:
-            navs = get_nav_history(code)
-            if len(navs) < 60:
-                continue
-            nav_values = [r.get("nav", 0) for r in navs if r.get("nav") and r["nav"] > 0]
+            if nav_series and code in nav_series:
+                nav_values = [float(v) for v in nav_series[code]
+                              if v and v > 0]
+            else:
+                navs = get_nav_history(code)
+                if len(navs) < 60:
+                    continue
+                nav_values = [r.get("nav", 0) for r in navs
+                              if r.get("nav") and r["nav"] > 0]
             if len(nav_values) > 20:
                 arr = np.array(nav_values, dtype=np.float64)
                 rets = np.diff(arr) / arr[:-1]

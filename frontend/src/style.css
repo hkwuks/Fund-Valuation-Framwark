@@ -1901,8 +1901,10 @@ tr:hover { background: var(--bg-tertiary); }
   display: flex; flex-direction: column;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
   overflow: hidden;
-  height: 420px;
+  height: 560px;
 }
+
+.alloc-strategies { overflow-y: auto; flex: 1; min-height: 0; padding: 4px 8px; }
 
 .sig-filter {
   padding: 3px 8px;

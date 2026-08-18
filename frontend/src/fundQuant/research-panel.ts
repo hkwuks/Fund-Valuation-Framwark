@@ -1,17 +1,15 @@
 /**
  * L3 研究区容器 — 在 Dashboard 网格下方展开，不占用 grid 位置
  *
- * 包含 Tab 切换：择时研究 | 因子暴露
+ * 包含 Tab 切换：策略暴露
  * 从信号列表/净值图点击信号时展开。
  */
 
 import { state, type SignalSummary } from './state'
-import { TimingResearch } from './panels/TimingResearch'
 import { FactorExposure } from './panels/FactorExposure'
 
 export class ResearchPanel {
   private container: HTMLElement | null = null
-  private timingResearch: TimingResearch | null = null
   private factorExposure: FactorExposure | null = null
   private unsub: (() => void) | null = null
 
@@ -36,8 +34,7 @@ export class ResearchPanel {
       <div class="research-panel" style="display:none;">
         <div class="research-header">
           <div class="research-tabs">
-            <button class="research-tab active" data-tab="timing">择时研究</button>
-            <button class="research-tab" data-tab="exposure">因子暴露</button>
+            <button class="research-tab active" data-tab="exposure">策略暴露</button>
           </div>
           <div class="research-info">
             <span class="research-fund-name"></span>
@@ -46,8 +43,7 @@ export class ResearchPanel {
           <button class="btn btn-sm btn-ghost research-close" title="关闭">✕</button>
         </div>
         <div class="research-body">
-          <div class="research-tab-content active" data-tab="timing"></div>
-          <div class="research-tab-content" data-tab="exposure"></div>
+          <div class="research-tab-content active" data-tab="exposure"></div>
         </div>
       </div>`
   }
@@ -64,8 +60,7 @@ export class ResearchPanel {
       btn.classList.add('active')
       this.container?.querySelectorAll('.research-tab-content').forEach(c => c.classList.remove('active'))
       this.container?.querySelector(`.research-tab-content[data-tab="${tab}"]`)?.classList.add('active')
-      if (tab === 'timing') this.timingResearch?.onActivated()
-      else if (tab === 'exposure') this.factorExposure?.onActivated()
+      if (tab === 'exposure') this.factorExposure?.onActivated()
     })
 
     // 关闭
@@ -106,16 +101,6 @@ export class ResearchPanel {
       sigInfo!.setAttribute('style', 'color:var(--text-tertiary)')
     }
 
-    // 初始化择时研究面板
-    if (!this.timingResearch) {
-      const timingEl = this.container!.querySelector('.research-tab-content[data-tab="timing"]') as HTMLElement
-      if (timingEl) {
-        this.timingResearch = new TimingResearch()
-        this.timingResearch.init(timingEl)
-      }
-    }
-    this.timingResearch?.show(fundCode, signal)
-
     // 初始化因子暴露面板
     if (!this.factorExposure) {
       const exposureEl = this.container!.querySelector('.research-tab-content[data-tab="exposure"]') as HTMLElement
@@ -133,7 +118,6 @@ export class ResearchPanel {
   }
 
   destroy(): void {
-    this.timingResearch?.destroy()
     this.factorExposure?.destroy()
     this.unsub?.()
   }

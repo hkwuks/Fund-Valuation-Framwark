@@ -57,7 +57,7 @@ export interface LoadingState {
 
 export interface ResearchState {
   visible: boolean
-  activeTab: 'timing' | 'exposure'
+  activeTab: 'exposure'
   fundCode: string | null
   signal?: SignalSummary | null
 }
@@ -142,6 +142,6 @@ export const state = new EventEmitter({
   layout: DEFAULT_LAYOUT,
   settings: {},
   loading: { isRefreshing: false, lastRefreshTime: null, errors: {} },
-  researchPanel: { visible: false, activeTab: 'timing', fundCode: null, signal: null },
+  researchPanel: { visible: false, activeTab: 'exposure', fundCode: null, signal: null },
   customParams: {},
 })

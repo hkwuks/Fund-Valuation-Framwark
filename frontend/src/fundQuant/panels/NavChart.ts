@@ -6,8 +6,6 @@ import { getChartTheme, DARK_SERIES, LIGHT_SERIES } from '../../fundQuantCharts'
 
 interface FundCache {
   navData: any[]
-  buySignals: { date: string; nav: number }[]
-  sellSignals: { date: string; nav: number }[]
   benchmarkData?: { date: string; value: number }[]
 }
 
@@ -86,7 +84,7 @@ export class NavChart extends PanelBase {
       if (code) {
         const fundName = state.get('fundPool').find(f => f.fund_code === code)?.fund_name || ''
         state.set('researchPanel', {
-          visible: true, activeTab: 'timing', fundCode: code,
+          visible: true, activeTab: 'exposure', fundCode: code,
           signal: { direction: 'hold' as any, confidence: 0, strategy_name: '', timestamp: '', fund_code: code, fund_name: fundName } as any,
         })
       }
@@ -153,23 +151,8 @@ export class NavChart extends PanelBase {
         value: d.nav || d.adjusted_nav || 0,
       })) || undefined
 
-      const sigRes = await fundQuantApi.getSignals(code, 50)
       if (code !== this.currentCode) return
-      const signals = (sigRes.data || []).filter(s => s.direction === 'buy' || s.direction === 'sell')
-      const buySignals = signals.filter(s => s.direction === 'buy').map(s => ({
-        date: (s.created_at || '').slice(0, 10), nav: 0,
-      }))
-      const sellSignals = signals.filter(s => s.direction === 'sell').map(s => ({
-        date: (s.created_at || '').slice(0, 10), nav: 0,
-      }))
-
-      for (const pt of [...buySignals, ...sellSignals]) {
-        const match = navData.find((d: any) => (d.date || '').slice(0, 10) === pt.date)
-        pt.nav = match ? (match.nav || (match.adjusted_nav ?? 0)) : 0
-      }
-
-      if (code !== this.currentCode) return
-      this.fundCache.set(code, { navData, buySignals, sellSignals, benchmarkData })
+      this.fundCache.set(code, { navData, benchmarkData })
       this.renderChartWithFilter()
     } catch {
       if (!retried && !this.collectedFunds.has(code)) {
@@ -223,16 +206,12 @@ export class NavChart extends PanelBase {
     const showBenchmark = (this.el?.querySelector('.nav-toggle-benchmark') as HTMLInputElement)?.checked ?? true
     this.renderChart(
       filtered,
-      cached.buySignals.filter(s => validDates.has(s.date)),
-      cached.sellSignals.filter(s => validDates.has(s.date)),
       showBenchmark ? cached.benchmarkData : undefined,
     )
   }
 
   private renderChart(
     navData: any[],
-    buySignals: { date: string; nav: number }[],
-    sellSignals: { date: string; nav: number }[],
     benchmarkData?: { date: string; value: number }[],
   ): void {
     if (!this.el) return
@@ -342,16 +321,6 @@ export class NavChart extends PanelBase {
         },
         ...(benchmarkSeries ? [benchmarkSeries] : []),
         {
-          name: '买入信号', type: 'scatter',
-          data: buySignals.map(d => [d.date, d.nav]),
-          symbolSize: 12, itemStyle: { color: C.buy },
-        },
-        {
-          name: '卖出信号', type: 'scatter',
-          data: sellSignals.map(d => [d.date, d.nav]),
-          symbolSize: 12, itemStyle: { color: C.sell },
-        },
-        {
           name: '回撤', type: 'line',
           data: drawdown,
           smooth: true, yAxisIndex: 1,
@@ -361,24 +330,6 @@ export class NavChart extends PanelBase {
       ],
     }
     this.chart.setOption(option)
-
-    // 点击信号点 → 打开研究区
-    this.chart.on('click', (params: any) => {
-      if (params.componentType !== 'series') return
-      const seriesName = params.seriesName || ''
-      if (seriesName !== '买入信号' && seriesName !== '卖出信号') return
-      const direction = seriesName === '买入信号' ? 'buy' : 'sell'
-      const date = params.data?.[0] || params.name || ''
-      const cached = this.fundCache.get(this.currentCode)
-      const sig = cached?.buySignals.concat(cached?.sellSignals || []).find(s => s.date === date)
-      if (sig && this.currentCode) {
-        const fundName = state.get('fundPool').find(f => f.fund_code === this.currentCode)?.fund_name || ''
-        state.set('researchPanel', {
-          visible: true, activeTab: 'timing', fundCode: this.currentCode,
-          signal: { direction: direction, confidence: 0, strategy_name: '', timestamp: date, fund_code: this.currentCode, fund_name: fundName } as any,
-        })
-      }
-    })
   }
 
   destroy(): void {

@@ -26,6 +26,10 @@ export class FundRanking extends PanelBase {
             <option value="bond">债券型</option>
             <option value="index">指数型</option>
           </select>
+          <select class="rank-strategy-select" style="padding:4px 8px;border:1px solid var(--border-color);border-radius:4px;font-size:12px;background:var(--bg-primary);color:var(--text-primary);margin-left:4px;">
+            <option value="multi_factor">多因子</option>
+            <option value="rating_enhanced">评级增强</option>
+          </select>
         </div>
       </div>
       <div class="rank-body" style="display:grid;grid-template-columns:1fr 300px;gap:8px;">
@@ -37,13 +41,15 @@ export class FundRanking extends PanelBase {
 
   protected afterMount(): void {
     this.el?.querySelector('.rank-type-select')?.addEventListener('change', () => this.refresh())
+    this.el?.querySelector('.rank-strategy-select')?.addEventListener('change', () => this.refresh())
   }
 
   async refresh(): Promise<void> {
     if (!this.el) return
     const fundType = (this.el.querySelector('.rank-type-select') as HTMLSelectElement)?.value || 'stock'
+    const strategy = (this.el.querySelector('.rank-strategy-select') as HTMLSelectElement)?.value || 'multi_factor'
     try {
-      const res = await fundQuantApi.screenFunds(fundType, 10)
+      const res = await fundQuantApi.screenFunds(fundType, 10, strategy)
       this.rankings = res.data?.rankings || []
       this.renderTable()
       if (this.rankings.length) this.renderRadar(this.rankings[0])

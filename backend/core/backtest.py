@@ -264,7 +264,8 @@ class T1ExecutionEngine(ExecutionEngine):
 
         for oid, signal in ready:
             order = self._orders[oid]
-            price = getattr(bar, "close", getattr(bar, "nav", 0))
+            # 填单价按信号基金的最新价，而非当前 bar 的价格（多基金组合时 bar 可能属于其他基金）
+            price = self._current_prices.get(signal.symbol) or getattr(bar, "close", getattr(bar, "nav", 0))
             fill = Fill(order_id=oid, price=price, volume=signal.volume)
             order.filled_volume = signal.volume
             order.status = OrderStatus.FILLED
@@ -607,6 +608,8 @@ class BacktestEngine:
             execution.set_capital(self.config.initial_capital)
 
         ctx = StrategyContext(bus)
+        # 策略可通过 ctx.execution 访问持仓等信息（配置策略调仓需要）
+        ctx.execution = execution
         strategy.on_init(ctx)
 
         _signals_published: list[Signal] = []
@@ -631,6 +634,10 @@ class BacktestEngine:
             # 设置 ATR（期货引擎动态滑点用）
             if hasattr(execution, 'set_atr') and atr_values:
                 execution.set_atr(atr_values[i] if i < len(atr_values) else 0.0)
+
+            # 更新策略可读的组合总权益（配置策略用于目标金额计算）
+            if hasattr(execution, 'portfolio_value'):
+                ctx.portfolio_value = execution.portfolio_value
 
             # 发布 BAR_RECEIVED
             bus.publish(Event(EventType.BAR_RECEIVED, bar, source="engine"))
