@@ -7,7 +7,6 @@ import numpy as np
 from loguru import logger
 
 from .black_litterman import BlackLittermanStrategy
-from ..base import StrategyRegistry
 
 
 # 四象限目标比例（桥水 All Weather）
@@ -110,6 +109,3 @@ class BlackLittermanQuadrant(BlackLittermanStrategy):
         omega = np.diag((1.0 / confidence - 1.0) * tau * diag_PCPT)
 
         return {"P": P, "Q": Q, "omegas": omega, "k": k}, True
-
-
-StrategyRegistry.register(BlackLittermanQuadrant)

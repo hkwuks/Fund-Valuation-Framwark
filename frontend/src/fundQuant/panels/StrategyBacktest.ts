@@ -24,6 +24,11 @@ export class StrategyBacktest extends PanelBase {
           <select class="sb-strategy">
             <option value="etf_rotation_aurora">ETF动量轮动</option>
             <option value="all_weather_aurora">桥水全天候</option>
+            <option value="bl_quadrant_aurora">BL四象限观点</option>
+            <option value="black_litterman_aurora">Black-Litterman</option>
+            <option value="risk_parity_aurora">风险平价</option>
+            <option value="hrp_aurora">层次风险平价(HRP)</option>
+            <option value="max_diversification_aurora">最大多元化(MDP)</option>
           </select>
           <select class="sb-mode" style="display:none;">
             <option value="fixed">固定权重</option>
@@ -89,7 +94,17 @@ export class StrategyBacktest extends PanelBase {
     const metricsEl = this.el?.querySelector('.sb-metrics')
     const msgEl = this.el?.querySelector('.sb-msg')
     if (!metricsEl) return
-    const name = d.strategy === 'all_weather_aurora' ? `全天候(${d.mode || 'fixed'})` : 'ETF动量轮动'
+    const names: Record<string, string> = {
+      all_weather_aurora: '全天候',
+      etf_rotation_aurora: 'ETF动量轮动',
+      bl_quadrant_aurora: 'BL四象限观点',
+      black_litterman_aurora: 'Black-Litterman',
+      risk_parity_aurora: '风险平价',
+      hrp_aurora: '层次风险平价(HRP)',
+      max_diversification_aurora: '最大多元化(MDP)',
+    }
+    const base = names[d.strategy] || d.strategy
+    const name = d.strategy === 'all_weather_aurora' ? `${base}(${d.mode || 'fixed'})` : base
     metricsEl.innerHTML = `
       <div class="sb-kpis">
         <div class="sb-kpi"><span class="k-label">策略</span><span class="k-val">${name}</span></div>

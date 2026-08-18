@@ -278,8 +278,8 @@ export const fundQuantApi = {
   getLatestSignals: () => get<{ success: boolean; data: SignalRecord[] }>('/signal/latest'),
 
   // Selection
-  screenFunds: (fund_type: string, top_n = 10) =>
-    post<{ success: boolean; data: { rankings: FundRanking[] } }>('/selection/screen', { fund_type, top_n }),
+  screenFunds: (fund_type: string, top_n = 10, strategy = 'multi_factor') =>
+    post<{ success: boolean; data: { rankings: FundRanking[] } }>('/selection/screen', { fund_type, top_n, strategy }),
 
   // Backtest
   runBacktest: (req: any) => post<{ success: boolean; data: { backtest_id: string; status: string } }>('/backtest/run', req),

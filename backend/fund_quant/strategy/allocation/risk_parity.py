@@ -32,8 +32,13 @@ class RiskParityStrategy(FundStrategyBase):
         return []
 
     def optimize(self, fund_codes: List[str],
-                 params: Optional[dict] = None) -> dict:
-        """组合优化 — 约束风险平价"""
+                 params: Optional[dict] = None,
+                 nav_series: Optional[Dict[str, List[float]]] = None) -> dict:
+        """组合优化 — 约束风险平价
+
+        nav_series: {fund_code: [净值...]} — 引擎回测传入截至当日的净值序列，
+                    避免走 DB 全量历史造成前视偏差。None 时从 DB 拉取。
+        """
         from ...data.storage import get_nav_history
 
         if params:
@@ -46,10 +51,14 @@ class RiskParityStrategy(FundStrategyBase):
         # 1. 获取各基金收益率序列
         all_returns = {}
         for code in fund_codes:
-            navs = get_nav_history(code)
-            if len(navs) < 60:
-                continue
-            nav_values = [r.get("nav", 0) for r in navs if r.get("nav") and r["nav"] > 0]
+            if nav_series and code in nav_series:
+                nav_values = [float(v) for v in nav_series[code]
+                              if v and v > 0]
+            else:
+                navs = get_nav_history(code)
+                if len(navs) < 60:
+                    continue
+                nav_values = [r.get("nav", 0) for r in navs if r.get("nav") and r["nav"] > 0]
             if len(nav_values) > 20:
                 returns = np.diff(np.array(nav_values, dtype=np.float64)) / np.array(nav_values[:-1], dtype=np.float64)
                 all_returns[code] = returns

@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import date
 from typing import Optional
 
+import numpy as np
+
 from core import (
     DomainAdapter, ExecutionEngine, CostModel,
     RiskCheck, Strategy, StrategyRegistry,
@@ -281,9 +283,7 @@ class FundDomainAdapter(DomainAdapter):
         return _risk_check_builder(fund_type)
 
     def get_available_strategies(self) -> dict[str, type[Strategy]]:
-        return {
-            "momentum_fund": AdpatedMomentumFund,
-        }
+        return {}
 
     def register_factors(self):
         """注册基金域因子"""
@@ -314,83 +314,6 @@ class FundDomainAdapter(DomainAdapter):
             (CaptureRatioFactor, CaptureRatioFactor.meta),
             (CalendarReturnFactor, CalendarReturnFactor.meta),
         ])
-
-
-# ── 适配后的基金动量策略 ──
-
-@StrategyRegistry.register("momentum_fund")
-class AdpatedMomentumFund(Strategy):
-    """动量择时策略 — 移植自 fund_quant.strategy.timing.momentum.MomentumStrategy
-    TSMOM 多周期融合 + 反转修正
-    """
-    name = "momentum_fund"
-    strategy_type = "timing"
-    description = "基于净值时间序列动量的择时策略"
-    default_params = {
-        "momentum_periods": [20, 60, 120],
-        "weights": [0.5, 0.3, 0.2],
-        "skip_days": 5,
-        "buy_threshold": 0.02,
-        "sell_threshold": -0.02,
-    }
-    min_history_days = 120
-
-    def __init__(self):
-        super().__init__()
-        self._nav_history: list[float] = []
-        self._fund_code = ""
-
-    def on_data(self, data):
-        """接收 FundNavPoint 或 Bar，提取净值"""
-        nav = data.nav if hasattr(data, "nav") else data.close
-        if not self._fund_code:
-            self._fund_code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
-        self._nav_history.append(nav)
-
-        max_period = max(self.params.get("momentum_periods", [120]))
-        if len(self._nav_history) < max_period + self.params.get("skip_days", 5):
-            return
-
-        arr = self._nav_history[:]
-        returns = [(arr[i] - arr[i - 1]) / arr[i - 1] for i in range(1, len(arr))]
-
-        skip = self.params.get("skip_days", 5)
-        periods = self.params.get("momentum_periods", [20, 60, 120])
-        weights = self.params.get("weights", [0.5, 0.3, 0.2])
-
-        scores = []
-        for n, w in zip(periods, weights):
-            if len(returns) < n + skip:
-                scores.append(0.0)
-                continue
-            period_rets = returns[-(n + skip):-skip] if skip > 0 else returns[-n:]
-            scores.append(sum(period_rets))
-
-        total_w = sum(weights[:len(scores)])
-        if total_w <= 0:
-            return
-
-        weighted = sum(w * s for w, s in zip(weights, scores)) / total_w
-        buy_th = self.params.get("buy_threshold", 0.02)
-        sell_th = self.params.get("sell_threshold", -0.02)
-
-        if weighted > buy_th:
-            self.ctx.emit(Signal(
-                id="", strategy=self.name, symbol=self._fund_code,
-                direction=Direction.LONG,
-                price=nav, volume=1,
-                confidence=min(abs(weighted) / (buy_th * 2), 1.0),
-                reason=f"动量得分 {weighted:.4f} > {buy_th}",
-            ))
-        elif weighted < sell_th:
-            # ponytail: 基金做空用 CLOSE_LONG 表示减仓，Phase 3 完善语义
-            self.ctx.emit(Signal(
-                id="", strategy=self.name, symbol=self._fund_code,
-                direction=Direction.CLOSE_LONG,
-                price=nav, volume=1,
-                confidence=min(abs(weighted) / (abs(sell_th) * 2), 1.0),
-                reason=f"动量得分 {weighted:.4f} < {sell_th}",
-            ))
 
 
 @StrategyRegistry.register("etf_rotation_aurora")
@@ -582,6 +505,13 @@ class AllWeatherAurora(Strategy):
         seen = list(self._hist.keys())
         merged = list(dict.fromkeys(config_pool + seen))
         return merged or config_pool
+
+    def _compute_weights(self, nav_series=None, codes=None):
+        """固定模板权重（nav_series 不用于计算，仅保持接口一致）"""
+        from .strategy.allocation.all_weather import AllWeatherStrategy
+        strategy = AllWeatherStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=None)
+        return result.get("weights", {})
 
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
@@ -842,6 +772,261 @@ class AuroraBlQuadrant(Strategy):
                         volume=sell_vol, confidence=1.0,
                         reason=f"BL四象限调仓: 超配, 减仓至{weight:.1%}",
                     ))
+
+
+# ── 月度再平衡配置策略基类（AuroraCore 版）──
+
+class _AuroraAllocationBase(Strategy):
+    """月度再平衡配置策略公共骨架 — 子类实现 _compute_weights()
+
+    逐点积累多基金净值（只用已到数据，无前视），跨月调用 optimize 算权重，
+    然后 emit LONG/CLOSE_LONG 使持仓回到目标权重。
+    """
+    min_history_days = 60
+
+    def __init__(self):
+        super().__init__()
+        self.params = {**self.default_params}
+        self._hist: dict[str, list[tuple[str, float]]] = {}
+        self._cur_date = ""
+        self._last_rebalance_month = ""
+        self._first_rebalance = True
+
+    def _pool_codes(self) -> list[str]:
+        return list(self._hist.keys())
+
+    def on_data(self, data):
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+        self._hist.setdefault(code, []).append((date_str, nav))
+
+        if date_str != self._cur_date:
+            self._cur_date = date_str
+            self._check_rebalance(date_str)
+
+    def _check_rebalance(self, date_str: str):
+        cur_month = date_str[:7]
+        if self._first_rebalance and len(self._hist) >= 3:
+            self._first_rebalance = False
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+            return
+        if cur_month != self._last_rebalance_month and self._last_rebalance_month:
+            self._last_rebalance_month = cur_month
+            self._rebalance(date_str)
+
+    def _compute_weights(self, nav_series: dict[str, list[float]], codes: list[str]) -> dict:
+        raise NotImplementedError
+
+    def _apply_vol_targeting(self, weights: dict, nav_series: dict, date_str: str) -> dict:
+        """波动率目标叠加层 — 高波降仓、低波加仓
+
+        仅当 params.vol_target > 0 时生效。scale = target / realized，
+        上限 2.0 防止过度杠杆。
+        """
+        target = self.params.get("vol_target", 0)
+        if not target or target <= 0:
+            return weights
+
+        # 用 60 天窗口估算组合实现波动率
+        portfolio_navs = []
+        for code, w in weights.items():
+            if w <= 0:
+                continue
+            series = nav_series.get(code, [])
+            if len(series) >= 60:
+                portfolio_navs.append((np.array(series[-60:], dtype=np.float64), w))
+
+        if not portfolio_navs:
+            return weights
+
+        # 加权组合净值序列
+        ref_len = min(len(s) for s, _ in portfolio_navs)
+        combined = sum(w * s[-ref_len:] for s, w in portfolio_navs)
+        daily_ret = np.diff(combined) / combined[:-1]
+        realized_vol = float(np.std(daily_ret) * np.sqrt(252))
+
+        if realized_vol <= 0.01:
+            return weights
+
+        scale = min(target / realized_vol, 2.0)
+        scale = max(scale, 0.1)  # 最低保留 10%
+        return {c: w * scale for c, w in weights.items()}
+
+    def _rebalance(self, date_str: str):
+        nav_series: dict[str, list[float]] = {}
+        for code in self._pool_codes():
+            series = [n for d, n in self._hist.get(code, []) if d <= date_str]
+            if len(series) >= 20:
+                nav_series[code] = series
+
+        valid_codes = list(nav_series.keys())
+        if len(valid_codes) < 2:
+            return
+
+        weights = self._compute_weights(nav_series, valid_codes)
+        if not weights:
+            return
+
+        # 波动率目标叠加层
+        weights = self._apply_vol_targeting(weights, nav_series, date_str)
+
+        # 总权益
+        pv = self.ctx.portfolio_value or 0
+        if pv <= 0:
+            return
+
+        all_codes = self._hist.keys()
+        target_codes = {c for c, w in weights.items() if w > 0}
+
+        # 先清仓不在目标内的
+        for code in list(all_codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if code not in target_codes and pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"{self.name}调仓: 权重为0, 清仓",
+                ))
+
+        # 再平衡：调整目标基金的持仓至目标权重
+        for code, weight in weights.items():
+            if weight <= 0:
+                continue
+            last_nav = nav_series.get(code, [])
+            if not last_nav:
+                continue
+            price = last_nav[-1]
+            if price <= 0:
+                continue
+
+            target_amt = pv * weight
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            current_amt = pos.volume * price if pos and pos.volume > 0 else 0
+            diff = target_amt - current_amt
+            threshold = self.params.get("rebalance_threshold", 0.05) * pv
+
+            if abs(diff) < threshold:
+                continue  # 偏离不超阈值，跳过
+
+            if diff > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.LONG, price=price,
+                    volume=diff / price, confidence=1.0,
+                    reason=f"{self.name}调仓: 目标权重{weight:.1%}, 当前不足",
+                ))
+            else:
+                sell_vol = pos.volume if pos else 0
+                if sell_vol > 0:
+                    sell_vol = min(sell_vol, pos.volume)
+                    self.ctx.emit(Signal(
+                        id="", strategy=self.name, symbol=code,
+                        direction=Direction.CLOSE_LONG, price=price,
+                        volume=sell_vol, confidence=1.0,
+                        reason=f"{self.name}调仓: 超配, 减仓至{weight:.1%}",
+                    ))
+
+
+# ── Black-Litterman（AuroraCore 版）──
+
+@StrategyRegistry.register("black_litterman_aurora")
+class AuroraBlackLitterman(_AuroraAllocationBase):
+    """Black-Litterman（AuroraCore 版）— 月度再平衡 + 均衡收益/观点后验"""
+    name = "black_litterman_aurora"
+    strategy_type = "allocation"
+    description = "Black-Litterman: 均衡收益 + 观点后验 + 均值-方差优化, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 756,
+        "risk_aversion": 2.5,
+        "tau": 0.05,
+        "max_weight": 0.4,
+        "min_weight": 0.05,
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.black_litterman import BlackLittermanStrategy
+        strategy = BlackLittermanStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
+        return result.get("weights", {})
+
+
+# ── 风险平价（AuroraCore 版）──
+
+@StrategyRegistry.register("risk_parity_aurora")
+class AuroraRiskParity(_AuroraAllocationBase):
+    """风险平价（AuroraCore 版）— 月度再平衡 + 约束风险平价权重"""
+    name = "risk_parity_aurora"
+    strategy_type = "allocation"
+    description = "约束风险平价: Ledoit-Wolf协方差 + SLSQP, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_years": 3,
+        "shrinkage": "auto",
+        "max_weight": 0.4,
+        "min_weight": 0.05,
+        "min_weight_bond": 0.10,
+        "bond_vol_multiplier": "auto",
+        "fee_penalty_threshold": 0.02,
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.risk_parity import RiskParityStrategy
+        strategy = RiskParityStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
+        return result.get("weights", {})
+
+
+# ── HRP层次风险平价（AuroraCore 版）──
+
+@StrategyRegistry.register("hrp_aurora")
+class AuroraHRP(_AuroraAllocationBase):
+    """HRP层次风险平价（AuroraCore 版）— 月度再平衡 + 层次聚类递归二分"""
+    name = "hrp_aurora"
+    strategy_type = "allocation"
+    description = "层次风险平价(HRP): 层次聚类 + 递归二分, 不依赖协方差求逆, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "max_weight": 0.4,
+        "min_weight": 0.02,
+        "linkage_method": "ward",
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.hrp import HRPStrategy
+        strategy = HRPStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
+        return result.get("weights", {})
+
+
+# ── 最大多元化（AuroraCore 版）──
+
+@StrategyRegistry.register("max_diversification_aurora")
+class AuroraMaxDiversification(_AuroraAllocationBase):
+    """最大多元化（AuroraCore 版）— 月度再平衡 + 最大化多元化比率"""
+    name = "max_diversification_aurora"
+    strategy_type = "allocation"
+    description = "最大多元化(MDP): 最大化加权平均波动率/组合波动率, 不依赖收益率预测, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "max_weight": 0.4,
+        "min_weight": 0.02,
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.max_diversification import MaxDiversificationStrategy
+        strategy = MaxDiversificationStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
+        return result.get("weights", {})
 
 
 def demo():

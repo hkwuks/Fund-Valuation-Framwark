@@ -27,7 +27,6 @@ from ..fund_quant.data.collector import fund_data_collector
 from ..fund_quant.data.quality import data_quality_checker
 from ..fund_quant.signal.output import signal_output_service
 from ..fund_quant.risk.metrics import risk_metrics_calculator
-from ..fund_quant.analysis.position_estimator import estimate_position_ols
 
 router = APIRouter(prefix="/fund-quant", tags=["基金量化"])
 
@@ -36,21 +35,10 @@ router = APIRouter(prefix="/fund-quant", tags=["基金量化"])
 
 # ── 请求/响应模型 ──
 
-class TimingRequest(BaseModel):
-    fund_code: str
-    strategy_name: str = ""
-    params: dict = {}
-
-
-class ExplainRequest(BaseModel):
-    fund_code: str
-    strategy_name: str
-    params: dict = {}
-
-
 class SelectionRequest(BaseModel):
     fund_type: str = "stock"
     top_n: int = 10
+    strategy: str = "multi_factor"  # multi_factor | rating_enhanced
     params: dict = {}
 
 
@@ -83,19 +71,39 @@ logger.info("FundQuant 数据库已初始化")
 
 @router.get("/strategy/list")
 async def list_strategies():
-    """列出可用策略"""
-    from ..fund_quant.strategy.base import StrategyRegistry
-    registry = StrategyRegistry()
-    strategies = await asyncio.to_thread(registry.list_strategies)
+    """列出可用策略（AuroraCore 统一注册表）"""
+    from core.strategy import StrategyRegistry
+    import backend.fund_quant.adapter as _adapter  # noqa: F401 — 触发注册
+    strategies = []
+    for name, cls in StrategyRegistry.list_all().items():
+        strategies.append({
+            "name": name,
+            "type": getattr(cls, "strategy_type", ""),
+            "description": getattr(cls, "description", ""),
+            "default_params": getattr(cls, "default_params", {}),
+        })
     return {"success": True, "data": strategies}
 
 
 @router.get("/strategy/params/{name}")
 async def get_strategy_params(name: str):
-    """获取策略参数"""
-    from ..fund_quant.strategy.base import StrategyRegistry
-    registry = StrategyRegistry()
-    strategy = await asyncio.to_thread(registry.get_strategy, name)
+    """获取策略参数（先查 AuroraCore，再回退旧 FundStrategyBase）"""
+    from core.strategy import StrategyRegistry
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+    # 1. AuroraCore 统一注册表
+    if name in StrategyRegistry.list_all():
+        cls = StrategyRegistry.get(name)
+        return {"success": True, "data": {
+            "name": name,
+            "type": getattr(cls, "strategy_type", ""),
+            "description": getattr(cls, "description", ""),
+            "default_params": getattr(cls, "default_params", {}),
+            "param_ranges": getattr(cls, "param_ranges", {}),
+        }}
+    # 2. 旧 FundStrategyBase（selection 等策略）
+    from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry
+    old_reg = OldRegistry()
+    strategy = await asyncio.to_thread(old_reg.get_strategy, name)
     if not strategy:
         raise HTTPException(status_code=404, detail=f"策略 {name} 未找到")
     return {"success": True, "data": {
@@ -107,226 +115,19 @@ async def get_strategy_params(name: str):
     }}
 
 
-# ── 择时评估 ──
-
-def _prices_to_returns(prices: list[float]) -> list[float]:
-    """价格序列 → 日收益率序列"""
-    arr = np.array(prices, dtype=np.float64)
-    if len(arr) < 2:
-        return []
-    return ((arr[1:] - arr[:-1]) / arr[:-1]).tolist()
-
-
-@router.post("/timing/evaluate")
-async def timing_evaluate(req: TimingRequest):
-    """择时策略已废弃（timing 策略验证无法赚钱，已从策略库删除）"""
-    raise HTTPException(status_code=410, detail="timing 择时策略已废弃，请使用 allocation 配置策略")
-    from ..fund_quant.strategy.base import StrategyRegistry
-    from ..fund_quant.strategy.fusion import signal_fusion
-
-    nav_data = await asyncio.to_thread(get_nav_history, req.fund_code)
-    if not nav_data:
-        raise HTTPException(status_code=404, detail=f"基金 {req.fund_code} 净值数据不足")
-
-    # 获取基金类型（兼容旧值映射）
-    fund_meta = await asyncio.to_thread(get_fund_meta, req.fund_code)
-    db_type = (fund_meta or {}).get("fund_type", "")
-    fund_type = TYPE_COMPAT.get(db_type, db_type)
-
-    # 并行运行所有匹配的择时策略
-    registry = StrategyRegistry()
-    all_timing = await asyncio.to_thread(registry.list_by_type, "timing")
-
-    # 按基金类型过滤策略
-    matched = [s for s in all_timing
-               if not s["applicable_fund_types"]
-               or fund_type in s["applicable_fund_types"]]
-
-    # QDII 子类过滤：根据底层资产类型排除不适用的策略
-    if fund_type == "qdii":
-        from ..fund_quant.data.classifier import classify_qdii_subtype
-        fund_name = nav_data[0].get("fund_name", "") if nav_data else ""
-        qdii_sub = classify_qdii_subtype(fund_name)
-        if qdii_sub == "index":
-            # QDII 指数基金：不跑估值偏差
-            matched = [s for s in matched if s["name"] != "valuation_deviation"]
-        elif qdii_sub == "bond":
-            # QDII 债券基金：只跑利率敏感度 + 汇率动量
-            matched = [s for s in matched
-                       if s["name"] in ("interest_rate", "fx_momentum")]
-
-    # 从数据库获取净值序列用于策略计算
-    nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
-    dates = [r["date"] for r in nav_data if r.get("nav")]
-
-    # 债券/平衡基金：注入信用利差和收益率曲线数据
-    yield_data = {}
-    if fund_type in ("bond", "balanced", "qdii"):
-        yield_data = await asyncio.to_thread(get_bond_yield_data)
-        if yield_data:
-            logger.debug(f"{req.fund_code}: 已加载收益率数据 ({len(yield_data.get('credit_spread_history',[]))} 期)")
-
-    async def run_strategy(s_info: dict) -> List[FundSignal]:
-        strategy = await asyncio.to_thread(registry.get_strategy, s_info["name"])
-        if not strategy:
-            return []
-        try:
-            # 传入净值数据作为评估输入
-            strategy._state["nav_values"] = nav_values
-            strategy._state["nav_dates"] = dates
-            strategy._state["fund_code"] = req.fund_code
-            # 注入自定义参数（按策略名称匹配或全部注入）
-            if req.params:
-                if req.strategy_name and s_info["name"] == req.strategy_name:
-                    strategy.params.update(req.params)
-                elif not req.strategy_name:
-                    strategy.params.update(req.params)
-            # 注入信用利差/收益率数据（信用利差策略和利率策略需要）
-            if yield_data:
-                strategy._state["credit_spread_history"] = yield_data.get("credit_spread_history", [])
-                strategy._state["yield_curve_history"] = yield_data.get("yield_curve_history", [])
-            result = await asyncio.to_thread(strategy.on_evaluate, None, None)
-            return result or []
-        except Exception as e:
-            logger.warning(f"择时策略 [{s_info['name']}] 评估异常: {e}")
-            return []
-
-    tasks = [run_strategy(s) for s in matched]
-    results = await asyncio.gather(*tasks)
-    all_signals = [s for sublist in results for s in sublist]
-
-    # 融合信号（balanced 基金按仓位加权）
-    position_weights = None
-    if fund_type == "balanced" and len(nav_values) >= 60:
-        fund_returns = _prices_to_returns(nav_values)
-        index_data = {}
-        for key in ("csi300", "cbi"):
-            prices = await asyncio.to_thread(get_index_nav_prices, key)
-            if prices and len(prices) >= len(nav_values):
-                aligned = prices[-len(nav_values):]
-                index_data[key] = _prices_to_returns(aligned)
-        if len(index_data) == 2 and len(fund_returns) >= 20:
-            position_weights = await asyncio.to_thread(
-                estimate_position_ols, fund_returns, index_data
-            )
-            if position_weights:
-                logger.info(f"Balanced {req.fund_code}: 仓位估算={position_weights}")
-    fusion = signal_fusion.fuse(all_signals, fund_type=fund_type,
-                                position_weights=position_weights) if all_signals else None
-
-    return {
-        "success": True,
-        "data": {
-            "fund_code": req.fund_code,
-            "fund_name": nav_data[0].get("fund_name", req.fund_code),
-            "fund_type": fund_type,
-            "strategies_run": len(matched),
-            "nav_count": len(nav_values),
-            "date_range": f"{dates[0]} ~ {dates[-1]}" if len(dates) >= 2 else dates[0] if dates else None,
-            "signals": [s.model_dump() for s in all_signals],
-            "fusion_signal": fusion.model_dump() if fusion else None,
-        },
-    }
-
-
-@router.post("/timing/explain")
-async def timing_explain(req: ExplainRequest):
-    """择时策略已废弃"""
-    raise HTTPException(status_code=410, detail="timing 择时策略已废弃")
-    """信号解释 — 返回指定策略对指定基金产生的信号逻辑和数据快照"""
-    from ..fund_quant.strategy.base import StrategyRegistry
-    registry = StrategyRegistry()
-
-    # 获取策略实例
-    strategy = await asyncio.to_thread(registry.get_strategy, req.strategy_name)
-    if not strategy:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未找到")
-
-    # 获取净值数据
-    nav_data = await asyncio.to_thread(get_nav_history, req.fund_code)
-    if not nav_data:
-        raise HTTPException(status_code=404, detail=f"基金 {req.fund_code} 净值数据不足")
-
-    nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
-    dates = [r["date"] for r in nav_data if r.get("nav")]
-
-    # 注入参数并评估
-    strategy._state["nav_values"] = nav_values
-    strategy._state["nav_dates"] = dates
-    strategy._state["fund_code"] = req.fund_code
-    if req.params:
-        strategy.default_params.update(req.params)
-
-    try:
-        result = await asyncio.to_thread(strategy.on_evaluate, None, None)
-        signals = result or []
-    except Exception as e:
-        signals = []
-        logger.warning(f"解释策略 [{req.strategy_name}] 评估异常: {e}")
-
-    # 构建解释返回
-    signal_list = [s.model_dump() for s in signals]
-    current_nav = nav_values[-1] if nav_values else 0
-    mean_nav = float(np.mean(nav_values[-60:])) if len(nav_values) >= 60 else current_nav
-    std_nav = float(np.std(nav_values[-60:])) if len(nav_values) >= 60 else 1.0
-
-    # 取置信度最高的信号
-    top_signal = max(signals, key=lambda s: s.confidence) if signals else None
-
-    key_values = {
-        "current_nav": {"value": current_nav, "label": "当前净值", "format": "number"},
-        "mean_nav": {"value": mean_nav, "label": "历史均值(60日)", "format": "number"},
-        "std_nav": {"value": std_nav, "label": "标准差", "format": "number"},
-        "deviation": {"value": (current_nav - mean_nav) / mean_nav if mean_nav else 0, "label": "偏离度", "format": "pct"},
-    }
-    if top_signal:
-        key_values["confidence"] = {"value": top_signal.confidence, "label": "置信度", "format": "pct"}
-
-    return {
-        "success": True,
-        "data": {
-            "strategy_name": req.strategy_name,
-            "strategy_display_name": getattr(strategy, "display_name", req.strategy_name),
-            "formula_description": getattr(strategy, "formula_description", "基于净值历史统计的偏离度分析"),
-            "verdict": f"当前净值({current_nav:.4f})，偏离度 {(current_nav - mean_nav) / mean_nav * 100:.2f}%，"
-                       f"信号数量: {len(signals)}，置信度最高: {top_signal.confidence:.1%}" if top_signal
-                       else f"当前净值({current_nav:.4f})，无信号产生",
-            "key_values": key_values,
-        },
-    }
-
-
-@router.post("/timing/batch")
-async def timing_batch(fund_codes: List[str] = Query(...)):
-    """择时策略已废弃"""
-    raise HTTPException(status_code=410, detail="timing 择时策略已废弃")
-    """批量择时评估 (并行)"""
-    async def evaluate_one(code: str) -> dict:
-        try:
-            nav_data = await asyncio.to_thread(get_nav_history, code)
-            if not nav_data:
-                return {"fund_code": code, "status": "error", "message": "无净值数据"}
-            nav_values = [r.get("nav", 0) for r in nav_data if r.get("nav")]
-            return {
-                "fund_code": code,
-                "status": "ok",
-                "nav_count": len(nav_values),
-                "latest_nav": nav_values[-1] if nav_values else None,
-                "latest_date": nav_data[-1]["date"] if nav_data else None,
-            }
-        except Exception as e:
-            return {"fund_code": code, "status": "error", "message": str(e)}
-
-    results = await asyncio.gather(*[evaluate_one(code) for code in fund_codes])
-    return {"success": True, "data": results, "total": len(results)}
-
-
 # ── 选基筛选 ──
 
 @router.post("/selection/screen")
 async def selection_screen(req: SelectionRequest):
     """基金筛选"""
+    # 策略选择
+    if req.strategy == "rating_enhanced":
+        from ..fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
+        strategy = RatingEnhancedSelection()
+        result = await asyncio.to_thread(
+            partial(strategy.screen, fund_type=req.fund_type, top_n=req.top_n, params=req.params))
+        return {"success": True, "data": result}
+
     from ..fund_quant.strategy.selection.multi_factor import MultiFactorSelection
     strategy = MultiFactorSelection()
 
@@ -406,6 +207,22 @@ def _load_recent_navs(fund_codes: list[str], days: int = 250) -> dict[str, list[
     return nav_dict
 
 
+def _load_nav_series(fund_codes: list[str], cutoff_date: str | None = None) -> dict[str, list[float]]:
+    """加载基金净值序列（纯 float 列表），供 _compute_weights 使用"""
+    from ..fund_quant.data.storage import get_nav_history
+    nav_series: dict[str, list[float]] = {}
+    for code in fund_codes:
+        navs = get_nav_history(code)
+        if not navs:
+            continue
+        if cutoff_date:
+            navs = [r for r in navs if r.get("date", "") <= cutoff_date]
+        vals = [float(r["nav"]) for r in navs if r.get("nav") and float(r["nav"]) > 0]
+        if vals:
+            nav_series[code] = vals
+    return nav_series
+
+
 def _etf_rotation_current_signal(fund_codes: list[str], params: dict, capital: float = 100000) -> dict:
     """etf_rotation 当前配置：动量评分 → Top-N 权重 + 买入金额"""
     import numpy as np
@@ -462,56 +279,91 @@ def _etf_rotation_current_signal(fund_codes: list[str], params: dict, capital: f
 
 
 def _all_weather_current_signal(fund_codes: list[str], params: dict, capital: float = 100000) -> dict:
-    """all_weather 当前配置：固定权重/风险平价 → 权重向量 + 买入金额
+    """all_weather 当前配置：通过 aurora 策略 _compute_weights() 获取权重（走统一引擎逻辑）"""
+    if len(fund_codes) < 2:
+        return {"strategy": "all_weather_aurora", "direction": "hold",
+                "weights": {}, "confidence": 0, "reason": "基金池不足2只",
+                "top_holdings": [], "buy_amounts": {}}
+    try:
+        import importlib
+        mod = importlib.import_module("backend.fund_quant.adapter")
+        cls = getattr(mod, "all_weather_aurora")
+        strategy = cls()
+        strategy.params.update(params)
+    except Exception as e:
+        return {"strategy": "all_weather_aurora", "direction": "hold",
+                "weights": {}, "confidence": 0, "reason": f"策略加载失败: {e}",
+                "top_holdings": [], "buy_amounts": {}}
 
-    全天候是固定资产池策略（四象限），不因前端传入的基金池而稀释权重。
-    用策略自带 asset_template（固定 Dalio 比例），fund_codes 仅用于补充名称。
-    """
-    from ..fund_quant.strategy.allocation.all_weather import AllWeatherStrategy
-    strategy = AllWeatherStrategy(params=params)
-    # 不传 fund_codes → 用固定模板，保持四象限比例
-    result = strategy.optimize(fund_codes=None)
-    weights = result.get("weights", {})
-    mode = result.get("mode", params.get("mode", "fixed"))
-    asset_allocation = result.get("asset_allocation", {})
+    weights = strategy._compute_weights()
 
-    # 基金名称：优先模板，其次 fund_pool（传入了才查）
+    # 基金名称（从策略 asset_template 获取）
     name_map = {}
     for code, info in strategy.params.get("asset_template", {}).items():
         name_map[code] = info.get("name", code)
-
-    top_holdings = []
-    for c, w in sorted(weights.items(), key=lambda kv: -kv[1]):
-        if w > 0:
-            top_holdings.append({
-                "fund_code": c, "weight": w,
-                "fund_name": name_map.get(c, c),
-            })
+    top_holdings = [{"fund_code": c, "weight": w, "fund_name": name_map.get(c, c)}
+                    for c, w in sorted(weights.items(), key=lambda kv: -kv[1]) if w > 0]
     buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
-
-    # 类别配置中文说明
-    class_label = {"equity": "股票", "bond_long": "长期债券", "bond_medium": "中期债券",
-                   "bond": "债券", "gold": "黄金", "commodity": "商品"}
-    alloc_desc = '  '.join(f"{class_label.get(k, k)}:{v:.1%}" for k, v in
-                           sorted(asset_allocation.items(), key=lambda kv: -kv[1]) if v > 0)
+    mode = strategy.params.get("mode", "fixed")
 
     return {"strategy": "all_weather_aurora", "direction": "hold",
             "weights": weights, "confidence": 0.8, "capital": round(capital, 2),
             "buy_amounts": buy_amounts, "mode": mode,
-            "asset_allocation": {k: round(v, 4) for k, v in asset_allocation.items()},
-            "reason": f"全天候({mode}) 四象限配置：{alloc_desc}",
+            "reason": f"全天候({mode}) 配置",
+            "top_holdings": top_holdings}
+
+
+_ALLOC_AURORA_CLASSES: dict[str, str] = {
+    "all_weather_aurora":      "backend.fund_quant.adapter",
+    "bl_quadrant_aurora":      "backend.fund_quant.adapter",
+    "black_litterman_aurora":  "backend.fund_quant.adapter",
+    "risk_parity_aurora":      "backend.fund_quant.adapter",
+    "hrp_aurora":              "backend.fund_quant.adapter",
+    "max_diversification_aurora": "backend.fund_quant.adapter",
+}
+
+def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
+                                       params: dict, capital: float = 100000) -> dict:
+    """统一配置信号：通过 aurora 策略的 _compute_weights() 获取权重（走统一引擎逻辑）"""
+    if len(fund_codes) < 2:
+        return {"strategy": strategy_name, "direction": "hold",
+                "weights": {}, "confidence": 0, "reason": "基金池不足2只",
+                "top_holdings": [], "buy_amounts": {}}
+    try:
+        mod_path = _ALLOC_AURORA_CLASSES[strategy_name]
+        import importlib
+        mod = importlib.import_module(mod_path)
+        cls = getattr(mod, strategy_name)
+        strategy = cls()
+        strategy.params.update(params)
+    except Exception as e:
+        return {"strategy": strategy_name, "direction": "hold",
+                "weights": {}, "confidence": 0, "reason": f"策略加载失败: {e}",
+                "top_holdings": [], "buy_amounts": {}}
+
+    nav_series = _load_nav_series(fund_codes, cutoff_date=None)
+    valid_codes = [c for c in fund_codes if len(nav_series.get(c, [])) >= 20]
+    if len(valid_codes) < 2:
+        return {"strategy": strategy_name, "direction": "hold",
+                "weights": {}, "confidence": 0, "reason": "净值数据不足",
+                "top_holdings": [], "buy_amounts": {}}
+
+    result = strategy._compute_weights(nav_series, valid_codes)
+    weights = result or {}
+    top_holdings = [{"fund_code": c, "weight": w}
+                    for c, w in sorted(weights.items(), key=lambda kv: -kv[1]) if w > 0]
+    buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
+    return {"strategy": strategy_name,
+            "direction": "buy" if weights else "hold",
+            "weights": weights, "confidence": 0.7, "capital": round(capital, 2),
+            "buy_amounts": buy_amounts,
+            "reason": f"{strategy_name} 配置",
             "top_holdings": top_holdings}
 
 
 @router.post("/strategy/allocation/current")
 async def strategy_allocation_current(req: StrategyAllocationRequest):
-    """策略资产配置信号（按需实时计算，以策略为中心）
-
-    对每个 active 策略，用最新净值实时算当前配置建议：
-      - etf_rotation_aurora: 动量 Top-N 权重 + 排名
-      - all_weather_aurora: 固定权重 / 风险平价权重向量
-    返回权重 + 方向 + 买入金额 + 动量排名候选。
-    """
+    """策略资产配置信号（按需实时计算，以策略为中心）"""
     fund_codes = req.fund_codes or []
     capital = req.capital or 100000
     signals = []
@@ -527,94 +379,224 @@ async def strategy_allocation_current(req: StrategyAllocationRequest):
         signals.append({"strategy": "all_weather_aurora", "direction": "hold",
                         "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
                         "top_holdings": [], "buy_amounts": {}})
+    for sn in ("bl_quadrant_aurora", "black_litterman_aurora", "risk_parity_aurora",
+               "hrp_aurora", "max_diversification_aurora"):
+        try:
+            signals.append(_allocation_current_signal_aurora(sn, fund_codes, req.params, capital))
+        except Exception as e:
+            signals.append({"strategy": sn, "direction": "hold",
+                            "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
+                            "top_holdings": [], "buy_amounts": {}})
     return {"success": True, "data": {"strategies": signals, "fund_codes": fund_codes}}
 
 
 # ── 回测 ──
 
+def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
+                        start_date: str, end_date: str,
+                        initial_capital: float, params: dict) -> dict:
+    """轻量级 aurora 回测 — 只返回指标字典，不保存结果（供 param-scan 使用）"""
+    from datetime import date
+    from core import BacktestEngine, BacktestConfig, T1ExecutionEngine, FundNavPoint
+    from core.strategy import StrategyRegistry
+
+    nav_dict = {}
+    for code in fund_codes:
+        navs = get_nav_history(code)
+        if navs:
+            nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)}
+                              for r in navs if r.get("nav")]
+    if not nav_dict:
+        return {"sharpe": 0, "total_return": 0}
+
+    all_points: list[FundNavPoint] = []
+    for code, records in nav_dict.items():
+        for r in records:
+            all_points.append(FundNavPoint(
+                fund_code=code,
+                date=date.fromisoformat(r["date"]),
+                nav=r["nav"],
+            ))
+    all_points.sort(key=lambda p: (p.date, p.fund_code))
+
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+    strategy = StrategyRegistry.get(strategy_name)()
+    strategy.params.update(params)
+    execution = T1ExecutionEngine(confirmation_delay=1)
+    execution.set_capital(initial_capital)
+
+    engine = BacktestEngine(BacktestConfig(initial_capital=initial_capital))
+    engine.set_strategy(strategy)
+    engine.set_executor(execution)
+    engine.set_data(all_points)
+    report = engine.run()
+
+    eq = report.equity_curve
+    equities = [e.get("equity", 0) for e in eq]
+    total_return = (equities[-1] / equities[0] - 1) if equities and equities[0] > 0 else 0
+    n_date = len(set(p.date for p in all_points))
+    total_days = max(n_date, 1)
+    ann_return = (1 + total_return) ** (252 / total_days) - 1
+    daily_ret = [(equities[i] - equities[i-1]) / equities[i-1]
+                 for i in range(1, len(equities)) if equities[i-1] > 0]
+    vol = float(np.std(daily_ret, ddof=1)) * np.sqrt(252) if len(daily_ret) > 1 else 0
+    sharpe = ann_return / vol if vol > 0 else 0
+    neg_rets = [r for r in daily_ret if r < 0]
+    downside_vol = float(np.std(neg_rets, ddof=1)) * np.sqrt(252) if len(neg_rets) > 1 else 1e-6
+    sortino = ann_return / downside_vol if downside_vol > 0 else 0
+    peak = equities[0] if equities else 1
+    mdd = 0.0
+    for e in equities:
+        if e > peak: peak = e
+        dd = (peak - e) / peak if peak > 0 else 0
+        mdd = max(mdd, dd)
+    wins = sum(1 for r in daily_ret if r > 0)
+    win_rate = wins / len(daily_ret) if daily_ret else 0
+    calmar = ann_return / mdd if mdd > 0 else 0
+
+    return {
+        "sharpe": round(sharpe, 4),
+        "total_return": round(total_return, 4),
+        "max_drawdown": round(mdd, 4),
+        "volatility": round(vol, 4),
+        "sortino": round(sortino, 4),
+        "calmar": round(calmar, 4),
+        "win_rate": round(win_rate, 4),
+        "total_trades": report.total_trades,
+    }
+
+
 def _run_backtest_sync(config_dict: dict) -> str:
-    """同步回测任务 — 使用 FundBacktester (新引擎, T+1模拟 + 前视偏差防护)"""
+    """同步回测任务 — 使用 AuroraCore 统一引擎（BacktestEngine）"""
     from datetime import date, timedelta
-    from ..fund_quant.backtest.engine import FundBacktester
+    from core import BacktestEngine, BacktestConfig, T1ExecutionEngine, FundNavPoint
+    from core.strategy import StrategyRegistry
 
     backtest_id = config_dict.get("backtest_id", f"bt_{uuid.uuid4().hex[:12]}")
 
-    # 获取净值数据
     strategy_name = config_dict.get("strategy_name", "")
     fund_codes = config_dict.get("fund_codes", [])
-    fund_code = fund_codes[0] if fund_codes else "000001"
     start = config_dict.get("start_date", "2024-01-01")
     end = config_dict.get("end_date", "2025-12-31")
+    initial_capital = config_dict.get("initial_capital", 100000)
 
-    from ..fund_quant.data.storage import get_nav_history
-    nav_data = get_nav_history(fund_code)
+    # 获取净值数据
+    nav_dict = {}
+    for code in fund_codes:
+        navs = get_nav_history(code)
+        if navs:
+            nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)}
+                              for r in navs if r.get("nav")]
 
-    if not nav_data:
-        # 模拟数据
+    if not nav_dict:
+        # 模拟数据（与旧行为一致）
         navs_list = []
         d = date.fromisoformat(start) if isinstance(start, str) else start
         ed = date.fromisoformat(end) if isinstance(end, str) else end
-        if isinstance(d, str): d = date.fromisoformat(d)
-        if isinstance(ed, str): ed = date.fromisoformat(ed)
         cur = d
         while cur <= ed:
             days = (cur - d).days
             trend = 1.0 + days * 0.002 if days < 150 else 1.0 + (300 - days) * 0.002
             navs_list.append({"date": cur.isoformat(), "nav": round(trend, 4)})
             cur += timedelta(days=1)
-    else:
-        navs_list = [{"date": r["date"], "nav": r.get("nav", 0)} for r in nav_data]
+        nav_dict[fund_codes[0] if fund_codes else "000001"] = navs_list
 
-    nav_dict = {fund_code: navs_list}
+    # 构建 FundNavPoint 列表
+    all_points: list[FundNavPoint] = []
+    for code, records in nav_dict.items():
+        for r in records:
+            all_points.append(FundNavPoint(
+                fund_code=code,
+                date=date.fromisoformat(r["date"]),
+                nav=r["nav"],
+            ))
+    all_points.sort(key=lambda p: (p.date, p.fund_code))
 
-    # 查找策略 (优先旧注册表 — 原生的 FundStrategyBase 直接兼容)
-    from ..fund_quant.strategy.base import StrategyRegistry
-    registry = StrategyRegistry()
-    strategy = registry.get_strategy(strategy_name)
-    if strategy is None:
-        raise RuntimeError(f"策略 {strategy_name} 未找到")
+    # 构建引擎
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+    try:
+        strategy_cls = StrategyRegistry.get(strategy_name)
+    except KeyError:
+        raise RuntimeError(f"策略 {strategy_name} 未注册")
 
-    # 构建新引擎配置
-    from ..fund_quant.core.models import BacktestConfig, CostModelConfig
-    config = BacktestConfig(
-        strategy_name=strategy_name,
-        fund_codes=fund_codes,
-        start_date=start,
-        end_date=end,
-        initial_capital=config_dict.get("initial_capital", 100000),
-        rebalance_freq=config_dict.get("rebalance_freq", "monthly"),
+    custom_params = config_dict.get("params", {})
+    strategy = strategy_cls()
+    strategy.params.update(custom_params)
+
+    execution = T1ExecutionEngine(confirmation_delay=1)
+    execution.set_capital(initial_capital)
+
+    engine = BacktestEngine(BacktestConfig(initial_capital=initial_capital))
+    engine.set_strategy(strategy)
+    engine.set_executor(execution)
+    engine.set_data(all_points)
+
+    report = engine.run()
+
+    # 从 equity_curve 计算指标
+    eq = report.equity_curve
+    equities = [e.get("equity", 0) for e in eq]
+    total_return = (equities[-1] / equities[0] - 1) if equities and equities[0] > 0 else 0
+    n_date = len(set(p.date for p in all_points))
+    total_days = max(n_date, 1)
+    ann_return = (1 + total_return) ** (252 / total_days) - 1 if total_days > 0 else 0
+    daily_ret = [(equities[i] - equities[i-1]) / equities[i-1]
+                 for i in range(1, len(equities)) if equities[i-1] > 0]
+    vol = float(np.std(daily_ret, ddof=1)) * np.sqrt(252) if len(daily_ret) > 1 else 0
+    sharpe = ann_return / vol if vol > 0 else 0
+
+    # Sortino
+    neg_rets = [r for r in daily_ret if r < 0]
+    downside_vol = float(np.std(neg_rets, ddof=1)) * np.sqrt(252) if len(neg_rets) > 1 else 1e-6
+    sortino = ann_return / downside_vol if downside_vol > 0 else 0
+
+    # 最大回撤
+    peak = equities[0] if equities else 1
+    mdd = 0.0
+    for e in equities:
+        if e > peak:
+            peak = e
+        dd = (peak - e) / peak if peak > 0 else 0
+        mdd = max(mdd, dd)
+
+    # 胜率
+    wins = sum(1 for r in daily_ret if r > 0)
+    win_rate = wins / len(daily_ret) if daily_ret else 0
+
+    # Calmar
+    calmar = ann_return / mdd if mdd > 0 else 0
+
+    # 保存结果
+    from ..fund_quant.core.models import BacktestResult as BResult, BacktestConfig as BConfig
+    bt_config = BConfig(
+        strategy_name=strategy_name, fund_codes=fund_codes,
+        start_date=start, end_date=end,
+        initial_capital=initial_capital,
         params=config_dict.get("params", {}),
     )
-
-    # 注入自定义参数
-    custom_params = config_dict.get("params", {})
-    if custom_params:
-        strategy.params.update(custom_params)
-
-    engine = FundBacktester()
-
-    try:
-        result = engine.run(config, nav_dict, strategy=strategy)
-        result.backtest_id = backtest_id
-
-        # 确保 equity_curve 含 equity 字段（前端需要）
-        for e in result.equity_curve:
-            if "equity" not in e:
-                e["equity"] = e.get("total_value", 0)
-
-        save_backtest_result(result)
-        logger.info(f"新引擎回测 [{backtest_id}] 完成: 收益 {result.total_return:.2%}")
-    except Exception as e:
-        logger.error(f"新引擎回测 [{backtest_id}] 失败: {e}", exc_info=True)
-        from ..fund_quant.core.models import BacktestResult as BResult
-        result = BResult(backtest_id=backtest_id, config=config, status="failed")
-        save_backtest_result(result)
+    result = BResult(
+        backtest_id=backtest_id, config=bt_config,
+        status="completed",
+        total_return=round(total_return, 4),
+        annual_return=round(ann_return, 4),
+        max_drawdown=round(mdd, 4),
+        volatility=round(vol, 4),
+        sharpe_ratio=round(sharpe, 4),
+        sortino_ratio=round(sortino, 4),
+        calmar_ratio=round(calmar, 4),
+        win_rate=round(win_rate, 4),
+        total_trades=report.total_trades,
+        equity_curve=eq,
+    )
+    result.backtest_id = backtest_id
+    save_backtest_result(result)
+    logger.info(f"AuroraEngine回测 [{backtest_id}] 完成: 收益 {total_return:.2%}")
 
     return backtest_id
 
 
 async def _run_backtest_async(config_dict: dict) -> str:
-    """异步回测任务 — FundBacktester 新引擎（线程池执行）"""
+    """异步回测任务 — AuroraCore 统一引擎（线程池执行）"""
     return await asyncio.to_thread(_run_backtest_sync, config_dict)
 
 
@@ -964,7 +946,6 @@ async def factor_audit(domain: str = "fund", years: int = 3):
 async def fund_factor_exposure(fund_code: str, lookback: int = 365):
     """获取单基金因子暴露度 — 计算各注册因子的当前暴露值"""
     import numpy as np
-    from ..fund_quant.strategy.base import StrategyRegistry
     from backend.core.factor import FactorRegistry
     from ..fund_quant.data.storage import get_nav_history, get_fund_meta
 
@@ -1387,51 +1368,21 @@ class ParamScanRequest(BaseModel):
 
 @router.post("/backtest/param-scan")
 async def backtest_param_scan(req: ParamScanRequest):
-    """参数敏感性扫描 — 单参数/网格搜索/随机搜索"""
-    from ..fund_quant.strategy.base import StrategyRegistry
-    from ..fund_quant.data.storage import get_nav_history
-    from ..fund_quant.backtest.engine import FundBacktester
+    """参数敏感性扫描 — 单参数/网格搜索/随机搜索（AuroraCore 统一引擎）"""
+    from core.strategy import StrategyRegistry
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
 
-    registry = StrategyRegistry()
-    strategy = registry.get_strategy(req.strategy_name)
-    if strategy is None:
-        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未找到")
+    try:
+        StrategyRegistry.get(req.strategy_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"策略 {req.strategy_name} 未注册")
 
-    # 构建扫描函数
     def _run_with_params(params: dict) -> dict:
-        engine = FundBacktester()
-        from ..fund_quant.core.models import BacktestConfig
-        config = BacktestConfig(
-            strategy_name=req.strategy_name,
-            fund_codes=req.fund_codes,
-            start_date=req.start_date,
-            end_date=req.end_date,
-            initial_capital=req.initial_capital,
-            params=params,
+        return _run_aurora_metrics(
+            req.strategy_name, req.fund_codes,
+            req.start_date, req.end_date,
+            req.initial_capital, params,
         )
-        # 获取净值数据
-        nav_dict = {}
-        for code in req.fund_codes:
-            navs = get_nav_history(code)
-            if navs:
-                nav_dict[code] = navs
-        if not nav_dict:
-            return {"sharpe": 0, "total_return": 0}
-
-        strategy_clone = registry.get_strategy(req.strategy_name)
-        if strategy_clone:
-            strategy_clone.params.update(params)
-        result = engine.run(config, nav_dict, strategy=strategy_clone)
-        return {
-            "sharpe": result.sharpe_ratio,
-            "total_return": result.total_return,
-            "max_drawdown": result.max_drawdown,
-            "volatility": result.volatility,
-            "sortino": result.sortino_ratio,
-            "calmar": result.calmar_ratio,
-            "win_rate": result.win_rate,
-            "total_trades": result.total_trades,
-        }
 
     from ..fund_quant.backtest.param_scanner import ParameterScanner
     scanner = ParameterScanner(_run_with_params)
@@ -1563,7 +1514,6 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
 
     strategy = strategy_cls()
     strategy.params.update(req.params)
-    execution = T1ExecutionEngine(confirmation_delay=1)
     execution = T1ExecutionEngine(confirmation_delay=1)
     execution.set_capital(req.initial_capital)
 

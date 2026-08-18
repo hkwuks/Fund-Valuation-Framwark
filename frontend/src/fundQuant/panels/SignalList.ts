@@ -84,7 +84,16 @@ export class SignalList extends PanelBase {
       const card = document.createElement('div')
       card.style.cssText = 'margin-bottom:10px;border:1px solid var(--border-light);border-radius:8px;padding:12px;background:var(--bg-secondary);'
 
-      const name = s.strategy === 'etf_rotation_aurora' ? 'ETF动量轮动' : '桥水全天候'
+      const nameMap0: Record<string, string> = {
+        etf_rotation_aurora: 'ETF动量轮动',
+        all_weather_aurora: '桥水全天候',
+        bl_quadrant_aurora: 'BL四象限观点',
+        black_litterman_aurora: 'Black-Litterman',
+        risk_parity_aurora: '风险平价',
+        hrp_aurora: '层次风险平价(HRP)',
+        max_diversification_aurora: '最大多元化(MDP)',
+      }
+      const name = nameMap0[s.strategy] || s.strategy
       const modeLabel = s.mode ? ` (${s.mode})` : ''
       const entries = Object.entries(s.weights).filter(([, w]) => w > 0)
       const pool = state.get('fundPool')
@@ -116,8 +125,8 @@ export class SignalList extends PanelBase {
         card.appendChild(this.buildCollapsible('📈 动量排名候选', `查看各资产动量得分`, rankHtml))
       }
 
-      // 权重分布（all_weather 多只）
-      if (s.strategy === 'all_weather_aurora' && entries.length > 1) {
+      // 权重分布（多资产配置策略）
+      if (s.strategy !== 'etf_rotation_aurora' && entries.length > 1) {
         const colors = ['#4a90d9', '#22c55e', '#f59e0b', '#ef4444', '#a855f7', '#ec4899', '#14b8a6', '#f97316']
         const chartWrap = document.createElement('div')
         chartWrap.style.cssText = 'display:none;height:140px;width:100%;margin-top:4px;'

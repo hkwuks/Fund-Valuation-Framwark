@@ -33,7 +33,7 @@ class TestStrategyRegistry:
             by_type.setdefault(s["type"], []).append(s["name"])
         assert by_type.get("timing", []) == [], f"废弃的择时策略仍注册: {by_type.get('timing', [])}"
         assert len(by_type.get("selection", [])) == 3, "选基策略应为3个"
-        assert len(by_type.get("allocation", [])) == 4, "配置策略应为4个（risk_parity, black_litterman, etf_global_rotation, all_weather）"
+        assert len(by_type.get("allocation", [])) == 6, "配置策略应为6个（risk_parity, black_litterman, etf_global_rotation, all_weather, hrp, max_diversification）"
 
     def test_get_strategy_returns_instance(self):
         s = self.registry.get_strategy("multi_factor")

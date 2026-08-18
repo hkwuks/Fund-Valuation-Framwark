@@ -9,3 +9,5 @@ from .allocation import risk_parity
 from .allocation import black_litterman
 from .allocation import etf_rotation
 from .allocation import all_weather
+from .allocation import hrp
+from .allocation import max_diversification
