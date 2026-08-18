@@ -665,6 +665,16 @@ class AuroraBlQuadrant(Strategy):
     def _pool_codes(self) -> list[str]:
         return list(self._hist.keys()) or list(self.params.get("fund_codes", []))
 
+    def _compute_weights(self, nav_series=None, codes=None):
+        """通过 BlackLittermanQuadrant 优化器计算权重（保持接口一致）"""
+        from .strategy.allocation.bl_quadrant import BlackLittermanQuadrant
+        valid = codes or list((nav_series or {}).keys())
+        if len(valid) < 2:
+            return {}
+        strategy = BlackLittermanQuadrant(params=dict(self.params))
+        result = strategy.optimize(fund_codes=valid, nav_series=nav_series or {})
+        return result.get("weights", {})
+
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
         nav = getattr(data, "nav", getattr(data, "close", 0))

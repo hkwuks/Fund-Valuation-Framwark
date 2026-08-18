@@ -207,8 +207,13 @@ def _load_recent_navs(fund_codes: list[str], days: int = 250) -> dict[str, list[
     return nav_dict
 
 
-def _load_nav_series(fund_codes: list[str], cutoff_date: str | None = None) -> dict[str, list[float]]:
-    """加载基金净值序列（纯 float 列表），供 _compute_weights 使用"""
+def _load_nav_series(fund_codes: list[str], cutoff_date: str | None = None,
+                     lookback_days: int = 0) -> dict[str, list[float]]:
+    """加载基金净值序列（纯 float 列表），供 _compute_weights 使用
+
+    lookback_days > 0 时只保留最近 lookback_days 个交易日的净值，
+    避免优化器使用过多历史数据导致权重趋同。
+    """
     from ..fund_quant.data.storage import get_nav_history
     nav_series: dict[str, list[float]] = {}
     for code in fund_codes:
@@ -219,7 +224,7 @@ def _load_nav_series(fund_codes: list[str], cutoff_date: str | None = None) -> d
             navs = [r for r in navs if r.get("date", "") <= cutoff_date]
         vals = [float(r["nav"]) for r in navs if r.get("nav") and float(r["nav"]) > 0]
         if vals:
-            nav_series[code] = vals
+            nav_series[code] = vals[-lookback_days:] if lookback_days > 0 else vals
     return nav_series
 
 
@@ -285,9 +290,9 @@ def _all_weather_current_signal(fund_codes: list[str], params: dict, capital: fl
                 "weights": {}, "confidence": 0, "reason": "基金池不足2只",
                 "top_holdings": [], "buy_amounts": {}}
     try:
-        import importlib
-        mod = importlib.import_module("backend.fund_quant.adapter")
-        cls = getattr(mod, "all_weather_aurora")
+        import backend.fund_quant.adapter as _adapter  # noqa: F401
+        from core.strategy import StrategyRegistry
+        cls = StrategyRegistry.get("all_weather_aurora")
         strategy = cls()
         strategy.params.update(params)
     except Exception as e:
@@ -313,15 +318,6 @@ def _all_weather_current_signal(fund_codes: list[str], params: dict, capital: fl
             "top_holdings": top_holdings}
 
 
-_ALLOC_AURORA_CLASSES: dict[str, str] = {
-    "all_weather_aurora":      "backend.fund_quant.adapter",
-    "bl_quadrant_aurora":      "backend.fund_quant.adapter",
-    "black_litterman_aurora":  "backend.fund_quant.adapter",
-    "risk_parity_aurora":      "backend.fund_quant.adapter",
-    "hrp_aurora":              "backend.fund_quant.adapter",
-    "max_diversification_aurora": "backend.fund_quant.adapter",
-}
-
 def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
                                        params: dict, capital: float = 100000) -> dict:
     """统一配置信号：通过 aurora 策略的 _compute_weights() 获取权重（走统一引擎逻辑）"""
@@ -330,10 +326,9 @@ def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
                 "weights": {}, "confidence": 0, "reason": "基金池不足2只",
                 "top_holdings": [], "buy_amounts": {}}
     try:
-        mod_path = _ALLOC_AURORA_CLASSES[strategy_name]
-        import importlib
-        mod = importlib.import_module(mod_path)
-        cls = getattr(mod, strategy_name)
+        import backend.fund_quant.adapter as _adapter  # noqa: F401 — 触发注册
+        from core.strategy import StrategyRegistry
+        cls = StrategyRegistry.get(strategy_name)
         strategy = cls()
         strategy.params.update(params)
     except Exception as e:
@@ -341,7 +336,8 @@ def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
                 "weights": {}, "confidence": 0, "reason": f"策略加载失败: {e}",
                 "top_holdings": [], "buy_amounts": {}}
 
-    nav_series = _load_nav_series(fund_codes, cutoff_date=None)
+    nav_series = _load_nav_series(fund_codes, cutoff_date=None,
+                                   lookback_days=strategy.params.get("lookback_days", 756))
     valid_codes = [c for c in fund_codes if len(nav_series.get(c, [])) >= 20]
     if len(valid_codes) < 2:
         return {"strategy": strategy_name, "direction": "hold",
