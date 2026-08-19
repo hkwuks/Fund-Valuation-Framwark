@@ -48,12 +48,15 @@ class RiskParityStrategy(FundStrategyBase):
             return {"strategy": self.strategy_name, "fund_codes": fund_codes,
                     "weights": {code: 1.0 for code in fund_codes}, "status": "single_fund"}
 
+        # 截断 lookback（避免传入过多历史导致权重趋同）
+        lb = self.params.get("lookback_years", 3) * 252
+
         # 1. 获取各基金收益率序列
         all_returns = {}
         for code in fund_codes:
             if nav_series and code in nav_series:
                 nav_values = [float(v) for v in nav_series[code]
-                              if v and v > 0]
+                              if v and v > 0][-lb:]
             else:
                 navs = get_nav_history(code)
                 if len(navs) < 60:
@@ -84,13 +87,16 @@ class RiskParityStrategy(FundStrategyBase):
         max_w = self.params["max_weight"]
         min_w = self.params["min_weight"]
 
-        # 自适应最小权重：min_weight*n 必须 <= 1 才存在可行解
-        # 基金数多时降低下限，否则 SLSQP 无解回退等权
+        # 自适应权重范围：基金数多时放宽约束，否则风险平价无法拉开差距
+        # min_weight*n 必须 <= 1 才存在可行解
         if min_w * n > 1.0:
             min_w = 0.9 / n
-        # 自适应最大权重：max_weight*n 必须 >= 1（n=2 时 max_weight=0.4 会让可行域为空）
+        # 基金数多时降低 max_weight 避免不可行（max_weight*n 必须 >= 1）
         if max_w * n < 1.0:
             max_w = 1.0 / n
+        # 基金数 >= 10 时放宽上限，否则风险平价退化为近似等权
+        if n >= 10:
+            max_w = max(max_w, 0.6)
 
         bounds = [(min_w, max_w) for _ in range(n)]
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
