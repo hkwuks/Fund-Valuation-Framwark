@@ -308,7 +308,7 @@ export const fundQuantApi = {
     ),
 
   getMonthlyReturns: (fund_code: string) =>
-    get<{ success: boolean; data: MonthlyReturnResult }>(`/portfolio/monthly-returns?code=${fund_code}`),
+    get<{ success: boolean; data: MonthlyReturnResult }>(`/portfolio/monthly-returns?fund_code=${fund_code}`),
 
   getStrategyList: () =>
     get<{ success: boolean; data: StrategyInfo[] }>('/strategy/list'),
