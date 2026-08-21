@@ -1558,7 +1558,7 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
     }
 
 
-# ── 模拟交易 (Paper Trader) ──
+# ── 模拟交易 (Paper Trader — 统一引擎) ──
 
 class PaperTradeStartRequest(BaseModel):
     strategy_name: str
@@ -1568,52 +1568,46 @@ class PaperTradeStartRequest(BaseModel):
 class PaperTradeRunRequest(BaseModel):
     paper_trade_id: str
 
-_paper_trader = None
-
-def _get_paper_trader():
-    global _paper_trader
-    if _paper_trader is None:
-        from ..fund_quant.backtest.paper_trader import FundPaperTrader
-        _paper_trader = FundPaperTrader()
-    return _paper_trader
+from ..fund_quant.paper.paper_engine import fund_paper_engine
 
 @router.post("/paper-trade/start")
 async def paper_trade_start(req: PaperTradeStartRequest):
-    """启动一个新的模拟交易会话"""
-    pt = _get_paper_trader()
-    state = pt.start(req.strategy_name, req.fund_codes, req.initial_capital)
+    """启动一个新的模拟交易会话（统一引擎）"""
+    session = fund_paper_engine.start(
+        strategy_name=req.strategy_name,
+        symbols=req.fund_codes,
+        initial_capital=req.initial_capital,
+    )
     return {
         "success": True,
         "data": {
-            "paper_trade_id": state.paper_trade_id,
-            "strategy_name": state.strategy_name,
-            "fund_codes": state.fund_codes,
-            "initial_capital": state.initial_capital,
-            "status": state.status,
+            "paper_trade_id": session.session_id,
+            "strategy_name": session.strategy_name,
+            "fund_codes": session.symbols,
+            "initial_capital": session.initial_capital,
+            "status": session.status,
         },
     }
 
 @router.post("/paper-trade/run")
 async def paper_trade_run(req: PaperTradeRunRequest):
-    """执行一天的模拟交易"""
-    pt = _get_paper_trader()
+    """执行一天的模拟交易（统一引擎）"""
     from ..fund_quant.data.storage import get_nav_history
 
-    # 加载状态查询基金列表
-    state = pt.get_status(req.paper_trade_id)
-    if state is None:
+    session = fund_paper_engine.get_status(req.paper_trade_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="模拟交易会话未找到")
-    if state.status != "running":
-        return {"success": True, "data": {"status": state.status, "message": "已停止"}}
+    if session.status != "running":
+        return {"success": True, "data": {"status": session.status, "message": "已停止"}}
 
-    # 获取所有持仓基金的净值数据
+    # 获取所有基金净值数据
     nav_data = {}
-    for code in state.fund_codes:
+    for code in session.symbols:
         navs = await asyncio.to_thread(get_nav_history, code)
         if navs:
             nav_data[code] = navs
 
-    updated = pt.daily_run(req.paper_trade_id, nav_data)
+    updated = fund_paper_engine.daily_run(req.paper_trade_id, nav_data)
     return {
         "success": True,
         "data": {
@@ -1626,8 +1620,7 @@ async def paper_trade_run(req: PaperTradeRunRequest):
 @router.post("/paper-trade/stop")
 async def paper_trade_stop(req: PaperTradeRunRequest):
     """停止模拟交易会话"""
-    pt = _get_paper_trader()
-    state = pt.stop(req.paper_trade_id)
+    state = fund_paper_engine.stop(req.paper_trade_id)
     if state is None:
         raise HTTPException(status_code=404, detail="模拟交易会话未找到")
     return {"success": True, "data": {"paper_trade_id": req.paper_trade_id, "status": "stopped"}}
@@ -1635,15 +1628,24 @@ async def paper_trade_stop(req: PaperTradeRunRequest):
 @router.get("/paper-trade/list")
 async def paper_trade_list():
     """列出所有模拟交易会话"""
-    pt = _get_paper_trader()
-    summaries = pt.list_sessions()
-    return {"success": True, "data": [s.__dict__ for s in summaries]}
+    summaries = fund_paper_engine.list_sessions()
+    return {"success": True, "data": summaries}
 
 @router.get("/paper-trade/status/{paper_trade_id}")
 async def paper_trade_status(paper_trade_id: str):
     """获取模拟交易会话状态"""
-    pt = _get_paper_trader()
-    state = pt.get_status(paper_trade_id)
-    if state is None:
+    session = fund_paper_engine.get_status(paper_trade_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="模拟交易会话未找到")
-    return {"success": True, "data": state.__dict__}
+    return {"success": True, "data": {
+        "paper_trade_id": session.session_id,
+        "strategy_name": session.strategy_name,
+        "fund_codes": session.symbols,
+        "initial_capital": session.initial_capital,
+        "cash": session.cash,
+        "positions": {k: v.get("shares", 0) for k, v in session.positions.items()},
+        "equity_curve": session.equity_curve,
+        "status": session.status,
+        "last_run_date": session.last_run_date,
+        "created_at": session.created_at,
+    }}
