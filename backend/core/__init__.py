@@ -28,4 +28,5 @@ from .exceptions import (
 )
 from .style_drift import StyleDriftDetector, DriftResult
 from .monte_carlo import MonteCarloSimulator, MonteCarloResult, SensitivityAnalyzer
+from .paper import PaperTradeEngine, PaperTradeSession
 from . import factor

@@ -1,86 +1,86 @@
-"""模拟组合跟踪"""
+"""模拟组合跟踪 — 基于 T1ExecutionEngine"""
+from __future__ import annotations
 
-from datetime import datetime, date
+from datetime import datetime
 from typing import Optional, Dict, List
-from ..core.models import Portfolio
+
+from core import T1ExecutionEngine, Position, Direction
 
 
 class PortfolioTracker:
-    """模拟组合跟踪器"""
+    """模拟组合跟踪器 — 基于 T1ExecutionEngine"""
 
     def __init__(self, initial_capital: float = 100000.0):
-        self._portfolio = Portfolio(total_value=initial_capital, cash=initial_capital)
-        self._history: List[dict] = []
+        self._engine = T1ExecutionEngine(confirmation_delay=1)
+        self._engine.set_capital(initial_capital)
         self._initial_capital = initial_capital
+        self._history: List[dict] = []
 
     def update(self, fund_code: str, shares: float, nav: float):
-        """更新持仓"""
-        self._portfolio.nav_values[fund_code] = nav
-        current_value = sum(
-            self._portfolio.nav_values.get(code, 0) * shares
-            for code, shares in self._portfolio.positions.items()
-        ) + self._portfolio.cash
-        self._portfolio.total_value = current_value
+        self._engine._positions[fund_code] = Position(
+            symbol=fund_code, direction=Direction.LONG,
+            volume=shares, avg_price=nav,
+        )
+        self._snapshot(f"update {fund_code}")
 
     def buy(self, fund_code: str, amount: float, nav: float):
-        """买入操作"""
-        if amount > self._portfolio.cash:
-            amount = self._portfolio.cash
+        if amount > self._engine._capital:
+            amount = self._engine._capital
         shares = amount / nav if nav > 0 else 0
-        self._portfolio.positions[fund_code] = self._portfolio.positions.get(fund_code, 0) + shares
-        self._portfolio.cash -= amount
-        self._portfolio.nav_values[fund_code] = nav
-        self._portfolio.total_value = sum(
-            self._portfolio.nav_values.get(c, 0) * s
-            for c, s in self._portfolio.positions.items()
-        ) + self._portfolio.cash
+        self._engine._capital -= amount
+        pos = self._engine._positions.get(fund_code)
+        if pos:
+            total = pos.avg_price * pos.volume + nav * shares
+            pos.volume += shares
+            pos.avg_price = total / pos.volume
+        else:
+            self._engine._positions[fund_code] = Position(
+                symbol=fund_code, direction=Direction.LONG,
+                volume=shares, avg_price=nav,
+            )
         self._snapshot(f"买入 {fund_code} 金额 {amount:.2f}")
 
     def sell(self, fund_code: str, pct: float, nav: float):
-        """卖出操作"""
-        shares = self._portfolio.positions.get(fund_code, 0)
-        sell_shares = shares * pct
+        pos = self._engine._positions.get(fund_code)
+        if not pos:
+            return
+        sell_shares = pos.volume * pct
         amount = sell_shares * nav
-        self._portfolio.positions[fund_code] = shares - sell_shares
-        self._portfolio.cash += amount
-        self._portfolio.nav_values[fund_code] = nav
-        self._portfolio.total_value = sum(
-            self._portfolio.nav_values.get(c, 0) * s
-            for c, s in self._portfolio.positions.items()
-        ) + self._portfolio.cash
+        self._engine._capital += amount
+        pos.volume -= sell_shares
+        if pos.volume <= 1e-9:
+            self._engine._positions.pop(fund_code, None)
         self._snapshot(f"卖出 {fund_code} 比例 {pct:.1%}")
 
     def _snapshot(self, action: str = ""):
         self._history.append({
             "timestamp": datetime.now().isoformat(),
-            "total_value": self._portfolio.total_value,
-            "cash": self._portfolio.cash,
-            "positions": dict(self._portfolio.positions),
+            "total_value": self._engine.portfolio_value,
+            "cash": self._engine._capital,
+            "positions": {s: p.volume for s, p in self._engine._positions.items()},
             "action": action,
         })
 
     def get_status(self) -> dict:
-        """获取当前组合状态"""
+        positions = {}
+        for sym, pos in self._engine._positions.items():
+            if pos.volume > 0:
+                positions[sym] = {
+                    "shares": pos.volume,
+                    "nav": pos.avg_price,
+                    "value": pos.volume * pos.avg_price,
+                }
         return {
             "initial_capital": self._initial_capital,
-            "total_value": self._portfolio.total_value,
-            "cash": self._portfolio.cash,
-            "return_pct": ((self._portfolio.total_value - self._initial_capital) / self._initial_capital * 100) if self._initial_capital > 0 else 0,
-            "position_count": len(self._portfolio.positions),
-            "positions": {
-                code: {
-                    "shares": shares,
-                    "nav": self._portfolio.nav_values.get(code, 0),
-                    "value": shares * self._portfolio.nav_values.get(code, 0),
-                }
-                for code, shares in self._portfolio.positions.items()
-            },
+            "total_value": self._engine.portfolio_value,
+            "cash": self._engine._capital,
+            "return_pct": ((self._engine.portfolio_value - self._initial_capital) / self._initial_capital * 100) if self._initial_capital > 0 else 0,
+            "position_count": len(self._engine._positions),
+            "positions": positions,
             "history_count": len(self._history),
         }
 
-
     def get_extended_status(self, nav_history: Optional[Dict[str, list]] = None) -> dict:
-        """扩展组合状态：在 get_status 基础上增加 KPI 指标"""
         base = self.get_status()
         base["annual_return"] = 0.0
         base["max_drawdown"] = 0.0
@@ -88,28 +88,21 @@ class PortfolioTracker:
         base["volatility"] = 0.0
         base["benchmark_return"] = 0.0
         base["signal_count"] = {"buy": 0, "sell": 0, "hold": 0}
-
-        # 如果有净值历史，计算年化收益和最大回撤
-        if nav_history and self._portfolio.nav_values:
+        if nav_history and self._engine._positions:
             all_navs: list[float] = []
-            for code in self._portfolio.positions:
+            for code in self._engine._positions:
                 navs = nav_history.get(code, [])
                 all_navs.extend(navs)
             if len(all_navs) > 20:
-                # 年化收益（按日频计算，252 个交易日）
-                daily_returns = [(all_navs[i] - all_navs[i-1]) / all_navs[i-1]
-                                 for i in range(1, len(all_navs))]
+                daily_returns = [(all_navs[i] - all_navs[i-1]) / all_navs[i-1] for i in range(1, len(all_navs))]
                 if daily_returns:
                     mean_daily = sum(daily_returns) / len(daily_returns)
                     base["annual_return"] = round(mean_daily * 252 * 100, 2)
-                    base["volatility"] = round(
-                        (sum((r - mean_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5 * (252 ** 0.5) * 100,
-                        2,
-                    )
-                    if base["volatility"] > 0:
-                        base["sharpe_ratio"] = round(mean_daily / (sum((r - mean_daily) ** 2 for r in daily_returns) / len(daily_returns)) ** 0.5 * (252 ** 0.5), 2)
-
-                # 最大回撤
+                    variance = sum((r - mean_daily) ** 2 for r in daily_returns) / len(daily_returns)
+                    vol = variance ** 0.5
+                    base["volatility"] = round(vol * (252 ** 0.5) * 100, 2)
+                    if vol > 0:
+                        base["sharpe_ratio"] = round(mean_daily / vol * (252 ** 0.5), 2)
                 peak = -float("inf")
                 max_dd = 0.0
                 for nav in all_navs:
@@ -117,7 +110,6 @@ class PortfolioTracker:
                     dd = (nav - peak) / peak
                     max_dd = min(max_dd, dd)
                 base["max_drawdown"] = round(max_dd * 100, 2)
-
         return base
 
 

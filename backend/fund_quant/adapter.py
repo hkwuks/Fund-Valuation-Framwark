@@ -1039,6 +1039,30 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
         return result.get("weights", {})
 
 
+class FundCostModelAdapter(CostModel):
+    """Adapt FundCostModel to core.CostModel interface — 薄适配层，逻辑复用 backtest.cost_model"""
+
+    def __init__(self, fund_cost_model=None):
+        from .backtest.cost_model import FundCostModel as _Base
+        self._model = fund_cost_model or _Base()
+
+    def calc(self, signal: Signal, fill: Fill) -> float:
+        from .data.storage import get_fund_meta
+        fund_code = signal.symbol
+        try:
+            meta = get_fund_meta(fund_code) if fund_code else None
+        except Exception:
+            meta = None
+        fund_type = (meta or {}).get("fund_type", "equity")
+        amount = fill.price * fill.volume
+        # 优先从 signal.extra 取持有天数（T1ExecutionEngine 可注入），否则 0
+        holding_days = 0
+        if hasattr(signal, "extra") and isinstance(signal.extra, dict):
+            holding_days = int(signal.extra.get("holding_days", 0) or 0)
+        cost_info = self._model.estimate_trade_cost(fund_type, amount, holding_days, fund_code=fund_code)
+        return cost_info.get("total_cost", 0.0)
+
+
 def demo():
     """基金领域适配自检"""
     from core import BacktestEngine, BacktestConfig
