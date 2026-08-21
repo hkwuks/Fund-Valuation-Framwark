@@ -1,38 +1,34 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # 关闭项目前后端服务
 # 前端: 端口 3000 | 后端: 端口 8000
-# 用法: ./scripts/stop_servers.sh
-
+# 用法: sh stop.sh  或  ./stop.sh
 set -u
 
-FRONT_PORTS=(3000)
-BACK_PORTS=(8000)
-
 stop_port() {
-  local port=$1 label=$2
-  local pids
-  pids=$(lsof -t -i :"$port" 2>/dev/null)
-  if [ -z "$pids" ]; then
-    echo "  ⏹  $label (端口 $port): 未运行"
-    return
+  _sp_port=$1
+  _sp_label=$2
+  _sp_pids=$(lsof -t -i :"$_sp_port" 2>/dev/null || true)
+  if [ -z "$_sp_pids" ]; then
+    echo "  ⏹  $_sp_label (端口 $_sp_port): 未运行"
+    return 0
   fi
-  echo "  🔪 $label (端口 $port): 关闭 PID $pids"
-  kill $pids 2>/dev/null
+  echo "  🔪 $_sp_label (端口 $_sp_port): 关闭 PID $_sp_pids"
+  # shellcheck disable=SC2086
+  kill $_sp_pids 2>/dev/null || true
 }
 
 echo "关闭前后端服务..."
-for p in "${FRONT_PORTS[@]}"; do stop_port "$p" "前端"; done
-for p in "${BACK_PORTS[@]}"; do stop_port "$p" "后端"; done
+stop_port 3000 "前端"
+stop_port 8000 "后端"
 
 sleep 1
 
 # 确认释放
 STILL_RUNNING=""
-for p in "${FRONT_PORTS[@]}"; do
-  lsof -t -i :"$p" >/dev/null 2>&1 && STILL_RUNNING="$STILL_RUNNING $p"
-done
-for p in "${BACK_PORTS[@]}"; do
-  lsof -t -i :"$p" >/dev/null 2>&1 && STILL_RUNNING="$STILL_RUNNING $p"
+for _p in 3000 8000; do
+  if lsof -t -i :"$_p" >/dev/null 2>&1; then
+    STILL_RUNNING="$STILL_RUNNING $_p"
+  fi
 done
 
 if [ -n "$STILL_RUNNING" ]; then
