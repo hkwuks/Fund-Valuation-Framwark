@@ -295,11 +295,31 @@ export const fundQuantApi = {
     initial_capital?: number; strategy_name?: string; params?: Record<string, any>;
   }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/aurora-run', req),
 
-  // — 策略资产配置信号（以策略为中心） —
-  getStrategyAllocation: (fund_codes: string[], capital?: number, params?: Record<string, any>) =>
-    post<{ success: boolean; data: StrategyAllocationResult }>(
-      '/strategy/allocation/current', { fund_codes, capital: capital || 100000, params: params || {} },
-    ),
+// — 策略资产配置信号（以策略为中心） —
+  getStrategyAllocation: (() => {
+    const cache = new Map<string, { exp: number; data: StrategyAllocationResult }>()
+    const inflight = new Map<string, Promise<{ success: boolean; data: StrategyAllocationResult }>>()
+    const TTL = 8000
+    return (fund_codes: string[], capital?: number, params?: Record<string, any>) => {
+      const key = JSON.stringify({ c: [...fund_codes].sort(), p: params || {}, cap: capital || 100000 })
+      const hit = cache.get(key)
+      if (hit && hit.exp > Date.now()) return Promise.resolve({ success: true, data: hit.data })
+      const ex = inflight.get(key)
+      if (ex) return ex
+      const p = post<{ success: boolean; data: StrategyAllocationResult }>(
+        '/strategy/allocation/current', { fund_codes, capital: capital || 100000, params: params || {} },
+      ).then(res => {
+        if (res.success) {
+          cache.set(key, { exp: Date.now() + TTL, data: res.data })
+          if (cache.size > 64) cache.delete(cache.keys().next().value as string)
+        }
+        inflight.delete(key)
+        return res
+      }).catch(e => { inflight.delete(key); throw e })
+      inflight.set(key, p)
+      return p
+    }
+  })(),
 
   // — 新增接口 —
   getAttribution: (fund_codes: string[], start: string, end: string, method = 'brinson') =>

@@ -209,6 +209,31 @@ def get_nav_history(fund_code: str, start_date: Optional[str] = None,
         return [dict(r) for r in rows]
 
 
+def get_nav_histories(fund_codes: List[str], start_date: Optional[str] = None,
+                          end_date: Optional[str] = None) -> Dict[str, List[dict]]:
+    """批量获取多只基金净值历史 — 单次 SQL IN 查询，避免 N 次往返"""
+    if not fund_codes:
+        return {}
+    with get_conn() as conn:
+        placeholders = ",".join("?" for _ in fund_codes)
+        query = f"SELECT * FROM nav_history WHERE fund_code IN ({placeholders})"
+        params: List[Any] = list(fund_codes)
+        if start_date:
+            query += " AND date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND date <= ?"
+            params.append(end_date)
+        query += " ORDER BY fund_code ASC, date ASC"
+        rows = conn.execute(query, params).fetchall()
+        out: Dict[str, List[dict]] = {c: [] for c in fund_codes}
+        for r in rows:
+            d = dict(r)
+            out[d["fund_code"]].append(d)
+        # 去掉空列表的 key 保持与旧行为一致（可选保留）
+        return {k: v for k, v in out.items() if v}
+
+
 def get_latest_nav(fund_code: str) -> Optional[dict]:
     """获取最新净值"""
     with get_conn() as conn:

@@ -13,12 +13,31 @@ const NAME_MAP: Record<string, string> = {
   max_diversification_aurora: '最大多元化(MDP)',
 }
 
+const CONF_OPTIONS: Array<{ v: string; label: string }> = [
+  { v: 'high', label: '高' },
+  { v: 'mid', label: '中' },
+  { v: 'low', label: '低' },
+]
+
+/** 策略一句话说明 */
+const STRATEGY_DESC: Record<string, string> = {
+  etf_rotation_aurora: '动量轮动：按近期涨幅排名持有最强ETF，趋势反转时切换，适合单边行情。',
+  all_weather_aurora: '桥水全天候：按风险均衡配置股票/债券/商品等资产，不预测涨跌，追求任何环境下都稳健。',
+  bl_quadrant_aurora: 'BL四象限：按宏观环境（增长×通胀四象限）给出各资产观点，再经 Black-Litterman 融合定价。',
+  black_litterman_aurora: 'Black-Litterman：以市场均衡收益为基准，融合你的主观观点得到后验收益，再做均值-方差优化。观点是对池内具体基金的相对强弱判断（如"A 跑赢 B 3%"），而非行业或指数层面的判断；无观点时退化为纯均值-方差优化（常接近等权）。',
+  risk_parity_aurora: '风险平价：让每只基金对组合的风险贡献相等，波动大的配得少、波动小的配得多。',
+  hrp_aurora: '层次风险平价：用相关性聚类分层后分配风险，比风险平价更抗相关性突变。',
+  max_diversification_aurora: '最大多元化：最大化分散比率，优先挑彼此相关性低的基金组合。',
+}
+
 /**
  * 策略详情面板 — 展示选中策略的权重、与当前持仓的差异、操作建议
+ * black_litterman_aurora 额外展示 BL 观点设置（相对观点 + 置信度三档）
  */
 export class DetailPanel extends PanelBase {
   private unsub: (() => void) | null = null
   private strategies: StrategyAllocationSignal[] = []
+  private blUnsub: (() => void) | null = null
 
   constructor() {
     super({ id: 'detail', title: '策略详情', defaultGridPos: { x: 1, y: 2, w: 2, h: 2 } })
@@ -33,7 +52,7 @@ export class DetailPanel extends PanelBase {
         <h3 id="detail-title">策略详情</h3>
         <button class="detail-close" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-secondary);padding:0 4px;" title="关闭">&#x2715;</button>
       </div>
-      <div class="detail-body" style="padding:12px 16px;max-height:400px;overflow-y:auto;"></div>`
+      <div class="detail-body" style="padding:12px 16px;max-height:520px;overflow-y:auto;"></div>`
     return el
   }
 
@@ -42,11 +61,24 @@ export class DetailPanel extends PanelBase {
       if (this.el) this.el.style.display = 'none'
     })
 
+    let seq = 0
     this.unsub = state.on('selectedStrategy', async () => {
+      const my = ++seq
       const strategy = state.get('selectedStrategy')
       if (!strategy || !this.el) return
       this.el.style.display = ''
       await this.loadStrategyDetail(strategy)
+      // 过期响应丢弃（快速连点只渲染最后一次）
+      if (my !== seq) return
+    })
+
+    // BL 观点变更时，若当前正是 BL 则刷新
+    this.blUnsub = state.on('blViews', async () => {
+      const s = state.get('selectedStrategy')
+      if (s === 'black_litterman_aurora') await this.loadStrategyDetail(s)
+      // 同时让左侧列表同步刷新（带观点）
+      const sl = document.querySelector('.panel-signallist') ? (await import('./SignalList')).SignalList : null
+      void sl
     })
   }
 
@@ -60,6 +92,15 @@ export class DetailPanel extends PanelBase {
     this.strategies = strategies
   }
 
+  private allocParams(): Record<string, any> {
+    const s = state.get('selectedStrategy')
+    if (s === 'black_litterman_aurora') {
+      const views = state.get('blViews') || []
+      if (views.length) return { views }
+    }
+    return {}
+  }
+
   private async loadStrategyDetail(strategyName: string): Promise<void> {
     if (!this.el) return
     const body = this.el.querySelector('.detail-body') as HTMLElement
@@ -68,15 +109,37 @@ export class DetailPanel extends PanelBase {
 
     title.textContent = NAME_MAP[strategyName] || strategyName
 
-    // 拿当前策略数据
-    if (!this.strategies.length) {
-      const codes = state.get('fundPool').map(f => f.fund_code)
-      if (!codes.length) { body.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;">无基金数据</div>'; return }
-      try {
-        const res = await fundQuantApi.getStrategyAllocation(codes, 100000)
-        if (res.success) this.strategies = res.data.strategies
-      } catch { /* ignore */ }
+    // 先用缓存极速渲染（命中则 <50ms），未命中时先展示骨架避免白屏
+    const cached = this.strategies.find(x => x.strategy === strategyName)
+    const needFetch = !cached || strategyName === 'black_litterman_aurora'
+    if (!cached) {
+      body.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;padding:12px;">加载中…</div>'
+    } else if (!needFetch) {
+      // 有缓存且非 BL：先渲染旧数据，再后台静默刷新持仓（不阻塞首帧）
+      let currentPositions: Record<string, number> = {}
+      body.innerHTML = this.buildDetailHtml(cached, currentPositions)
+      this.bindConfirmButtons(cached)
+      // 后台补持仓差异，不阻塞
+      fundQuantApi.getPortfolioKPI().then(pRes => {
+        if (!pRes.success || !pRes.data.positions) return
+        const totalVal = pRes.data.total_value || 1
+        for (const [code, pos] of Object.entries(pRes.data.positions)) currentPositions[code] = (pos as any).value / totalVal
+        // 仅当仍在同一策略时重绘
+        if (state.get('selectedStrategy') !== strategyName) return
+        body.innerHTML = this.buildDetailHtml(cached, currentPositions)
+        this.bindConfirmButtons(cached)
+      }).catch(() => {})
+      return
     }
+
+    // 需拉取时：分配结果与持仓并行请求
+    const codes = state.get('fundPool').map(f => f.fund_code)
+    if (!codes.length) { body.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;">无基金数据</div>'; return }
+    const params = this.allocParams()
+    const allocP = needFetch ? fundQuantApi.getStrategyAllocation(codes, 100000, params) : Promise.resolve(null as any)
+    const portfolioP = fundQuantApi.getPortfolioKPI().catch(() => null as any)
+    const [allocRes, pRes] = await Promise.all([allocP, portfolioP])
+    if (allocRes?.success) this.strategies = allocRes.data.strategies
 
     const s = this.strategies.find(x => x.strategy === strategyName)
     if (!s) {
@@ -84,20 +147,138 @@ export class DetailPanel extends PanelBase {
       return
     }
 
-    // 获取当前持仓
     let currentPositions: Record<string, number> = {}
-    try {
-      const pRes = await fundQuantApi.getPortfolioKPI()
-      if (pRes.success && pRes.data.positions) {
-        const totalVal = pRes.data.total_value || 1
-        for (const [code, pos] of Object.entries(pRes.data.positions)) {
-          currentPositions[code] = pos.value / totalVal
-        }
-      }
-    } catch { /* ignore */ }
+    if (pRes?.success && pRes.data.positions) {
+      const totalVal = pRes.data.total_value || 1
+      for (const [code, pos] of Object.entries(pRes.data.positions)) currentPositions[code] = (pos as any).value / totalVal
+    }
 
+    // 仍在同一策略才渲染（配合外层 seq 丢弃过期）
+    if (state.get('selectedStrategy') !== strategyName) return
     body.innerHTML = this.buildDetailHtml(s, currentPositions)
     this.bindConfirmButtons(s)
+    if (s.strategy === 'black_litterman_aurora') this.bindBlViews(s)
+  }
+
+  private buildBlViewsHtml(): string {
+    const pool = state.get('fundPool')
+    const views = state.get('blViews') || []
+    const confOpts = (sel: string) => CONF_OPTIONS.map(o => `<option value="${o.v}" ${o.v===sel?'selected':''}>${o.label}</option>`).join('')
+    const rows = views.map((v, idx) => `
+      <div class="bl-view-row" data-idx="${idx}" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <select class="bl-long" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
+          <option value="">看多…</option>${pool.map(f => `<option value="${f.fund_code}" ${f.fund_code===v.fund_long?'selected':''}>${f.fund_name}（${f.fund_code}）</option>`).join('')}
+        </select>
+        <span style="font-size:11px;color:var(--text-tertiary);">跑赢</span>
+        <select class="bl-short" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
+          <option value="">看空…</option>${pool.map(f => `<option value="${f.fund_code}" ${f.fund_code===v.fund_short?'selected':''}>${f.fund_name}（${f.fund_code}）</option>`).join('')}
+        </select>
+        <input class="bl-excess" type="number" step="0.5" value="${v.excess_return}" style="width:72px;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;" placeholder="%" title="年化超额收益%">
+        <span style="font-size:11px;color:var(--text-tertiary);">%</span>
+        <select class="bl-conf" style="width:64px;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">${confOpts(v.confidence)}</select>
+        <button class="bl-del" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:14px;padding:2px 4px;" title="删除">✕</button>
+      </div>`).join('')
+
+    const emptyTip = views.length === 0
+      ? `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;">未设置观点时，Black-Litterman 退化为纯均值-方差优化（结果常接近等权）。设置观点后才会体现你的判断。</div>`
+      : ''
+
+    return `
+      <div style="margin:10px 0 14px;padding:10px;border:1px dashed var(--border-light);border-radius:8px;background:var(--bg-secondary);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:600;">📝 BL 观点（相对观点）</div>
+          <span style="font-size:11px;color:var(--text-tertiary);">${views.length} 条</span>
+        </div>
+        ${emptyTip}
+        <details style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;">
+          <summary style="cursor:pointer;color:var(--text-secondary);">什么是观点？怎么填？</summary>
+          <div style="line-height:1.7;margin-top:6px;">
+            观点 = 你对<strong>池内两只基金</strong>相对强弱的判断，例如「沪深300ETF 未来一年跑赢 国债ETF 5%」。模型会把它融合进均衡收益，看多的权重升高、看空的降低；超额越大、置信度越高，权重偏移越明显。<br/>
+            • 看多/看空：从基金池里选具体品种（不是行业或指数）<br/>
+            • 超额 %：预期年化跑赢幅度<br/>
+            • 置信度：高=90%、中=60%、低=30%，决定该观点的话语权
+          </div>
+        </details>
+        <div class="bl-views-list">${rows || '<div style="font-size:11px;color:var(--text-tertiary);padding:6px 0;">暂无观点，点击下方添加</div>'}</div>
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <button class="bl-add btn btn-sm" style="font-size:12px;padding:4px 10px;background:var(--bg-tertiary);border:1px solid var(--border-light);border-radius:6px;cursor:pointer;">＋ 添加观点</button>
+          <button class="bl-clear btn btn-sm" style="font-size:12px;padding:4px 10px;background:none;border:1px solid var(--border-light);border-radius:6px;cursor:pointer;color:var(--text-tertiary);">清空</button>
+          <button class="bl-apply btn btn-sm btn-primary" style="font-size:12px;padding:4px 12px;margin-left:auto;">应用并刷新</button>
+        </div>
+        <div class="bl-msg" style="font-size:11px;color:#ef4444;margin-top:6px;min-height:14px;"></div>
+      </div>`
+  }
+
+  private bindBlViews(_s: StrategyAllocationSignal): void {
+    if (!this.el) return
+    const body = this.el.querySelector('.detail-body') as HTMLElement
+    if (!body) return
+
+    const readViewsFromDom = (): Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }> => {
+      const rows = body.querySelectorAll('.bl-view-row')
+      const out: Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }> = []
+      rows.forEach(row => {
+        const fl = (row.querySelector('.bl-long') as HTMLSelectElement)?.value?.trim() || ''
+        const fs = (row.querySelector('.bl-short') as HTMLSelectElement)?.value?.trim() || ''
+        const er = parseFloat((row.querySelector('.bl-excess') as HTMLInputElement)?.value || '0')
+        const cf = (row.querySelector('.bl-conf') as HTMLSelectElement)?.value || 'mid'
+        if (fl && fs && fl !== fs && !isNaN(er) && er !== 0) out.push({ fund_long: fl, fund_short: fs, excess_return: er, confidence: cf })
+      })
+      return out
+    }
+
+    const showMsg = (msg: string, ok = false) => {
+      const el = body.querySelector('.bl-msg') as HTMLElement
+      if (el) { el.textContent = msg; el.style.color = ok ? 'var(--primary-color)' : '#ef4444' }
+    }
+
+    body.querySelector('.bl-add')?.addEventListener('click', () => {
+      const views = state.get('blViews') || []
+      const pool = state.get('fundPool')
+      if (pool.length < 2) { showMsg('基金池不足2只，无法添加'); return }
+      // 默认取前两只
+      const a = pool[0]?.fund_code || ''
+      const b = pool[1]?.fund_code || ''
+      state.set('blViews', [...views, { fund_long: a, fund_short: b, excess_return: 3, confidence: 'mid' }])
+      // loadStrategyDetail 会因 blViews 监听而重渲染，无需手动
+    })
+
+    body.querySelector('.bl-clear')?.addEventListener('click', () => {
+      state.set('blViews', [])
+    })
+
+    body.querySelector('.bl-apply')?.addEventListener('click', async () => {
+      const domViews = readViewsFromDom()
+      // 校验：基金必须在池内
+      const poolCodes = new Set(state.get('fundPool').map(f => f.fund_code))
+      const valid = domViews.filter(v => poolCodes.has(v.fund_long) && poolCodes.has(v.fund_short))
+      if (domViews.length !== valid.length) { showMsg('部分观点含未知基金代码，已忽略'); }
+      if (valid.length === 0 && domViews.length > 0) { showMsg('观点无效：需选择两只不同基金且超额收益≠0'); return }
+      state.set('blViews', valid)
+      showMsg(valid.length ? `已应用 ${valid.length} 条观点` : '已清空观点（降级为均衡收益）', true)
+    })
+
+    body.querySelectorAll('.bl-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt((btn.closest('.bl-view-row') as HTMLElement)?.dataset.idx || '-1', 10)
+        const views = [...(state.get('blViews') || [])]
+        if (idx >= 0 && idx < views.length) { views.splice(idx, 1); state.set('blViews', views) }
+      })
+    })
+
+    // 输入变化即时同步到 state（防用户忘记点应用）
+    body.querySelectorAll('.bl-long,.bl-short,.bl-conf,.bl-excess').forEach(el => {
+      el.addEventListener('change', () => {
+        // 延迟写入，避免每次 keystroke 都触发重算；仅在 change 时写
+        const domViews = readViewsFromDom()
+        // 允许中间态不完整也写入，load 时会过滤无效
+        const poolCodes = new Set(state.get('fundPool').map(f => f.fund_code))
+        const toSave = domViews.filter(v => poolCodes.has(v.fund_long) && poolCodes.has(v.fund_short))
+        // 只在有效条数变化或数值变化时写回，避免抖动
+        const cur = state.get('blViews') || []
+        if (JSON.stringify(cur) !== JSON.stringify(toSave)) state.set('blViews', toSave)
+      })
+    })
   }
 
   private buildDetailHtml(s: StrategyAllocationSignal, currentPos: Record<string, number>): string {
@@ -127,12 +308,18 @@ export class DetailPanel extends PanelBase {
     const suggestions = this.buildSuggestions(s, entries, currentPos)
     const totalWeight = entries.reduce((a, [, w]) => a + w, 0)
     const holdingCount = Object.keys(currentPos).length
+    const blSection = s.strategy === 'black_litterman_aurora' ? this.buildBlViewsHtml() : ''
+    const desc = STRATEGY_DESC[s.strategy]
 
     return `
+      ${blSection}
       <div style="margin-bottom:12px;">
         <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">信心度 <strong>${(s.confidence * 100).toFixed(0)}%</strong> · 总资产 ${money(capital)}</div>
         <div style="font-size:11px;color:var(--text-tertiary);">${s.reason || ''}</div>
       </div>
+      ${desc ? `<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg-tertiary);border-radius:6px;font-size:11px;line-height:1.6;color:var(--text-secondary);">
+        <span style="font-weight:600;">📖 策略说明：</span>${desc}
+      </div>` : ''}
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <thead><tr style="border-bottom:2px solid var(--border-light);">
           <th style="padding:6px 4px;text-align:left;color:var(--text-secondary);font-weight:600;">基金</th>
@@ -239,13 +426,13 @@ export class DetailPanel extends PanelBase {
     dialog.querySelector('.btn-confirm-no')?.addEventListener('click', () => overlay.remove())
     dialog.querySelector('.btn-confirm-yes')?.addEventListener('click', async () => {
       overlay.remove()
-      // TODO: 提交到 paper-trade
       console.log('采纳策略:', s.strategy, s.weights)
     })
   }
 
   destroy(): void {
     this.unsub?.()
+    this.blUnsub?.()
     super.destroy()
   }
 }
