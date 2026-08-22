@@ -958,6 +958,7 @@ class AuroraBlackLitterman(_AuroraAllocationBase):
         "tau": 0.05,
         "max_weight": 0.4,
         "min_weight": 0.05,
+        "views": [],
     }
 
     def _compute_weights(self, nav_series, codes):

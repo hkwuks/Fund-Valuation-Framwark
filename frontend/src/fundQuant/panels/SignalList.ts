@@ -35,9 +35,17 @@ export class SignalList extends PanelBase {
     return el
   }
 
+  private blUnsub: (() => void) | null = null
+
   protected afterMount(): void {
     this.el?.querySelector('.btn-refresh-alloc')?.addEventListener('click', () => this.refresh())
+    this.blUnsub = state.on('blViews', () => this.refresh())
     this.refresh()
+  }
+
+  private allocParams(): Record<string, any> {
+    const views = state.get('blViews') || []
+    return views.length ? { views } : {}
   }
 
   async refresh(): Promise<void> {
@@ -52,7 +60,8 @@ export class SignalList extends PanelBase {
     }
 
     try {
-      const res = await fundQuantApi.getStrategyAllocation(codes, 100000)
+      const params = this.allocParams()
+      const res = await fundQuantApi.getStrategyAllocation(codes, 100000, params)
       if (!res.success) throw new Error('请求失败')
       this.strategies = res.data.strategies
       if (!this.strategies.length) {
@@ -96,5 +105,8 @@ export class SignalList extends PanelBase {
     }
   }
 
-  destroy(): void { super.destroy() }
+  destroy(): void {
+    this.blUnsub?.()
+    super.destroy()
+  }
 }

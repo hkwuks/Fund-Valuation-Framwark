@@ -20,6 +20,7 @@ class BlackLittermanStrategy(FundStrategyBase):
         "max_weight": 0.4,
         "min_weight": 0.05,
         "lookback_days": 756,
+        "views": [],  # 用户观点: [{fund_long, fund_short, excess_return, confidence}]
     }
     applicable_fund_types = []
     min_history_days = 365
@@ -181,14 +182,74 @@ class BlackLittermanStrategy(FundStrategyBase):
         return weights
 
     # ── 观点生成 ──────────────────────────────────────────────
+    # 置信度三档映射
+    _CONF_MAP = {"high": 0.9, "mid": 0.6, "low": 0.3, "高": 0.9, "中": 0.6, "低": 0.3}
+
+    def _parse_confidence(self, v) -> float:
+        if isinstance(v, str):
+            return self._CONF_MAP.get(v, 0.6)
+        try:
+            f = float(v)
+            return max(0.05, min(0.95, f if f <= 1 else f / 100))
+        except Exception:
+            return 0.6
 
     def _build_views(self, codes: List[str]) -> Tuple[dict, bool]:
-        """从策略信号构建 Black-Litterman 观点
+        """构建 Black-Litterman 观点 — 优先使用 params.views（用户相对观点），否则回退信号驱动
+
+        views: List[{fund_long, fund_short, excess_return, confidence}]
+          fund_long/fund_short: 基金代码（必须在 codes 内）
+          excess_return: 年化超额收益（小数，如 0.03 表示 3%；>1 时按百分比处理）
+          confidence: high/mid/low 或 0~1 数值
 
         Returns:
             (views_dict, has_views)
             views_dict = {"P": ndarray, "Q": ndarray, "k": int, "omegas": ndarray}
         """
+        user_views: list = self.params.get("views") or []
+        if user_views:
+            code_to_idx = {c: i for i, c in enumerate(codes)}
+            n = len(codes)
+            rows, qs, confs = [], [], []
+            for v in user_views:
+                fl = (v.get("fund_long") or v.get("long") or "").strip()
+                fs = (v.get("fund_short") or v.get("short") or "").strip()
+                if not fl or not fs or fl not in code_to_idx or fs not in code_to_idx:
+                    continue
+                try:
+                    er = float(v.get("excess_return", v.get("excess", 0)))
+                except Exception:
+                    continue
+                # >1 视为百分比输入
+                if abs(er) > 1:
+                    er = er / 100
+                if abs(er) < 1e-6:
+                    continue
+                q = er / 252  # 年化 -> 日度
+                row = np.zeros(n)
+                row[code_to_idx[fl]] = 1.0
+                row[code_to_idx[fs]] = -1.0
+                rows.append(row)
+                qs.append(q)
+                confs.append(self._parse_confidence(v.get("confidence", "mid")))
+            if rows:
+                P = np.vstack(rows)
+                Q = np.array(qs)
+                confidences = np.array(confs)
+                tau = self.params["tau"]
+                cov = self._state.get("_cov_matrix")
+                if cov is not None:
+                    diag = np.array([float(p @ cov @ p) for p in P])
+                    # Idzorek 校准：Ω = diag((1/c -1) * τ * PΣP')
+                    diag = np.maximum(diag, 1e-12)
+                    omegas = np.diag((1.0 / np.maximum(confidences, 0.05) - 1.0) * tau * diag)
+                else:
+                    omegas = self._idzorek_omega(P, Q, confidences, tau)
+                return {"P": P, "Q": Q, "omegas": omegas, "k": len(rows)}, True
+            # 有 views 但全部无效 -> 视为无观点，降级
+            return {}, False
+
+        # 回退：从策略信号构建
         signals: List[FundSignal] = self._state.get("active_signals", [])
         if not signals:
             return {}, False

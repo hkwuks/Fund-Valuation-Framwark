@@ -195,31 +195,34 @@ class StrategyAllocationRequest(BaseModel):
     params: dict = {}
 
 def _load_recent_navs(fund_codes: list[str], days: int = 250) -> dict[str, list[dict]]:
-    """加载每个基金最近 days 个交易日的净值（按日期升序）"""
-    from ..fund_quant.data.storage import get_nav_history
-    nav_dict: dict[str, list[dict]] = {}
+    """加载每个基金最近 days 个交易日的净值（按日期升序）— 单次批量查询"""
+    if not fund_codes:
+        return {}
+    from ..fund_quant.data.storage import get_nav_histories
+    all_navs = get_nav_histories(fund_codes)
+    out: dict[str, list[dict]] = {}
     for code in fund_codes:
-        navs = get_nav_history(code)
-        if not navs:
-            continue
+        navs = all_navs.get(code, [])
         recent = navs[-days:]
-        nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)} for r in recent if r.get("nav")]
-    return nav_dict
+        out[code] = [{"date": r["date"], "nav": r.get("nav", 0)} for r in recent if r.get("nav")]
+    return out
 
 
 def _load_nav_series(fund_codes: list[str], cutoff_date: str | None = None,
                      lookback_days: int = 0) -> dict[str, list[float]]:
-    """加载基金净值序列（纯 float 列表），供 _compute_weights 使用
+    """加载基金净值序列（纯 float 列表），供 _compute_weights 使用 — 单次批量查询
 
     lookback_days > 0 时只保留最近 lookback_days 个交易日的净值，
     避免优化器使用过多历史数据导致权重趋同。
     """
-    from ..fund_quant.data.storage import get_nav_history
+    if not fund_codes:
+        return {}
+    from ..fund_quant.data.storage import get_nav_histories
+    # cutoff_date 由内存过滤，避免为每个策略各做一次 SQL；全量一次取回后切片
+    all_navs = get_nav_histories(fund_codes)
     nav_series: dict[str, list[float]] = {}
     for code in fund_codes:
-        navs = get_nav_history(code)
-        if not navs:
-            continue
+        navs = all_navs.get(code, [])
         if cutoff_date:
             navs = [r for r in navs if r.get("date", "") <= cutoff_date]
         vals = [float(r["nav"]) for r in navs if r.get("nav") and float(r["nav"]) > 0]
@@ -357,33 +360,142 @@ def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
             "top_holdings": top_holdings}
 
 
+# 内存缓存：fund_codes+params 指纹 -> (expire_ts, response)
+_alloc_cache: dict[str, tuple[float, dict]] = {}
+_ALLOC_TTL = 8.0  # 秒 — 点击切换策略时命中
+
+def _alloc_cache_key(fund_codes: list[str], params: dict, capital: float) -> str:
+    import hashlib, json
+    raw = json.dumps({"codes": sorted(fund_codes), "params": params, "capital": capital}, sort_keys=True, ensure_ascii=False)
+    return hashlib.md5(raw.encode()).hexdigest()
+
+def _etf_rotation_from_nav(nav_dict: dict[str, list[dict]], params: dict, capital: float) -> dict:
+    """基于已取回的 nav_dict 计算动量，无额外 DB"""
+    import numpy as np
+    momentum_days = int(params.get("momentum_days", 25))
+    top_n = int(params.get("top_n", 1))
+    buy_th = float(params.get("buy_threshold", 0.0))
+    scores: dict[str, float] = {}
+    for code, records in nav_dict.items():
+        vals = [r["nav"] for r in records if r["nav"] > 0]
+        if len(vals) < momentum_days + 5:
+            continue
+        recent = vals[-(momentum_days + 5):]
+        arr = np.array(recent, dtype=np.float64)
+        log_p = np.log(arr)
+        x = np.arange(len(log_p))
+        slope, _ = np.polyfit(x, log_p, 1)
+        annualized = np.exp(slope * 250) - 1
+        y_pred = slope * x + (np.mean(log_p) - slope * np.mean(x))
+        ss_res = float(np.sum((log_p - y_pred) ** 2))
+        ss_tot = float(np.sum((log_p - np.mean(log_p)) ** 2))
+        r2 = max(0.0, min(1.0, 1 - (ss_res / max(ss_tot, 1e-10))))
+        scores[code] = annualized * r2
+    if not scores:
+        return {"strategy": "etf_rotation_aurora", "direction": "hold", "weights": {},
+                "confidence": 0, "reason": "净值数据不足", "top_holdings": [], "buy_amounts": {},
+                "momentum_rank": []}
+    ranked = sorted(scores, key=lambda c: scores[c], reverse=True)
+    momentum_rank = [{"fund_code": c, "score": round(scores[c], 4), "rank": i + 1}
+                     for i, c in enumerate(ranked) if scores[c] != 0]
+    top = ranked[:top_n]
+    if scores[top[0]] < buy_th:
+        return {"strategy": "etf_rotation_aurora", "direction": "hold", "weights": {},
+                "confidence": 0, "buy_amounts": {},
+                "reason": f"最高动量 {scores[top[0]]:.4f} 低于阈值 {buy_th}，空仓持币",
+                "top_holdings": [], "momentum_rank": momentum_rank}
+    weight = 1.0 / len(top)
+    top_holdings = [{"fund_code": c, "weight": round(weight, 4), "score": round(scores[c], 4)} for c in top]
+    buy_amounts = {c: round(capital * weight, 2) for c in top}
+    return {"strategy": "etf_rotation_aurora", "direction": "buy",
+            "weights": {c: round(weight, 4) for c in top},
+            "confidence": min(abs(scores[top[0]]) * 10, 1.0),
+            "capital": round(capital, 2), "buy_amounts": buy_amounts,
+            "reason": f"动量Top{top_n}: {'  '.join(f'{c}({scores[c]:.3f})' for c in top)}",
+            "top_holdings": top_holdings, "momentum_rank": momentum_rank}
+
+def _aurora_from_nav(strategy_name: str, nav_series: dict[str, list[float]], valid_codes: list[str],
+                     params: dict, capital: float) -> dict:
+    """基于已取回的 nav_series 计算权重，无额外 DB"""
+    try:
+        import backend.fund_quant.adapter as _adapter  # noqa: F401
+        from core.strategy import StrategyRegistry
+        cls = StrategyRegistry.get(strategy_name)
+        strategy = cls()
+        strategy.params.update(params)
+    except Exception as e:
+        return {"strategy": strategy_name, "direction": "hold", "weights": {}, "confidence": 0,
+                "reason": f"策略加载失败: {e}", "top_holdings": [], "buy_amounts": {}}
+    if len(valid_codes) < 2:
+        return {"strategy": strategy_name, "direction": "hold", "weights": {}, "confidence": 0,
+                "reason": "净值数据不足", "top_holdings": [], "buy_amounts": {}}
+    result = strategy._compute_weights(nav_series, valid_codes)
+    weights = result or {}
+    top_holdings = [{"fund_code": c, "weight": w} for c, w in sorted(weights.items(), key=lambda kv: -kv[1]) if w > 0]
+    buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
+    return {"strategy": strategy_name, "direction": "buy" if weights else "hold",
+            "weights": weights, "confidence": 0.7, "capital": round(capital, 2),
+            "buy_amounts": buy_amounts, "reason": f"{strategy_name} 配置", "top_holdings": top_holdings}
+
 @router.post("/strategy/allocation/current")
 async def strategy_allocation_current(req: StrategyAllocationRequest):
-    """策略资产配置信号（按需实时计算，以策略为中心）"""
+    """策略资产配置信号 — 单次批量取数 + 结果缓存，命中时 <20ms"""
+    import time
     fund_codes = req.fund_codes or []
     capital = req.capital or 100000
-    signals = []
+    if not fund_codes:
+        return {"success": True, "data": {"strategies": [], "fund_codes": []}}
+
+    # 缓存命中直接返回
+    ckey = _alloc_cache_key(fund_codes, req.params, capital)
+    now = time.monotonic()
+    hit = _alloc_cache.get(ckey)
+    if hit and hit[0] > now:
+        return hit[1]
+
+    # 单次批量取数，全部策略复用
+    from ..fund_quant.data.storage import get_nav_histories
+    # 8s TTL 内并发请求合并由上层缓存兜住；此处只做一次 IN 查询
+    all_navs_raw = await asyncio.to_thread(get_nav_histories, fund_codes)
+
+    # etf_rotation 用最近 35 天
+    etf_recent = {c: [{"date": r["date"], "nav": r.get("nav", 0)} for r in (all_navs_raw.get(c, [])[-35:]) if r.get("nav")] for c in fund_codes}
+    # allocation 策略用最近 756 天的 float 序列
+    lookback = 756
+    nav_series_all: dict[str, list[float]] = {}
+    for c in fund_codes:
+        vals = [float(r["nav"]) for r in all_navs_raw.get(c, []) if r.get("nav") and float(r["nav"]) > 0]
+        if len(vals) >= 20:
+            nav_series_all[c] = vals[-lookback:]
+    valid_codes_all = [c for c in fund_codes if c in nav_series_all]
+
+    signals: list[dict] = []
+    # 每个策略独立 try，互不影响
     try:
-        signals.append(_etf_rotation_current_signal(fund_codes, req.params, capital))
+        signals.append(_etf_rotation_from_nav(etf_recent, req.params, capital))
     except Exception as e:
-        signals.append({"strategy": "etf_rotation_aurora", "direction": "hold",
-                        "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
-                        "top_holdings": [], "buy_amounts": {}, "momentum_rank": []})
+        signals.append({"strategy": "etf_rotation_aurora", "direction": "hold", "weights": {}, "confidence": 0,
+                        "reason": f"计算异常: {e}", "top_holdings": [], "buy_amounts": {}, "momentum_rank": []})
+    # all_weather 不依赖 nav_series（固定模板），单独处理
     try:
         signals.append(_all_weather_current_signal(fund_codes, req.params, capital))
     except Exception as e:
-        signals.append({"strategy": "all_weather_aurora", "direction": "hold",
-                        "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
-                        "top_holdings": [], "buy_amounts": {}})
-    for sn in ("bl_quadrant_aurora", "black_litterman_aurora", "risk_parity_aurora",
-               "hrp_aurora", "max_diversification_aurora"):
+        signals.append({"strategy": "all_weather_aurora", "direction": "hold", "weights": {}, "confidence": 0,
+                        "reason": f"计算异常: {e}", "top_holdings": [], "buy_amounts": {}})
+    for sn in ("bl_quadrant_aurora", "black_litterman_aurora", "risk_parity_aurora", "hrp_aurora", "max_diversification_aurora"):
         try:
-            signals.append(_allocation_current_signal_aurora(sn, fund_codes, req.params, capital))
+            signals.append(_aurora_from_nav(sn, nav_series_all, valid_codes_all, req.params, capital))
         except Exception as e:
-            signals.append({"strategy": sn, "direction": "hold",
-                            "weights": {}, "confidence": 0, "reason": f"计算异常: {e}",
-                            "top_holdings": [], "buy_amounts": {}})
-    return {"success": True, "data": {"strategies": signals, "fund_codes": fund_codes}}
+            signals.append({"strategy": sn, "direction": "hold", "weights": {}, "confidence": 0,
+                            "reason": f"计算异常: {e}", "top_holdings": [], "buy_amounts": {}})
+
+    resp = {"success": True, "data": {"strategies": signals, "fund_codes": fund_codes}}
+    _alloc_cache[ckey] = (now + _ALLOC_TTL, resp)
+    # 简单 LRU：超过 64 条淘汰最旧
+    if len(_alloc_cache) > 64:
+        oldest = min(_alloc_cache, key=lambda k: _alloc_cache[k][0])
+        _alloc_cache.pop(oldest, None)
+    return resp
 
 
 # ── 回测 ──
@@ -793,26 +905,31 @@ async def evaluate_pool(req: EvaluatePoolRequest):
 
 @router.get("/portfolio/status")
 async def portfolio_status():
-    """模拟组合状态（扩展版 KPI）"""
+    """模拟组合状态（扩展版 KPI）— 批量取数，避免逐仓位往返"""
     from ..fund_quant.portfolio.tracker import portfolio_tracker
     status = await asyncio.to_thread(portfolio_tracker.get_status)
 
-    # 尝试获取净值历史计算年化/回撤
+    # 净值批量取回，供 extended_status 计算年化/回撤
     try:
-        nav_history: dict[str, list] = {}
-        for code in status.get("positions", {}):
-            navs = await asyncio.to_thread(get_nav_history, code)
-            nav_history[code] = [p.get("nav", 0) for p in (navs or []) if p.get("nav")]
-        status = await asyncio.to_thread(portfolio_tracker.get_extended_status, nav_history)
+        codes = list(status.get("positions", {}).keys())
+        if codes:
+            from ..fund_quant.data.storage import get_nav_histories
+            all_navs = await asyncio.to_thread(get_nav_histories, codes)
+            nav_history: dict[str, list] = {
+                c: [r.get("nav", 0) for r in (all_navs.get(c, []) or []) if r.get("nav")]
+                for c in codes
+            }
+            status = await asyncio.to_thread(portfolio_tracker.get_extended_status, nav_history)
+        else:
+            status = await asyncio.to_thread(portfolio_tracker.get_extended_status, {})
     except Exception:
         pass
 
-    # 获取信号计数
+    # 信号计数保持单次查询
     try:
         signals = await asyncio.to_thread(partial(get_signals, limit=1000))
         buy = sum(1 for s in signals if s.get("direction") == "buy")
         sell = sum(1 for s in signals if s.get("direction") == "sell")
-        hold = sum(1 for s in signals if s.get("direction") == "hold") if False else 0
         status["signal_count"] = {"buy": buy, "sell": sell, "hold": 0}
     except Exception:
         pass

@@ -75,6 +75,10 @@ export class StrategyBacktest extends PanelBase {
       }
       const params: Record<string, any> = {}
       if (strategy === 'all_weather_aurora') params.mode = modeSel?.value || 'fixed'
+      if (strategy === 'black_litterman_aurora') {
+        const views = (state.get('blViews') as any[]) || []
+        if (views.length) params.views = views
+      }
 
       const res = await fundQuantApi.runAuroraBacktest({
         fund_codes: codes, start_date: startInput?.value || '2021-01-01', end_date: end,

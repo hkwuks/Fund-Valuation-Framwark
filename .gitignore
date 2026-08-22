@@ -38,9 +38,9 @@ logs/
 *.log
 
 # Data files (contain user portfolio data)
-data/funds.json
-data/backend/
-data/
+/data/funds.json
+/data/backend/
+/data/
 
 # Environment variables
 .env
@@ -63,7 +63,6 @@ htmlcov/
 
 # Test code (not committed)
 backend/gold/tests/
-data/
 frontend/node_modules/
 
 # Frontend ignore file (should not be committed)

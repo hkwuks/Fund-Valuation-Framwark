@@ -75,6 +75,7 @@ export interface GlobalState {
   loading: LoadingState
   researchPanel: ResearchState
   customParams: Record<string, Record<string, any>>
+  blViews: Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }>
 }
 
 type StateKey = keyof GlobalState
@@ -132,6 +133,15 @@ const DEFAULT_LAYOUT: LayoutConfig = {
   },
 }
 
+const BL_VIEWS_KEY = 'bl_views'
+function loadBlViews(): GlobalState['blViews'] {
+  try {
+    const raw = localStorage.getItem(BL_VIEWS_KEY)
+    if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) return arr }
+  } catch {}
+  return []
+}
+
 // 单例
 export const state = new EventEmitter({
   fundPool: [],
@@ -146,4 +156,13 @@ export const state = new EventEmitter({
   loading: { isRefreshing: false, lastRefreshTime: null, errors: {} },
   researchPanel: { visible: false, activeTab: 'exposure', fundCode: null, signal: null },
   customParams: {},
+  blViews: loadBlViews(),
 })
+
+const _origSet = state.set.bind(state)
+state.set = ((key: any, value: any) => {
+  if (key === 'blViews') {
+    try { localStorage.setItem(BL_VIEWS_KEY, JSON.stringify(value)) } catch {}
+  }
+  return (_origSet as any)(key, value)
+}) as any
