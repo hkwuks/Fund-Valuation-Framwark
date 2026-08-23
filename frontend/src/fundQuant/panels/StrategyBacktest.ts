@@ -11,7 +11,7 @@ export class StrategyBacktest extends PanelBase {
   private running = false
 
   constructor() {
-    super({ id: 'strategy-backtest', title: '策略回测', defaultGridPos: { x: 4, y: 3, w: 3, h: 1 } })
+    super({ id: 'strategy-backtest', title: '策略回测', defaultGridPos: { x: 0, y: 6, w: 3, h: 1 } })
   }
 
   render(): HTMLElement {
