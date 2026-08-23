@@ -84,12 +84,17 @@ class FundCostModel:
                             holding_days: int,
                             is_c_class: bool = False,
                             fund_code: Optional[str] = None) -> Dict[str, float]:
-        """估算一次交易的综合成本"""
+        """估算一次交易的综合成本
+
+        注意：管理费/托管费已在基金净值中逐日内扣（NAV 为扣费后值），
+        回测按 NAV 成交时再计一次会重复扣费，故此处只计显性费用
+        （申购费 + 赎回费）。mgmt/custody 仅作披露用途。
+        """
         sub_fee = self.get_subscription_fee(fund_type, amount, fund_code)
         red_fee = self.get_redemption_fee(fund_type, holding_days, is_c_class) * amount
         mgmt_fee = self.get_management_fee(fund_type) * amount * holding_days / 365
         custody_fee = self.get_custody_fee(fund_type) * amount * holding_days / 365
-        total = sub_fee + red_fee + mgmt_fee + custody_fee
+        total = sub_fee + red_fee  # ponytail: NAV 已内扣 mgmt/custody，不重复计入
         return {
             "subscription_fee": round(sub_fee, 2),
             "redemption_fee": round(red_fee, 2),

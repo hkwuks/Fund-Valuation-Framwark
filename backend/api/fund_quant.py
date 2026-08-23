@@ -536,6 +536,8 @@ def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
     engine = BacktestEngine(BacktestConfig(initial_capital=initial_capital))
     engine.set_strategy(strategy)
     engine.set_executor(execution)
+    from ..fund_quant.adapter import FundCostModelAdapter
+    engine.set_cost_model(FundCostModelAdapter())
     engine.set_data(all_points)
     report = engine.run()
 
@@ -637,6 +639,8 @@ def _run_backtest_sync(config_dict: dict) -> str:
     engine = BacktestEngine(BacktestConfig(initial_capital=initial_capital))
     engine.set_strategy(strategy)
     engine.set_executor(execution)
+    from ..fund_quant.adapter import FundCostModelAdapter
+    engine.set_cost_model(FundCostModelAdapter())
     engine.set_data(all_points)
 
     report = engine.run()
@@ -1595,6 +1599,7 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
     from core import BacktestEngine, BacktestConfig, BacktestReport
     from core import T1ExecutionEngine, FundNavPoint, Direction
     from core.strategy import StrategyRegistry
+    from ..fund_quant.adapter import FundCostModelAdapter
     import numpy as np
 
     # 1. 加载多基金净值
@@ -1633,6 +1638,7 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
     engine = BacktestEngine(BacktestConfig(initial_capital=req.initial_capital))
     engine.set_strategy(strategy)
     engine.set_executor(execution)
+    engine.set_cost_model(FundCostModelAdapter())
     engine.set_data(all_points)
 
     # 4. 运行

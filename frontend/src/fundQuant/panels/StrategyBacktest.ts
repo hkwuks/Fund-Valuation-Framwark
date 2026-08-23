@@ -85,7 +85,12 @@ export class StrategyBacktest extends PanelBase {
         initial_capital: 100000, strategy_name: strategy, params,
       })
       if (!res.success) throw new Error('回测失败')
-      this.renderMetrics(res.data)
+      // 等权买入持有基准（并行拉取；失败不阻塞策略结果展示）
+      const base = await fundQuantApi.runEqualWeightBacktest({
+        fund_codes: codes, start_date: startInput?.value || '2021-01-01', end_date: end,
+        initial_capital: 100000,
+      }).catch(() => null)
+      this.renderMetrics(res.data, base?.data ?? null)
     } catch (e: any) {
       this.showError(e?.message || '回测失败')
     } finally {
@@ -94,7 +99,7 @@ export class StrategyBacktest extends PanelBase {
     }
   }
 
-  private renderMetrics(d: AuroraBacktestResult): void {
+  private renderMetrics(d: AuroraBacktestResult, base: AuroraBacktestResult | null): void {
     const metricsEl = this.el?.querySelector('.sb-metrics')
     const msgEl = this.el?.querySelector('.sb-msg')
     if (!metricsEl) return
@@ -107,8 +112,16 @@ export class StrategyBacktest extends PanelBase {
       hrp_aurora: '层次风险平价(HRP)',
       max_diversification_aurora: '最大多元化(MDP)',
     }
-    const base = names[d.strategy] || d.strategy
-    const name = d.strategy === 'all_weather_aurora' ? `${base}(${d.mode || 'fixed'})` : base
+    const stratName = names[d.strategy] || d.strategy
+    const name = d.strategy === 'all_weather_aurora' ? `${stratName}(${d.mode || 'fixed'})` : stratName
+    // 基准对比行：策略 vs 等权买入持有（含费用）
+    const cmp = base && [
+      { label: '总收益', s: d.total_return, b: base.total_return, pct: true },
+      { label: '夏普', s: d.sharpe_ratio, b: base.sharpe_ratio },
+      { label: '最大回撤', s: d.max_drawdown, b: base.max_drawdown, pct: true },
+    ]
+    const fmt = (v: number, pct?: boolean) => pct ? `${(v * 100).toFixed(1)}%` : v.toFixed(2)
+    const cls = (s: number, b: number) => (s > b ? 'k-pos' : 'k-neg')
     metricsEl.innerHTML = `
       <div class="sb-kpis">
         <div class="sb-kpi"><span class="k-label">策略</span><span class="k-val">${name}</span></div>
@@ -119,6 +132,17 @@ export class StrategyBacktest extends PanelBase {
         <div class="sb-kpi"><span class="k-label">年化波动</span><span class="k-val">${(d.volatility * 100).toFixed(1)}%</span></div>
         <div class="sb-kpi"><span class="k-label">交易</span><span class="k-val">${d.n_trades}笔</span></div>
       </div>
+      ${cmp ? `<div class="sb-baseline">
+        <span style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.3px;">vs 等权买入持有</span>
+        <div class="sb-kpis" style="margin-top:4px;">
+          ${cmp.map(c => `
+            <div class="sb-kpi">
+              <span class="k-label">${c.label}</span>
+              <span class="k-val ${cls(c.s, c.b)}">${fmt(c.s, c.pct)}</span>
+              <span style="font-size:10px;color:var(--text-tertiary);">基准 ${fmt(c.b, c.pct)}</span>
+            </div>`).join('')}
+        </div>
+      </div>` : ''}
       <div class="sb-funds" style="font-size:11px;color:var(--text-tertiary);margin-top:6px;">基金池: ${d.funds.join(' / ')}</div>`
     if (msgEl) msgEl.textContent = ''
   }

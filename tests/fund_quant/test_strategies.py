@@ -336,7 +336,7 @@ class TestBlackLitterman:
         assert result["status"] == "single_fund"
 
     def test_bl_mvo_only(self, monkeypatch):
-        """无观点时降级为均值-方差优化"""
+        """无观点时等权配置（DeMiguel et al. 2009：等权样本外优于无约束优化）"""
         from backend.fund_quant.strategy.allocation.black_litterman import BlackLittermanStrategy
 
         navs = self._make_nav_values(120)
@@ -349,7 +349,7 @@ class TestBlackLitterman:
         s = BlackLittermanStrategy()
         result = s.optimize(fund_codes=["000001", "110011"])
         assert result["status"] == "success"
-        assert result["method"] in ("mean_variance",)
+        assert result["method"] == "equal_weight"
         assert len(result["weights"]) == 2
 
     def test_bl_with_views(self, monkeypatch):
