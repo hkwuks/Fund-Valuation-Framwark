@@ -1,7 +1,7 @@
 // frontend/src/fundQuant/panels/DetailPanel.ts
 import { PanelBase } from '../layout'
 import { fundQuantApi, type StrategyAllocationSignal } from '../api'
-import { state } from '../state'
+import { state, persistBlViews, type BlView } from '../state'
 
 const NAME_MAP: Record<string, string> = {
   etf_rotation_aurora: 'ETF动量轮动',
@@ -38,6 +38,7 @@ export class DetailPanel extends PanelBase {
   private unsub: (() => void) | null = null
   private strategies: StrategyAllocationSignal[] = []
   private blUnsub: (() => void) | null = null
+  private helpOpen = false // BL 观点帮助折叠态（跨重绘保持）
 
   constructor() {
     super({ id: 'detail', title: '策略详情', defaultGridPos: { x: 1, y: 2, w: 2, h: 2 } })
@@ -163,15 +164,19 @@ export class DetailPanel extends PanelBase {
   private buildBlViewsHtml(): string {
     const pool = state.get('fundPool')
     const views = state.get('blViews') || []
+    // <details> 的展开态保存在 DOM 属性上，重绘后恢复，避免「添加观点」把帮助收起
+    const openAttr = (this.helpOpen ? 'open' : '')
+    const optHtml = (selCode?: string) => pool.map(f =>
+      `<option value="${f.fund_code}" ${f.fund_code===selCode?'selected':''}>${f.fund_name}（${f.fund_code}）</option>`).join('')
     const confOpts = (sel: string) => CONF_OPTIONS.map(o => `<option value="${o.v}" ${o.v===sel?'selected':''}>${o.label}</option>`).join('')
     const rows = views.map((v, idx) => `
       <div class="bl-view-row" data-idx="${idx}" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
         <select class="bl-long" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
-          <option value="">看多…</option>${pool.map(f => `<option value="${f.fund_code}" ${f.fund_code===v.fund_long?'selected':''}>${f.fund_name}（${f.fund_code}）</option>`).join('')}
+          <option value="">看多…</option>${optHtml(v.fund_long)}
         </select>
         <span style="font-size:11px;color:var(--text-tertiary);">跑赢</span>
         <select class="bl-short" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
-          <option value="">看空…</option>${pool.map(f => `<option value="${f.fund_code}" ${f.fund_code===v.fund_short?'selected':''}>${f.fund_name}（${f.fund_code}）</option>`).join('')}
+          <option value="">看空…</option>${optHtml(v.fund_short)}
         </select>
         <input class="bl-excess" type="number" step="0.5" value="${v.excess_return}" style="width:72px;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;" placeholder="%" title="年化超额收益%">
         <span style="font-size:11px;color:var(--text-tertiary);">%</span>
@@ -190,7 +195,7 @@ export class DetailPanel extends PanelBase {
           <span style="font-size:11px;color:var(--text-tertiary);">${views.length} 条</span>
         </div>
         ${emptyTip}
-        <details style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;">
+        <details class="bl-help" ${openAttr} style="font-size:11px;color:var(--text-tertiary);margin-bottom:8px;">
           <summary style="cursor:pointer;color:var(--text-secondary);">什么是观点？怎么填？</summary>
           <div style="line-height:1.7;margin-top:6px;">
             观点 = 你对<strong>池内两只基金</strong>相对强弱的判断，例如「沪深300ETF 未来一年跑赢 国债ETF 5%」。模型会把它融合进均衡收益，看多的权重升高、看空的降低；超额越大、置信度越高，权重偏移越明显。<br/>
@@ -214,70 +219,92 @@ export class DetailPanel extends PanelBase {
     const body = this.el.querySelector('.detail-body') as HTMLElement
     if (!body) return
 
-    const readViewsFromDom = (): Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }> => {
-      const rows = body.querySelectorAll('.bl-view-row')
-      const out: Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }> = []
-      rows.forEach(row => {
-        const fl = (row.querySelector('.bl-long') as HTMLSelectElement)?.value?.trim() || ''
-        const fs = (row.querySelector('.bl-short') as HTMLSelectElement)?.value?.trim() || ''
-        const er = parseFloat((row.querySelector('.bl-excess') as HTMLInputElement)?.value || '0')
-        const cf = (row.querySelector('.bl-conf') as HTMLSelectElement)?.value || 'mid'
-        if (fl && fs && fl !== fs && !isNaN(er) && er !== 0) out.push({ fund_long: fl, fund_short: fs, excess_return: er, confidence: cf })
+    // 帮助折叠态跨重绘保持
+    body.querySelector('.bl-help')?.addEventListener('toggle', (e) => {
+      this.helpOpen = (e.target as HTMLDetailsElement).open
+    })
+
+    // 原样读取所有行（含未填完的），用于静默持久化，避免丢用户编辑中的内容
+    const rawRowsFromDom = (): BlView[] => {
+      const out: BlView[] = []
+      body.querySelectorAll('.bl-view-row').forEach(row => {
+        out.push({
+          fund_long: (row.querySelector('.bl-long') as HTMLSelectElement)?.value?.trim() || '',
+          fund_short: (row.querySelector('.bl-short') as HTMLSelectElement)?.value?.trim() || '',
+          excess_return: parseFloat((row.querySelector('.bl-excess') as HTMLInputElement)?.value || '') || 0,
+          confidence: (row.querySelector('.bl-conf') as HTMLSelectElement)?.value || 'mid',
+        })
       })
       return out
     }
+
+    // 只取有效行，用于应用计算
+    const readViewsFromDom = (): BlView[] =>
+      rawRowsFromDom().filter(v => v.fund_long && v.fund_short && v.fund_long !== v.fund_short && v.excess_return !== 0)
 
     const showMsg = (msg: string, ok = false) => {
       const el = body.querySelector('.bl-msg') as HTMLElement
       if (el) { el.textContent = msg; el.style.color = ok ? 'var(--primary-color)' : '#ef4444' }
     }
 
+    // 行级操作（增删改）只改 DOM + 静默保存，不触发重算 —— 点「应用并刷新」才重算
+    const persistSilent = () => persistBlViews(rawRowsFromDom())
+
+    const bindRowEvents = (row: Element) => {
+      row.querySelector('.bl-del')?.addEventListener('click', () => {
+        row.remove()
+        const list = body.querySelector('.bl-views-list') as HTMLElement
+        if (list && !list.querySelector('.bl-view-row')) {
+          list.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:6px 0;">暂无观点，点击下方添加</div>'
+        }
+        persistSilent()
+      })
+    }
+
     body.querySelector('.bl-add')?.addEventListener('click', () => {
-      const views = state.get('blViews') || []
       const pool = state.get('fundPool')
       if (pool.length < 2) { showMsg('基金池不足2只，无法添加'); return }
-      // 默认取前两只
-      const a = pool[0]?.fund_code || ''
-      const b = pool[1]?.fund_code || ''
-      state.set('blViews', [...views, { fund_long: a, fund_short: b, excess_return: 3, confidence: 'mid' }])
-      // loadStrategyDetail 会因 blViews 监听而重渲染，无需手动
+      const list = body.querySelector('.bl-views-list') as HTMLElement
+      list.querySelector('div[style*="padding:6px 0"]')?.remove() // 移除「暂无观点」占位
+      const row = document.createElement('div')
+      row.className = 'bl-view-row'
+      row.dataset.idx = String(list.querySelectorAll('.bl-view-row').length)
+      row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;'
+      const optHtml = pool.map(f => `<option value="${f.fund_code}">${f.fund_name}（${f.fund_code}）</option>`).join('')
+      row.innerHTML = `
+        <select class="bl-long" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
+          <option value="">看多…</option>${optHtml}
+        </select>
+        <span style="font-size:11px;color:var(--text-tertiary);">跑赢</span>
+        <select class="bl-short" style="flex:1;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">
+          <option value="">看空…</option>${optHtml}
+        </select>
+        <input class="bl-excess" type="number" step="0.5" value="3" style="width:72px;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;" placeholder="%" title="年化超额收益%">
+        <span style="font-size:11px;color:var(--text-tertiary);">%</span>
+        <select class="bl-conf" style="width:64px;font-size:12px;padding:4px;border:1px solid var(--border-light);border-radius:4px;">${CONF_OPTIONS.map(o => `<option value="${o.v}" ${o.v==='mid'?'selected':''}>${o.label}</option>`).join('')}</select>
+        <button class="bl-del" style="background:none;border:none;cursor:pointer;color:#ef4444;font-size:14px;padding:2px 4px;" title="删除">✕</button>`
+      list.appendChild(row)
+      bindRowEvents(row)
+      persistSilent()
     })
 
     body.querySelector('.bl-clear')?.addEventListener('click', () => {
-      state.set('blViews', [])
+      const list = body.querySelector('.bl-views-list') as HTMLElement
+      if (list) list.innerHTML = '<div style="font-size:11px;color:var(--text-tertiary);padding:6px 0;">暂无观点，点击下方添加</div>'
+      persistSilent()
     })
 
-    body.querySelector('.bl-apply')?.addEventListener('click', async () => {
+    body.querySelectorAll('.bl-view-row').forEach(bindRowEvents)
+
+    // 应用：读取全部行校验后广播（左侧列表+详情带新观点重算）
+    body.querySelector('.bl-apply')?.addEventListener('click', () => {
       const domViews = readViewsFromDom()
-      // 校验：基金必须在池内
       const poolCodes = new Set(state.get('fundPool').map(f => f.fund_code))
       const valid = domViews.filter(v => poolCodes.has(v.fund_long) && poolCodes.has(v.fund_short))
-      if (domViews.length !== valid.length) { showMsg('部分观点含未知基金代码，已忽略'); }
-      if (valid.length === 0 && domViews.length > 0) { showMsg('观点无效：需选择两只不同基金且超额收益≠0'); return }
-      state.set('blViews', valid)
-      showMsg(valid.length ? `已应用 ${valid.length} 条观点` : '已清空观点（降级为均衡收益）', true)
-    })
-
-    body.querySelectorAll('.bl-del').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const idx = parseInt((btn.closest('.bl-view-row') as HTMLElement)?.dataset.idx || '-1', 10)
-        const views = [...(state.get('blViews') || [])]
-        if (idx >= 0 && idx < views.length) { views.splice(idx, 1); state.set('blViews', views) }
-      })
-    })
-
-    // 输入变化即时同步到 state（防用户忘记点应用）
-    body.querySelectorAll('.bl-long,.bl-short,.bl-conf,.bl-excess').forEach(el => {
-      el.addEventListener('change', () => {
-        // 延迟写入，避免每次 keystroke 都触发重算；仅在 change 时写
-        const domViews = readViewsFromDom()
-        // 允许中间态不完整也写入，load 时会过滤无效
-        const poolCodes = new Set(state.get('fundPool').map(f => f.fund_code))
-        const toSave = domViews.filter(v => poolCodes.has(v.fund_long) && poolCodes.has(v.fund_short))
-        // 只在有效条数变化或数值变化时写回，避免抖动
-        const cur = state.get('blViews') || []
-        if (JSON.stringify(cur) !== JSON.stringify(toSave)) state.set('blViews', toSave)
-      })
+      if (domViews.length !== valid.length) showMsg('部分观点含未知基金代码，已忽略')
+      else if (valid.length === 0 && domViews.length > 0) { showMsg('观点无效：需选择两只不同基金且超额收益≠0'); return }
+      persistBlViews(valid, true)
+      showMsg(valid.length ? `已应用 ${valid.length} 条观点，正在刷新…` : '已清空观点（退化为均衡收益）', true)
     })
   }
 

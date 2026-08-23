@@ -62,6 +62,13 @@ export interface ResearchState {
   signal?: SignalSummary | null
 }
 
+export interface BlView {
+  fund_long: string
+  fund_short: string
+  excess_return: number
+  confidence: string
+}
+
 export interface GlobalState {
   fundPool: FundInfo[]
   selectedFund: string | null
@@ -75,7 +82,7 @@ export interface GlobalState {
   loading: LoadingState
   researchPanel: ResearchState
   customParams: Record<string, Record<string, any>>
-  blViews: Array<{ fund_long: string; fund_short: string; excess_return: number; confidence: string }>
+  blViews: BlView[]
 }
 
 type StateKey = keyof GlobalState
@@ -104,6 +111,11 @@ export class EventEmitter {
     this.allListeners.forEach(fn => fn(this.state))
   }
 
+  /** 更新状态但通知监听者（用于静默持久化，不触发面板刷新） */
+  setSilent<K extends StateKey>(key: K, value: GlobalState[K]): void {
+    this.state = { ...this.state, [key]: value }
+  }
+
   on(key: StateKey | '*', fn: Listener): () => void {
     if (key === '*') {
       this.allListeners.add(fn)
@@ -127,9 +139,8 @@ const DEFAULT_LAYOUT: LayoutConfig = {
     fund_ranking: { visible: false, order: 5, grid_pos: { x: 0, y: 3, w: 1, h: 1 } },
     attribution: { visible: false, order: 6, grid_pos: { x: 1, y: 3, w: 1, h: 1 } },
     monthly_returns: { visible: false, order: 7, grid_pos: { x: 2, y: 3, w: 1, h: 1 } },
-    backtest: { visible: false, order: 8, grid_pos: { x: 0, y: 5, w: 2, h: 1 } },
-    'param-scan': { visible: false, order: 9, grid_pos: { x: 2, y: 5, w: 1, h: 1 } },
-    'paper-trade': { visible: true, order: 10, grid_pos: { x: 0, y: 5, w: 3, h: 1 } },
+    'paper-trade': { visible: true, order: 8, grid_pos: { x: 0, y: 5, w: 3, h: 1 } },
+    'strategy-backtest': { visible: true, order: 9, grid_pos: { x: 0, y: 6, w: 3, h: 1 } },
   },
 }
 
@@ -159,10 +170,13 @@ export const state = new EventEmitter({
   blViews: loadBlViews(),
 })
 
-const _origSet = state.set.bind(state)
-state.set = ((key: any, value: any) => {
-  if (key === 'blViews') {
-    try { localStorage.setItem(BL_VIEWS_KEY, JSON.stringify(value)) } catch {}
-  }
-  return (_origSet as any)(key, value)
-}) as any
+/**
+ * 写入 BL 观点并持久化到 localStorage。
+ * notify=false：静默保存（行增删/编辑时用，不触发任何面板重算）
+ * notify=true ：广播变更（「应用并刷新」时用，左侧列表+详情会带新观点重算）
+ */
+export function persistBlViews(views: BlView[], notify = false): void {
+  try { localStorage.setItem(BL_VIEWS_KEY, JSON.stringify(views)) } catch { /* 存储不可用时忽略 */ }
+  if (notify) state.set('blViews', views)
+  else state.setSilent('blViews', views)
+}
