@@ -53,7 +53,7 @@ export class DetailPanel extends PanelBase {
         <h3 id="detail-title">策略详情</h3>
         <button class="detail-close" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-secondary);padding:0 4px;" title="关闭">&#x2715;</button>
       </div>
-      <div class="detail-body" style="padding:12px 16px;max-height:520px;overflow-y:auto;"></div>`
+      <div class="detail-body" style="padding:12px 16px;flex:1;min-height:0;overflow-y:auto;"></div>`
     return el
   }
 

@@ -1824,7 +1824,7 @@ tr:hover { background: var(--bg-tertiary); }
   border-radius: 8px;
   display: flex; flex-direction: column;
   box-shadow: 0 2px 8px rgba(0,0,0,.25);
-  height: 420px;
+  height: 560px;
 }
 .panel-detail .detail-body { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 10px 12px; min-height: 160px; overflow-y: auto; }
 .panel-detail .detail-section h4 { font-size: 12px; font-weight: 600; margin-bottom: 4px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .3px; }
