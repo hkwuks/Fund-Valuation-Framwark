@@ -680,6 +680,9 @@ class BacktestEngine:
 
             # 提交信号到执行引擎（积累到跨 bar 映射）
             for signal in allowed_signals:
+                # 注入持有天数，供成本模型按档位计赎回费
+                if hasattr(execution, 'get_holding_days'):
+                    signal.extra["holding_days"] = execution.get_holding_days(signal.symbol)
                 order = execution.submit(signal) if execution else None
                 if order:
                     _pending_signal_map[order.id] = signal

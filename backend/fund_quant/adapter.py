@@ -1049,19 +1049,25 @@ class FundCostModelAdapter(CostModel):
 
     def calc(self, signal: Signal, fill: Fill) -> float:
         from .data.storage import get_fund_meta
+        from .core.models import FEE_TIER_COMPAT
         fund_code = signal.symbol
         try:
             meta = get_fund_meta(fund_code) if fund_code else None
         except Exception:
             meta = None
         fund_type = (meta or {}).get("fund_type", "equity")
+        # 费率表键为 stock/hybrid/bond/...，DB 可能存新值 equity/index — 归一化
+        fund_type = FEE_TIER_COMPAT.get(fund_type, fund_type)
         amount = fill.price * fill.volume
-        # 优先从 signal.extra 取持有天数（T1ExecutionEngine 可注入），否则 0
+        # 按方向计费：开仓只付申购费，平仓只付赎回费（按持有天数档位）。
+        # 管理费/托管费已内扣在 NAV 里，不重复计。
         holding_days = 0
         if hasattr(signal, "extra") and isinstance(signal.extra, dict):
             holding_days = int(signal.extra.get("holding_days", 0) or 0)
-        cost_info = self._model.estimate_trade_cost(fund_type, amount, holding_days, fund_code=fund_code)
-        return cost_info.get("total_cost", 0.0)
+        if signal.direction in (Direction.LONG, Direction.SHORT):
+            return self._model.get_subscription_fee(fund_type, amount, fund_code=fund_code)
+        red_fee_rate = self._model.get_redemption_fee(fund_type, holding_days)
+        return red_fee_rate * amount
 
 
 def demo():

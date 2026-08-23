@@ -76,15 +76,17 @@ class BlackLittermanStrategy(FundStrategyBase):
         # 5. 后验预期收益
         if has_views and views["P"].shape[0] > 0:
             mu = self._posterior_return(cov, pi, views)
-            method = "black_litterman"
         else:
-            # 无观点 → 降级: 直接用均衡收益
-            mu = pi
-            method = "mean_variance"
+            # 无观点 → 等权（学术上优于无约束均值-方差，见 DeMiguel et al. 2009）
+            codes_out = codes
+            w = np.ones(len(codes_out)) / len(codes_out)
+            return {"strategy": self.strategy_name, "fund_codes": codes,
+                    "weights": {c: round(float(x), 4) for c, x in zip(codes_out, w)},
+                    "method": "equal_weight", "status": "success"}
 
         # 6. 均值-方差优化
         result = self._mean_variance_optimize(cov, mu, codes)
-        result["method"] = method
+        result["method"] = "black_litterman"
         result["strategy"] = self.strategy_name
         result["fund_codes"] = codes
 
@@ -214,7 +216,7 @@ class BlackLittermanStrategy(FundStrategyBase):
             for v in user_views:
                 fl = (v.get("fund_long") or v.get("long") or "").strip()
                 fs = (v.get("fund_short") or v.get("short") or "").strip()
-                if not fl or not fs or fl not in code_to_idx or fs not in code_to_idx:
+                if not fl or not fs or fl not in code_to_idx or fs not in code_to_idx or fl == fs:
                     continue
                 try:
                     er = float(v.get("excess_return", v.get("excess", 0)))

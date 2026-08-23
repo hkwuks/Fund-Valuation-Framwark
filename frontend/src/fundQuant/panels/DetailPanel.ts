@@ -24,7 +24,7 @@ const STRATEGY_DESC: Record<string, string> = {
   etf_rotation_aurora: '动量轮动：按近期涨幅排名持有最强ETF，趋势反转时切换，适合单边行情。',
   all_weather_aurora: '桥水全天候：按风险均衡配置股票/债券/商品等资产，不预测涨跌，追求任何环境下都稳健。',
   bl_quadrant_aurora: 'BL四象限：按宏观环境（增长×通胀四象限）给出各资产观点，再经 Black-Litterman 融合定价。',
-  black_litterman_aurora: 'Black-Litterman：以市场均衡收益为基准，融合你的主观观点得到后验收益，再做均值-方差优化。观点是对池内具体基金的相对强弱判断（如"A 跑赢 B 3%"），而非行业或指数层面的判断；无观点时退化为纯均值-方差优化（常接近等权）。',
+  black_litterman_aurora: 'Black-Litterman：以市场均衡收益为基准，融合你的主观观点得到后验收益，再做均值-方差优化。观点是对池内具体基金的相对强弱判断（如"A 跑赢 B 3%"），而非行业或指数层面的判断；未添加有效观点时直接等权配置（学术研究表明等权样本外优于无约束优化）。',
   risk_parity_aurora: '风险平价：让每只基金对组合的风险贡献相等，波动大的配得少、波动小的配得多。',
   hrp_aurora: '层次风险平价：用相关性聚类分层后分配风险，比风险平价更抗相关性突变。',
   max_diversification_aurora: '最大多元化：最大化分散比率，优先挑彼此相关性低的基金组合。',

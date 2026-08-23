@@ -294,6 +294,10 @@ export const fundQuantApi = {
     fund_codes: string[]; start_date: string; end_date: string;
     initial_capital?: number; strategy_name?: string; params?: Record<string, any>;
   }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/aurora-run', req),
+  // — 等权买入持有基准 —
+  runEqualWeightBacktest: (req: {
+    fund_codes: string[]; start_date: string; end_date: string; initial_capital?: number;
+  }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/run-vectorized', req),
 
 // — 策略资产配置信号（以策略为中心） —
   getStrategyAllocation: (() => {

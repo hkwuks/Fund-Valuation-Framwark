@@ -27,6 +27,14 @@ TYPE_COMPAT = {
     "海外混合": "qdii",
 }
 
+# 费率表（CostModelConfig 各 tier 字典）使用旧键 stock/hybrid/bond/index/qdii/money/fof；
+# 新枚举 equity/balanced/commodity 需映射回费率表键
+FEE_TIER_COMPAT = {
+    "equity": "stock",       # 股票型按 stock 费率
+    "balanced": "hybrid",    # 平衡型按 hybrid 费率
+    "commodity": "qdii",     # 商品基金费率接近 QDII（无精确档）
+}
+
 
 # ═══════════════════════════════════════════
 # 策略上下文

@@ -1802,6 +1802,16 @@ tr:hover { background: var(--bg-tertiary); }
 
 .fq-dashboard-grid .panel-toolbar .btn { font-size: 12px; padding: 3px 8px; }
 
+/* 策略回测 */
+.panel-strategy-backtest { display: flex; flex-direction: column; min-height: 0; }
+.panel-strategy-backtest .sb-body { padding: 8px 12px; overflow-y: auto; flex: 1; min-height: 0; font-size: 12px; }
+.panel-strategy-backtest .sb-kpis { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.panel-strategy-backtest .sb-kpi .k-label { display: block; font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .3px; }
+.panel-strategy-backtest .sb-kpi .k-val { display: block; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.panel-strategy-backtest .k-pos { color: var(--danger-color); }
+.panel-strategy-backtest .k-neg { color: var(--success-color); }
+.panel-strategy-backtest .sb-baseline { margin-top: 6px; border-top: 1px solid var(--border-light); padding-top: 6px; }
+
 /* 选基排名 */
 .panel-ranking .rank-body { display: grid; grid-template-columns: 1fr 240px; gap: 4px; }
 .panel-ranking .rank-table-wrapper { overflow-y: auto; max-height: 200px; }
