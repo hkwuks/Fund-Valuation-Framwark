@@ -1095,6 +1095,69 @@ class AuroraTrendFollowing(_AuroraAllocationBase):
         return {code: weight for code in active}
 
 
+# ── 最小方差（AuroraCore 版）──
+
+@StrategyRegistry.register("gmv_aurora")
+class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
+    """全局最小方差 — 仅最小化组合方差，不预测收益"""
+    name = "gmv_aurora"
+    strategy_type = "allocation"
+    description = "全局最小方差(GMV): Ledoit-Wolf协方差 + 长-only约束优化, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 756,
+        "max_weight": 0.4,
+        "min_weight": 0.02,
+    }
+    min_history_days = 60
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.black_litterman import BlackLittermanStrategy
+
+        lookback = int(self.params.get("lookback_days", 756))
+        returns = {}
+        for code in codes:
+            values = [float(v) for v in nav_series.get(code, []) if v and v > 0][-lookback:]
+            if len(values) > 20:
+                arr = np.asarray(values, dtype=np.float64)
+                returns[code] = np.diff(arr) / arr[:-1]
+
+        valid = list(returns)
+        if len(valid) < 2:
+            return {}
+        n_obs = min(len(r) for r in returns.values())
+        if n_obs < 20:
+            return {}
+        matrix = np.column_stack([returns[c][-n_obs:] for c in valid])
+        cov = BlackLittermanStrategy._ledoit_wolf_covariance(matrix)
+        n = len(valid)
+        max_weight = float(self.params.get("max_weight", 0.4))
+        min_weight = float(self.params.get("min_weight", 0.02))
+        max_weight = max(max_weight, 1.0 / n)
+        min_weight = min(min_weight, 1.0 / n)
+        bounds = [(min_weight, max_weight)] * n
+        initial = np.full(n, 1.0 / n)
+
+        try:
+            from scipy.optimize import minimize
+            result = minimize(
+                lambda weights: float(weights @ cov @ weights),
+                initial,
+                method="SLSQP",
+                bounds=bounds,
+                constraints={"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},
+                options={"ftol": 1e-10, "maxiter": 1000},
+            )
+            weights = result.x if result.success else initial
+        except ImportError:
+            weights = initial
+
+        weights = np.clip(weights, min_weight, max_weight)
+        weights /= weights.sum()
+        return {code: round(float(weight), 4) for code, weight in zip(valid, weights)}
+
+
 # ── HRP层次风险平价（AuroraCore 版）──
 
 @StrategyRegistry.register("hrp_aurora")

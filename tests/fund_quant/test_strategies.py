@@ -612,3 +612,26 @@ class TestP0AllocationStrategies:
 
         # 全部趋势转弱时返回空权重，基类将已持仓全部平掉，资金留现金。
         assert s._compute_weights({"DOWN": down, "FLAT": flat}, ["DOWN", "FLAT"]) == {}
+
+    def test_gmv_minimizes_variance(self):
+        from backend.fund_quant.adapter import AuroraGlobalMinimumVariance
+        s = AuroraGlobalMinimumVariance()
+        rng = np.random.default_rng(11)
+        # A 高波动，B 低波动；GMV 应倾向低波动资产且权重和为1。
+        series = {}
+        for code, sigma in (("HIGH", 0.03), ("LOW", 0.003), ("MID", 0.01)):
+            value, values = 1.0, []
+            for _ in range(300):
+                value *= 1 + rng.normal(0.0002, sigma)
+                values.append(value)
+            series[code] = values
+        weights = s._compute_weights(series, list(series))
+        assert weights
+        assert abs(sum(weights.values()) - 1.0) < 1e-3
+        assert all(np.isfinite(v) and v >= 0 for v in weights.values())
+        assert weights["LOW"] >= weights["HIGH"]
+
+    def test_gmv_insufficient_data(self):
+        from backend.fund_quant.adapter import AuroraGlobalMinimumVariance
+        s = AuroraGlobalMinimumVariance()
+        assert s._compute_weights({"A": [1.0] * 20, "B": [1.0] * 20}, ["A", "B"]) == {}
