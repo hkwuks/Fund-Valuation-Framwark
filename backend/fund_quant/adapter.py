@@ -1090,7 +1090,8 @@ class AuroraTrendFollowing(_AuroraAllocationBase):
             if start > 0 and (end / start - 1.0) > threshold:
                 active[code] = 1.0
         if not active:
-            return {}
+            # 返回显式零权重，让基类执行清仓，而不是把空权重当作优化失败直接跳过。
+            return {code: 0.0 for code in codes}
         weight = 1.0 / len(active)
         return {code: weight for code in active}
 

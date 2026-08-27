@@ -2067,6 +2067,19 @@ th.sortable.sorted-desc::after { content: ' ↓'; opacity: 1; color: var(--prima
 .research-panel .research-section-title { font-size: 18px; font-weight: 600; color: var(--primary-color); margin-bottom: 4px; padding: 2px 0; border-bottom: 1px solid var(--border-light); }
 .research-panel .research-divider { height: 1px; background: var(--border-light); margin: 3px 0; }
 .research-panel .param-row:last-child { border-bottom: none !important; }
+.research-panel .factor-evaluation-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px; border-bottom: 1px solid var(--border-light); }
+.research-panel .factor-evaluation-controls label { display: flex; flex-direction: column; gap: 2px; color: var(--text-secondary); font-size: 12px; }
+.research-panel .factor-evaluation-controls select,
+.research-panel .factor-evaluation-controls input { min-height: 28px; padding: 3px 6px; border: 1px solid var(--border-color); border-radius: var(--radius-sm); background: var(--bg-primary); color: var(--text-primary); font-size: 13px; }
+.research-panel .factor-evaluation-status { padding: 8px 10px; font-size: 12px; }
+.research-panel .factor-evaluation-report { padding: 0 10px 10px; }
+.research-panel .factor-report-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+.research-panel .factor-report-grid > div { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; background: var(--bg-tertiary); border-radius: var(--radius-sm); }
+.research-panel .factor-report-grid span { color: var(--text-tertiary); font-size: 11px; }
+.research-panel .factor-report-grid strong { color: var(--text-primary); font-size: 14px; font-variant-numeric: tabular-nums; }
+.research-panel .factor-report-detail { display: flex; gap: 8px; margin-top: 8px; color: var(--text-secondary); font-size: 12px; overflow-x: auto; }
+.research-panel .factor-report-detail span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (max-width: 768px) { .research-panel .factor-report-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 /* Backtest tabs */
 .bt-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border-light); }
