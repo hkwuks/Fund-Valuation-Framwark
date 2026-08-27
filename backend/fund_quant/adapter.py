@@ -835,20 +835,24 @@ class _AuroraAllocationBase(Strategy):
         """波动率目标叠加层 — 高波降仓、低波加仓
 
         仅当 params.vol_target > 0 时生效。scale = target / realized，
-        上限 2.0 防止过度杠杆。
+        上限 max_scale 防止过度杠杆。窗口/上下限可配（vol_targeting_aurora 用）。
         """
         target = self.params.get("vol_target", 0)
         if not target or target <= 0:
             return weights
 
-        # 用 60 天窗口估算组合实现波动率
+        window_days = int(self.params.get("window_days", 60))
+        max_scale = float(self.params.get("max_scale", 2.0))
+        min_scale = float(self.params.get("min_scale", 0.1))
+
+        # 用 window_days 天窗口估算组合实现波动率
         portfolio_navs = []
         for code, w in weights.items():
             if w <= 0:
                 continue
             series = nav_series.get(code, [])
-            if len(series) >= 60:
-                portfolio_navs.append((np.array(series[-60:], dtype=np.float64), w))
+            if len(series) >= window_days:
+                portfolio_navs.append((np.array(series[-window_days:], dtype=np.float64), w))
 
         if not portfolio_navs:
             return weights
@@ -862,8 +866,8 @@ class _AuroraAllocationBase(Strategy):
         if realized_vol <= 0.01:
             return weights
 
-        scale = min(target / realized_vol, 2.0)
-        scale = max(scale, 0.1)  # 最低保留 10%
+        scale = min(target / realized_vol, max_scale)
+        scale = max(scale, min_scale)  # 最低保留 min_scale 仓位
         return {c: w * scale for c, w in weights.items()}
 
     def _rebalance(self, date_str: str):
@@ -993,6 +997,67 @@ class AuroraRiskParity(_AuroraAllocationBase):
         strategy = RiskParityStrategy(params=dict(self.params))
         result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
         return result.get("weights", {})
+
+
+# ── 动态风险平价（AuroraCore 版）──
+
+@StrategyRegistry.register("dynamic_risk_parity_aurora")
+class AuroraDynamicRiskParity(_AuroraAllocationBase):
+    """动态风险平价 — 每次再平衡只用最近 window_months 个月滚动协方差
+
+    静态 RP 用全程 3 年协方差；动态版截断到滚动窗口，权重跟随近期波动结构
+    变化（MDPI 2026：滚动窗口 RP 夏普 1.418 / 回撤 27.7%，均优于静态）。
+    求解仍复用 RiskParityStrategy（Ledoit-Wolf + SLSQP）。
+    """
+    name = "dynamic_risk_parity_aurora"
+    strategy_type = "allocation"
+    description = "动态风险平价: 最近N月滚动协方差 + Ledoit-Wolf + SLSQP, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "window_months": 12,        # 滚动窗口（PRD 推荐 12 个月）
+        "shrinkage": "auto",
+        "max_weight": 0.4,
+        "min_weight": 0.05,
+        "min_weight_bond": 0.10,
+        "bond_vol_multiplier": "auto",
+        "fee_penalty_threshold": 0.02,
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.risk_parity import RiskParityStrategy
+        n = self.params.get("window_months", 12) * 21  # 月→交易日
+        truncated = {c: s[-n:] for c, s in nav_series.items() if len(s) >= 60}
+        if len(truncated) < 2:
+            return {}
+        strategy = RiskParityStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=truncated)
+        return result.get("weights", {})
+
+
+# ── 波动率目标（AuroraCore 版）──
+
+@StrategyRegistry.register("vol_targeting_aurora")
+class AuroraVolTargeting(_AuroraAllocationBase):
+    """波动率目标 — 等权打底 + 反比缩放钉住目标波动率
+
+    _compute_weights 返回等权，随后基类 _rebalance 调 _apply_vol_targeting
+    按 60 日实现波动率反比缩放（vol_target=0.12 覆盖基类默认关闭值）。
+    """
+    name = "vol_targeting_aurora"
+    strategy_type = "allocation"
+    description = "波动率目标: 等权打底 + 60日实现波动率反比缩放, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "vol_target": 0.12,          # 年化目标波动率（默认 12%）
+        "max_scale": 2.0,            # 缩放上限，防过度杠杆
+        "min_scale": 0.1,            # 缩放下限，保留最低仓位
+        "window_days": 60,           # 实现波动率估计窗口
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        return {c: 1.0 / len(codes) for c in codes}
 
 
 # ── HRP层次风险平价（AuroraCore 版）──

@@ -29,6 +29,8 @@ export class StrategyBacktest extends PanelBase {
             <option value="risk_parity_aurora">风险平价</option>
             <option value="hrp_aurora">层次风险平价(HRP)</option>
             <option value="max_diversification_aurora">最大多元化(MDP)</option>
+            <option value="dynamic_risk_parity_aurora">动态风险平价</option>
+            <option value="vol_targeting_aurora">波动率目标</option>
           </select>
           <select class="sb-mode" style="display:none;">
             <option value="fixed">固定权重</option>
@@ -111,6 +113,8 @@ export class StrategyBacktest extends PanelBase {
       risk_parity_aurora: '风险平价',
       hrp_aurora: '层次风险平价(HRP)',
       max_diversification_aurora: '最大多元化(MDP)',
+      dynamic_risk_parity_aurora: '动态风险平价',
+      vol_targeting_aurora: '波动率目标',
     }
     const stratName = names[d.strategy] || d.strategy
     const name = d.strategy === 'all_weather_aurora' ? `${stratName}(${d.mode || 'fixed'})` : stratName
