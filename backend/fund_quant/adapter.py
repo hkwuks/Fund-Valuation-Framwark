@@ -1060,6 +1060,41 @@ class AuroraVolTargeting(_AuroraAllocationBase):
         return {c: 1.0 / len(codes) for c in codes}
 
 
+# ── 趋势跟踪（AuroraCore 版）──
+
+@StrategyRegistry.register("trend_following_aurora")
+class AuroraTrendFollowing(_AuroraAllocationBase):
+    """时间序列动量 — 各基金独立判断趋势，趋势转弱即保留现金"""
+    name = "trend_following_aurora"
+    strategy_type = "allocation"
+    description = "趋势跟踪: 各基金独立时间序列动量 + 收益阈值, 趋弱保留现金"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 200,
+        "buy_threshold": 0.0,
+        "min_history_days": 200,
+    }
+    min_history_days = 200
+
+    def _compute_weights(self, nav_series, codes):
+        """对每只基金独立计算窗口收益；不满足阈值的基金权重为0。"""
+        lookback = int(self.params.get("lookback_days", 200))
+        threshold = float(self.params.get("buy_threshold", 0.0))
+        active = {}
+        for code in codes:
+            series = nav_series.get(code, [])
+            if len(series) <= lookback:
+                continue
+            start, end = float(series[-lookback - 1]), float(series[-1])
+            if start > 0 and (end / start - 1.0) > threshold:
+                active[code] = 1.0
+        if not active:
+            return {}
+        weight = 1.0 / len(active)
+        return {code: weight for code in active}
+
+
 # ── HRP层次风险平价（AuroraCore 版）──
 
 @StrategyRegistry.register("hrp_aurora")

@@ -516,3 +516,99 @@ class TestSignalFusion:
         # 不传 fund_type 时不加权
         r3 = self.fusion.fuse(sigs)
         assert r3 is not None
+
+
+class TestP0AllocationStrategies:
+    """P0 新策略：动态风险平价 + 波动率目标（走 AuroraCore 统一引擎）"""
+    import sys as _sys
+    _sys.path.insert(0, "backend")  # noqa: E402 — 暴露 core 包（与 test_aurora_etf_rotation 一致）
+
+    def test_p0_registered(self):
+        from core.strategy import StrategyRegistry
+        import backend.fund_quant.adapter  # 触发注册
+        reg = StrategyRegistry.list_all()
+        assert "dynamic_risk_parity_aurora" in reg
+        assert "vol_targeting_aurora" in reg
+        assert reg["dynamic_risk_parity_aurora"].strategy_type == "allocation"
+        assert reg["vol_targeting_aurora"].strategy_type == "allocation"
+
+    def _nav_series(self, n_days=420, n_funds=3, seed=42):
+        """生成 n_funds 只基金 n_days 天净值（低相关几何随机游走）"""
+        rng = np.random.default_rng(seed)
+        series = {}
+        for f in range(n_funds):
+            navs, base = [], 1.0
+            for _ in range(n_days):
+                base *= 1 + rng.normal(0.0003, 0.01)
+                navs.append(base)
+            series[f"F{f}"] = navs
+        return series
+
+    def test_dynamic_rp_weights(self):
+        from backend.fund_quant.adapter import AuroraDynamicRiskParity
+        s = AuroraDynamicRiskParity()
+        series = self._nav_series(n_days=420, n_funds=3)  # 20个月
+        w = s._compute_weights(series, list(series.keys()))
+        assert w, "应返回权重"
+        assert abs(sum(w.values()) - 1.0) < 1e-3, f"权重和≠1: {sum(w.values())}"  # 四舍五入容差
+        assert all(np.isfinite(v) for v in w.values()), "存在 NaN"
+
+    def test_dynamic_rp_short_window(self):
+        """窗口截断后不足2基金 → 返回空（不崩溃）"""
+        from backend.fund_quant.adapter import AuroraDynamicRiskParity
+        s = AuroraDynamicRiskParity()
+        series = {f"F{i}": list(range(50, 50 + 59)) for i in range(3)}  # 只有59天
+        assert s._compute_weights(series, list(series.keys())) == {}
+
+    def test_vol_targeting_equal_weight_base(self):
+        from backend.fund_quant.adapter import AuroraVolTargeting
+        s = AuroraVolTargeting()
+        codes = ["F0", "F1", "F2"]
+        w = s._compute_weights({}, codes)
+        assert w == {c: 1 / 3 for c in codes}, f"等权打底失败: {w}"
+
+    def test_vol_targeting_scaling(self):
+        """高波降仓 scale<1；低波加仓 scale>1（受 max_scale 限制）"""
+        from backend.fund_quant.adapter import AuroraVolTargeting
+        rng = np.random.default_rng(7)
+        high = [1.0]; base = 1.0
+        for _ in range(200):
+            base *= 1 + rng.normal(0, 0.03)   # 年化 ~47%
+            high.append(base)
+        low = [1.0]; base = 1.0
+        for _ in range(200):
+            base *= 1 + rng.normal(0, 0.001)  # 年化 ~1.6%
+            low.append(base)
+
+        # 高波 → 降仓
+        s_hi = AuroraVolTargeting()
+        w = {"A": 0.5, "B": 0.5}
+        out = s_hi._apply_vol_targeting(w, {"A": high, "B": high}, "")
+        assert out["A"] < 0.5, f"高波应降仓: {out['A']}"
+        assert out["A"] >= 0.5 * 0.1, "不低于 min_scale"
+        # 低波 → 加仓
+        s_lo = AuroraVolTargeting()
+        out = s_lo._apply_vol_targeting(w, {"A": low, "B": low}, "")
+        assert out["A"] > 0.5, f"低波应加仓: {out['A']}"
+        assert out["A"] <= 0.5 * 2.0, "不超过 max_scale"
+
+    def test_vol_targeting_off_regression(self):
+        """vol_target=0 时叠加层原样返回（保护现有7策略）"""
+        from backend.fund_quant.adapter import AuroraRiskParity
+        s = AuroraRiskParity()
+        s.params["vol_target"] = 0
+        w = {"A": 0.4, "B": 0.6}
+        assert s._apply_vol_targeting(w, {"A": [1.0] * 100}, "") == w
+
+    def test_trend_following_weights_and_cash(self):
+        from backend.fund_quant.adapter import AuroraTrendFollowing
+        s = AuroraTrendFollowing()
+        s.params["lookback_days"] = 20
+        up = list(np.linspace(1.0, 1.2, 21))
+        down = list(np.linspace(1.2, 1.0, 21))
+        flat = [1.0] * 21
+        weights = s._compute_weights({"UP": up, "DOWN": down, "FLAT": flat}, ["UP", "DOWN", "FLAT"])
+        assert weights == {"UP": 1.0}
+
+        # 全部趋势转弱时返回空权重，基类将已持仓全部平掉，资金留现金。
+        assert s._compute_weights({"DOWN": down, "FLAT": flat}, ["DOWN", "FLAT"]) == {}
