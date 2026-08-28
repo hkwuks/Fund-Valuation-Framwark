@@ -156,6 +156,14 @@ export interface StrategyInfo {
   param_ranges?: StrategyParam[]
 }
 
+export interface StrategyParams {
+  name: string
+  type: string
+  description: string
+  default_params: Record<string, unknown>
+  param_ranges: Record<string, { min?: number; max?: number }>
+}
+
 export interface StrategyParam {
   name: string
   label: string
@@ -384,6 +392,8 @@ export const fundQuantApi = {
 
   getStrategyList: () =>
     get<{ success: boolean; data: StrategyInfo[] }>('/strategy/list'),
+  getStrategyParams: (name: string) =>
+    get<{ success: boolean; data: StrategyParams }>(`/strategy/params/${name}`),
 
   // — 新增：策略暴露接口 —
   getFactorExposure: (fund_code: string) =>

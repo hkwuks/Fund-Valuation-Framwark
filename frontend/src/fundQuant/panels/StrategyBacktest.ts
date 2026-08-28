@@ -1,5 +1,5 @@
 import { PanelBase } from '../layout'
-import { fundQuantApi, type AuroraBacktestResult } from '../api'
+import { fundQuantApi, type AuroraBacktestResult, type StrategyParams } from '../api'
 import { state } from '../state'
 
 /**
@@ -39,9 +39,11 @@ export class StrategyBacktest extends PanelBase {
             <option value="risk_parity">风险平价</option>
           </select>
           <input class="sb-start" type="date" value="2021-01-01" style="font-size:11px;padding:2px 4px;">
+          <button class="btn btn-sm btn-ghost sb-params">参数</button>
           <button class="btn btn-sm btn-primary sb-run" style="font-weight:600;">▶ 回测</button>
         </div>
       </div>
+      <div class="sb-params-body" hidden></div>
       <div class="sb-body">
         <div class="sb-metrics"></div>
         <div class="sb-msg" style="font-size:12px;color:var(--text-tertiary);padding:8px;">选择策略后点击「回测」</div>
@@ -53,11 +55,14 @@ export class StrategyBacktest extends PanelBase {
     const strategySel = this.el?.querySelector('.sb-strategy') as HTMLSelectElement
     const modeSel = this.el?.querySelector('.sb-mode') as HTMLSelectElement
     const runBtn = this.el?.querySelector('.sb-run') as HTMLButtonElement
+    const paramsBtn = this.el?.querySelector('.sb-params') as HTMLButtonElement
 
     strategySel?.addEventListener('change', () => {
       modeSel!.style.display = strategySel.value === 'all_weather_aurora' ? '' : 'none'
+      this.hideParams()
     })
 
+    paramsBtn?.addEventListener('click', () => void this.toggleParams())
     runBtn?.addEventListener('click', () => this.run())
   }
 
@@ -77,7 +82,7 @@ export class StrategyBacktest extends PanelBase {
         this.showError('基金池为空')
         return
       }
-      const params: Record<string, any> = {}
+      const params = this.readParams()
       if (strategy === 'all_weather_aurora') params.mode = modeSel?.value || 'fixed'
       if (strategy === 'black_litterman_aurora') {
         const views = (state.get('blViews') as any[]) || []
@@ -101,6 +106,50 @@ export class StrategyBacktest extends PanelBase {
       this.running = false
       if (btn) btn.textContent = '▶ 回测'
     }
+  }
+
+  private async toggleParams(): Promise<void> {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    const strategy = (this.el?.querySelector('.sb-strategy') as HTMLSelectElement | null)?.value
+    if (!body || !strategy) return
+    if (!body.hidden) {
+      this.hideParams()
+      return
+    }
+    body.hidden = false
+    body.textContent = '加载参数中…'
+    try {
+      const response = await fundQuantApi.getStrategyParams(strategy)
+      this.renderParams(response.data)
+    } catch (error) {
+      body.textContent = `参数加载失败：${error instanceof Error ? error.message : '未知错误'}`
+    }
+  }
+
+  private renderParams(strategy: StrategyParams): void {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    if (!body) return
+    const params = Object.entries(strategy.default_params)
+      .filter(([, value]) => typeof value === 'number')
+      .map(([name, value]) => {
+        const range = strategy.param_ranges[name] || {}
+        const step = Number.isInteger(value) ? 1 : 'any'
+        return `<label>${name} <input data-param="${name}" type="number" value="${value}" min="${range.min ?? ''}" max="${range.max ?? ''}" step="${step}"></label>`
+      })
+    body.innerHTML = params.length ? params.join('') : '该策略没有可编辑的数值参数'
+  }
+
+  private readParams(): Record<string, any> {
+    const params: Record<string, any> = {}
+    this.el?.querySelectorAll<HTMLInputElement>('.sb-params-body [data-param]').forEach(input => {
+      if (input.value !== '') params[input.dataset.param!] = Number(input.value)
+    })
+    return params
+  }
+
+  private hideParams(): void {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    if (body) body.hidden = true
   }
 
   private renderMetrics(d: AuroraBacktestResult, base: AuroraBacktestResult | null): void {
