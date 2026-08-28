@@ -317,7 +317,35 @@ class TestRatingEnhanced:
         assert "评级" in signals[0].reason or "评分" in signals[0].reason
 
 
-class TestBlackLitterman:
+class TestAuroraRatingEnhanced:
+    def test_registered_strategy_emits_core_signal(self, monkeypatch):
+        """Aurora 包装器只在受控刷新时调用遗留评分器并发出核心信号。"""
+        import sys as _sys
+        from datetime import date
+
+        _sys.path.insert(0, "backend")
+        from core import Direction as CoreDirection, FundNavPoint, StrategyContext, StrategyRegistry
+        from core.event import EventBus, EventType
+        from backend.fund_quant.adapter import AuroraRatingEnhancedSelection
+        from backend.fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
+
+        monkeypatch.setattr(RatingEnhancedSelection, "screen", lambda *_args, **_kwargs: {
+            "rankings": [{"fund_code": "000001", "total_score": 0.75}],
+        })
+        assert StrategyRegistry.get("rating_enhanced_aurora") is AuroraRatingEnhancedSelection
+
+        signals = []
+        bus = EventBus()
+        bus.subscribe(EventType.SIGNAL_GENERATED, lambda event: signals.append(event.payload))
+        strategy = AuroraRatingEnhancedSelection()
+        strategy.on_init(StrategyContext(bus, mode="live"))
+        strategy.on_data(FundNavPoint("000001", date(2024, 1, 2), 1.25))
+
+        assert len(signals) == 1
+        assert signals[0].strategy == "rating_enhanced_aurora"
+        assert signals[0].direction is CoreDirection.LONG
+        assert signals[0].confidence == 0.75
+
     """Black-Litterman 配置策略专项测试"""
 
     def _make_nav_values(self, length=120, base=1.0, trend=0.0003, vol=0.008):
@@ -610,8 +638,39 @@ class TestP0AllocationStrategies:
         weights = s._compute_weights({"UP": up, "DOWN": down, "FLAT": flat}, ["UP", "DOWN", "FLAT"])
         assert weights == {"UP": 1.0}
 
-        # 全部趋势转弱时返回空权重，基类将已持仓全部平掉，资金留现金。
-        assert s._compute_weights({"DOWN": down, "FLAT": flat}, ["DOWN", "FLAT"]) == {}
+        # 全部趋势转弱时返回显式零权重，供基类清仓并保留现金。
+        assert s._compute_weights({"DOWN": down, "FLAT": flat}, ["DOWN", "FLAT"]) == {
+            "DOWN": 0.0, "FLAT": 0.0,
+        }
+
+    def test_trend_following_liquidates_existing_positions(self):
+        """趋势转弱时应发出平仓信号，而非因空权重直接跳过。"""
+        from backend.fund_quant.adapter import AuroraTrendFollowing
+        from core.signal import Direction, Position
+
+        s = AuroraTrendFollowing()
+        s.params.update({"lookback_days": 20, "rebalance_threshold": 0.0})
+        values = list(np.linspace(1.2, 1.0, 21))
+        dates = [f"2025-01-{i + 1:02d}" for i in range(21)]
+        s._hist = {code: list(zip(dates, values)) for code in ("DOWN", "FLAT")}
+        emitted = []
+
+        class Execution:
+            def get_position(self, code):
+                return Position(code, Direction.LONG, 10.0, 1.1)
+
+        class Context:
+            portfolio_value = 1000.0
+            execution = Execution()
+
+            def emit(self, signal):
+                emitted.append(signal)
+
+        s.ctx = Context()
+        s._rebalance(dates[-1])
+
+        assert {signal.symbol for signal in emitted} == {"DOWN", "FLAT"}
+        assert all(signal.direction == Direction.CLOSE_LONG for signal in emitted)
 
     def test_gmv_minimizes_variance(self):
         from backend.fund_quant.adapter import AuroraGlobalMinimumVariance

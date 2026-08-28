@@ -1204,6 +1204,70 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
         return result.get("weights", {})
 
 
+# ── 评级增强选基（AuroraCore 信号版）──
+
+@StrategyRegistry.register("rating_enhanced_aurora")
+class AuroraRatingEnhancedSelection(Strategy):
+    """评级增强选基的 AuroraCore 信号入口。
+
+    复用既有截面评分器，仅在实盘/模拟模式按固定频率刷新排名；历史回测不调用
+    无日期截点的存储层查询，避免引入前视偏差。
+    """
+    name = "rating_enhanced_aurora"
+    strategy_type = "selection"
+    description = "评级增强选基: 按固定频率将截面评分转换为 AuroraCore 信号"
+    default_params = {
+        "fund_type": "all",
+        "top_n": 5,
+        "evaluation_days": 20,
+        "score_threshold": 0.5,
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.params = {**self.default_params}
+        self._current_date = ""
+        self._day_count = 0
+        self._scores: dict[str, float] = {}
+
+    def on_data(self, data):
+        if self.ctx is None or self.ctx.mode == "backtest":
+            return
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+
+        if date_str != self._current_date:
+            self._current_date = date_str
+            self._day_count += 1
+            if (self._day_count - 1) % max(int(self.params["evaluation_days"]), 1) == 0:
+                self._refresh_scores()
+
+        score = self._scores.get(code)
+        if score is None:
+            return
+        direction = Direction.LONG if score >= float(self.params["score_threshold"]) else Direction.HOLD
+        self.ctx.emit(Signal(
+            id="", strategy=self.name, symbol=code, direction=direction,
+            price=float(nav), volume=1.0, confidence=score,
+            reason=f"评级增强评分={score:.4f}",
+        ))
+
+    def _refresh_scores(self):
+        from .strategy.selection.rating_enhanced import RatingEnhancedSelection
+
+        scorer = RatingEnhancedSelection()
+        result = scorer.screen(
+            fund_type=self.params["fund_type"],
+            top_n=int(self.params["top_n"]),
+        )
+        self._scores = {
+            row["fund_code"]: float(row["total_score"])
+            for row in result.get("rankings", [])
+        }
+
 class FundCostModelAdapter(CostModel):
     """Adapt FundCostModel to core.CostModel interface — 薄适配层，逻辑复用 backtest.cost_model"""
 
