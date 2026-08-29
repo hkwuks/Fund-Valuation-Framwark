@@ -162,6 +162,7 @@ export interface StrategyParams {
   description: string
   default_params: Record<string, unknown>
   param_ranges: Record<string, { min?: number; max?: number }>
+  param_choices?: Record<string, string[]>
 }
 
 export interface StrategyParam {

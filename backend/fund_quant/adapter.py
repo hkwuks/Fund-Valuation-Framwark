@@ -488,6 +488,7 @@ class AllWeatherAurora(Strategy):
         "bond_vol_multiplier": "auto",
         "leverage": 1.0,
     }
+    param_choices = {"mode": ["fixed", "risk_parity"]}
     min_history_days = 60
 
     def __init__(self):

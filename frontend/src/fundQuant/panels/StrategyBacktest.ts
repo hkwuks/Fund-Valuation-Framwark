@@ -2,6 +2,8 @@ import { PanelBase } from '../layout'
 import { fundQuantApi, type AuroraBacktestResult, type StrategyParams } from '../api'
 import { state } from '../state'
 
+const PARAMS_KEY_PREFIX = 'fundQuant.strategyParams.'
+
 /**
  * 策略回测面板 — 用 AuroraCore 统一引擎跑 etf_rotation / all_weather
  *
@@ -40,6 +42,7 @@ export class StrategyBacktest extends PanelBase {
           </select>
           <input class="sb-start" type="date" value="2021-01-01" style="font-size:11px;padding:2px 4px;">
           <button class="btn btn-sm btn-ghost sb-params">参数</button>
+          <button class="btn btn-sm btn-ghost sb-params-reset" hidden>重置</button>
           <button class="btn btn-sm btn-primary sb-run" style="font-weight:600;">▶ 回测</button>
         </div>
       </div>
@@ -56,6 +59,7 @@ export class StrategyBacktest extends PanelBase {
     const modeSel = this.el?.querySelector('.sb-mode') as HTMLSelectElement
     const runBtn = this.el?.querySelector('.sb-run') as HTMLButtonElement
     const paramsBtn = this.el?.querySelector('.sb-params') as HTMLButtonElement
+    const resetBtn = this.el?.querySelector('.sb-params-reset') as HTMLButtonElement
 
     strategySel?.addEventListener('change', () => {
       modeSel!.style.display = strategySel.value === 'all_weather_aurora' ? '' : 'none'
@@ -63,6 +67,7 @@ export class StrategyBacktest extends PanelBase {
     })
 
     paramsBtn?.addEventListener('click', () => void this.toggleParams())
+    resetBtn?.addEventListener('click', () => void this.resetParams())
     runBtn?.addEventListener('click', () => this.run())
   }
 
@@ -83,7 +88,7 @@ export class StrategyBacktest extends PanelBase {
         return
       }
       const params = this.readParams()
-      if (strategy === 'all_weather_aurora') params.mode = modeSel?.value || 'fixed'
+      if (strategy === 'all_weather_aurora' && params.mode === undefined) params.mode = modeSel?.value || 'fixed'
       if (strategy === 'black_litterman_aurora') {
         const views = (state.get('blViews') as any[]) || []
         if (views.length) params.views = views
@@ -128,23 +133,72 @@ export class StrategyBacktest extends PanelBase {
 
   private renderParams(strategy: StrategyParams): void {
     const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    const resetBtn = this.el?.querySelector('.sb-params-reset') as HTMLButtonElement | null
     if (!body) return
+    const saved = this.loadParams(strategy.name)
     const params = Object.entries(strategy.default_params)
-      .filter(([, value]) => typeof value === 'number')
+      .filter(([name, value]) => typeof value === 'number' || typeof value === 'boolean' || Boolean(strategy.param_choices?.[name]))
       .map(([name, value]) => {
-        const range = strategy.param_ranges[name] || {}
-        const step = Number.isInteger(value) ? 1 : 'any'
-        return `<label>${name} <input data-param="${name}" type="number" value="${value}" min="${range.min ?? ''}" max="${range.max ?? ''}" step="${step}"></label>`
+        const current = saved[name] ?? value
+        const choices = strategy.param_choices?.[name]
+        if (choices) {
+          return `<label>${name} <select data-param="${name}">${choices.map(choice =>
+            `<option value="${choice}"${current === choice ? ' selected' : ''}>${choice}</option>`).join('')}</select></label>`
+        }
+        if (typeof value === 'boolean') {
+          return `<label>${name} <input data-param="${name}" type="checkbox"${current ? ' checked' : ''}></label>`
+        }
+        if (typeof value === 'number') {
+          const range = strategy.param_ranges[name] || {}
+          const step = Number.isInteger(value) ? 1 : 'any'
+          return `<label>${name} <input data-param="${name}" type="number" value="${current}" min="${range.min ?? ''}" max="${range.max ?? ''}" step="${step}"></label>`
+        }
+        return ''
       })
-    body.innerHTML = params.length ? params.join('') : '该策略没有可编辑的数值参数'
+      .filter(Boolean)
+    body.innerHTML = params.length ? params.join('') : '该策略没有可编辑的参数'
+    body.onchange = () => this.saveParams(strategy.name, this.readParams())
+    if (resetBtn) resetBtn.hidden = params.length === 0
   }
 
-  private readParams(): Record<string, any> {
-    const params: Record<string, any> = {}
-    this.el?.querySelectorAll<HTMLInputElement>('.sb-params-body [data-param]').forEach(input => {
-      if (input.value !== '') params[input.dataset.param!] = Number(input.value)
+  private readParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {}
+    this.el?.querySelectorAll<HTMLInputElement | HTMLSelectElement>('.sb-params-body [data-param]').forEach(input => {
+      const name = input.dataset.param!
+      if (input instanceof HTMLInputElement && input.type === 'checkbox') params[name] = input.checked
+      else if (input instanceof HTMLInputElement && input.type === 'number' && input.value !== '') params[name] = Number(input.value)
+      else if (input.value !== '') params[name] = input.value
     })
     return params
+  }
+
+  private storageKey(strategy: string): string {
+    return PARAMS_KEY_PREFIX + strategy
+  }
+
+  private loadParams(strategy: string): Record<string, unknown> {
+    try {
+      const saved = localStorage.getItem(this.storageKey(strategy))
+      return saved ? JSON.parse(saved) : {}
+    } catch { return {} }
+  }
+
+  private saveParams(strategy: string, params: Record<string, unknown>): void {
+    try { localStorage.setItem(this.storageKey(strategy), JSON.stringify(params)) } catch { /* 存储不可用时忽略 */ }
+  }
+
+  private async resetParams(): Promise<void> {
+    const strategy = (this.el?.querySelector('.sb-strategy') as HTMLSelectElement | null)?.value
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    if (!strategy || !body) return
+    try { localStorage.removeItem(this.storageKey(strategy)) } catch { /* 存储不可用时忽略 */ }
+    body.textContent = '加载参数中…'
+    try {
+      const response = await fundQuantApi.getStrategyParams(strategy)
+      this.renderParams(response.data)
+    } catch (error) {
+      body.textContent = `参数加载失败：${error instanceof Error ? error.message : '未知错误'}`
+    }
   }
 
   private hideParams(): void {

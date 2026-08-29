@@ -106,6 +106,7 @@ async def get_strategy_params(name: str):
             "description": getattr(cls, "description", ""),
             "default_params": getattr(cls, "default_params", {}),
             "param_ranges": getattr(cls, "param_ranges", {}),
+            "param_choices": getattr(cls, "param_choices", {}),
         }}
     # 2. 旧 FundStrategyBase（selection 等策略）
     from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry

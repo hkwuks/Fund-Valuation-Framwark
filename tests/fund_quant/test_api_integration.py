@@ -40,6 +40,12 @@ class TestFundQuantAPI:
         assert data["name"] == "multi_factor"
         assert "default_params" in data
 
+    def test_strategy_params_expose_declared_choices(self, client):
+        res = client.get("/api/fund-quant/strategy/params/all_weather_aurora")
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["param_choices"]["mode"] == ["fixed", "risk_parity"]
+
     def test_strategy_params_not_found(self, client):
         res = client.get("/api/fund-quant/strategy/params/nonexistent")
         assert res.status_code == 404
