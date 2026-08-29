@@ -250,3 +250,28 @@ class TestAuroraBacktestExecution:
 
         sell = next(signal for signal in signals if signal.symbol == "A" and signal.direction == Direction.CLOSE_LONG)
         assert sell.volume == 20
+
+    def test_all_weather_risk_parity_uses_supplied_history(self, monkeypatch):
+        """Aurora 全天候风险平价只能使用回测传入的截至当日历史。"""
+        import backend.fund_quant.strategy.allocation.all_weather as all_weather
+
+        strategy = all_weather.AllWeatherStrategy(params={
+            "mode": "risk_parity",
+            "lookback_days": 20,
+        })
+        nav_series = {
+            "A": [1.0 + i * 0.01 for i in range(21)],
+            "B": [1.0 + i * 0.005 for i in range(21)],
+        }
+
+        def fail_if_database_is_read(*_args, **_kwargs):
+            raise AssertionError("risk parity must not read full database history")
+
+        monkeypatch.setattr(all_weather, "get_nav_history", fail_if_database_is_read, raising=False)
+        result = strategy.optimize(
+            fund_codes=["A", "B"],
+            nav_series=nav_series,
+        )
+
+        assert result["status"] == "success"
+        assert set(result["weights"]) == {"A", "B"}

@@ -532,7 +532,6 @@ class AllWeatherAurora(Strategy):
     def _rebalance(self, date_str: str):
         """用 AllWeatherStrategy 算权重 → 调仓至目标"""
         from .strategy.allocation.all_weather import AllWeatherStrategy
-        from .data.storage import get_nav_history
 
         pool = self._pool_codes()
         # 收集截至该日的净值序列
@@ -551,7 +550,7 @@ class AllWeatherAurora(Strategy):
 
         # 调用 AllWeatherStrategy 计算权重
         strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid_codes)
+        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
         weights = result.get("weights", {})
         if not weights:
             return
