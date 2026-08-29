@@ -347,9 +347,7 @@ def _etf_rotation_current_signal(fund_codes: list[str], params: dict, capital: f
     buy_amounts = {c: round(capital * weight, 2) for c in top}
     strength = min(abs(scores[top[0]]) * 10, 1.0)
     freshness = _data_freshness(nav_dict)
-    conf, conf_note = _confidence_from_freshness(
-        strength, None, freshness,
-    ) if strength > 0 else (0.0, "动量不足，未持仓")
+    conf, conf_note = _confidence_from_freshness(strength, None, freshness)
     return {"strategy": "etf_rotation_aurora", "direction": "buy",
             "weights": {c: round(weight, 4) for c in top},
             "confidence": conf, "confidence_note": conf_note,
