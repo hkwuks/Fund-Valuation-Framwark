@@ -1129,6 +1129,14 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
         bounds = [(min_weight, max_weight)] * n
         initial = np.full(n, 1.0 / n)
 
+        def is_feasible(weights):
+            return (
+                np.all(np.isfinite(weights))
+                and abs(float(np.sum(weights)) - 1.0) <= 1e-6
+                and np.all(weights >= min_weight - 1e-6)
+                and np.all(weights <= max_weight + 1e-6)
+            )
+
         try:
             from scipy.optimize import minimize
             result = minimize(
@@ -1139,12 +1147,10 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
                 constraints={"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},
                 options={"ftol": 1e-10, "maxiter": 1000},
             )
-            weights = result.x if result.success else initial
+            weights = result.x if result.success and is_feasible(result.x) else initial
         except ImportError:
             weights = initial
 
-        weights = np.clip(weights, min_weight, max_weight)
-        weights /= weights.sum()
         return {code: round(float(weight), 4) for code, weight in zip(valid, weights)}
 
 

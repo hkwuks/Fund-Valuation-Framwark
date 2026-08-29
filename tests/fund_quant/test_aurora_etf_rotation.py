@@ -275,3 +275,28 @@ class TestAuroraBacktestExecution:
 
         assert result["status"] == "success"
         assert set(result["weights"]) == {"A", "B"}
+
+    def test_gmv_rejects_infeasible_solver_weights(self, monkeypatch):
+        """GMV 不得把不满足约束的求解结果归一化后直接使用。"""
+        from types import SimpleNamespace
+        from scipy import optimize
+        import backend.fund_quant.adapter as adapter
+
+        monkeypatch.setattr(
+            optimize,
+            "minimize",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                success=True,
+                x=np.array([0.4, 0.02, 0.02]),
+            ),
+        )
+        strategy = adapter.AuroraGlobalMinimumVariance()
+        nav_series = {
+            code: [1.0 + (i + offset) * 0.001 for i in range(30)]
+            for offset, code in enumerate(("A", "B", "C"))
+        }
+
+        weights = strategy._compute_weights(nav_series, ["A", "B", "C"])
+
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
+        assert all(0.02 - 1e-6 <= weight <= 0.4 + 1e-6 for weight in weights.values())
