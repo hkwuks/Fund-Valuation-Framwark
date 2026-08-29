@@ -106,7 +106,7 @@ export class KPIBar extends PanelBase {
   private hasRealData(d: PortfolioStatus): boolean {
     // 判断是否有真实数据：有持仓、有收益变化、或有信号记录
     return d.position_count > 0 || d.return_pct !== 0 || d.total_value > 100000
-      || (d.signal_count && (d.signal_count.buy > 0 || d.signal_count.sell > 0))
+      || Boolean(d.signal_count && (d.signal_count.buy > 0 || d.signal_count.sell > 0))
   }
 
   private updateCards(d: PortfolioStatus): void {

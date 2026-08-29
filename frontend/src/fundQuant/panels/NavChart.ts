@@ -202,7 +202,6 @@ export class NavChart extends PanelBase {
     const cached = this.fundCache.get(this.currentCode)
     if (!cached || !cached.navData.length) return
     const filtered = this.filterData(cached.navData, this.activeDays)
-    const validDates = new Set(filtered.map((d: any) => (d.date || '').slice(0, 10)))
     const showBenchmark = (this.el?.querySelector('.nav-toggle-benchmark') as HTMLInputElement)?.checked ?? true
     this.renderChart(
       filtered,

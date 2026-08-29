@@ -14,7 +14,7 @@ from backend.gold.core.models import SignalDirection
 
 
 @StrategyRegistry.register("test_wf_strategy")
-class TestWFStrategy(StrategyBase):
+class WFStrategy(StrategyBase):
     """测试用简单策略 — 每10根bar开仓"""
     strategy_name = "test_wf_strategy"
     strategy_type = "test"
@@ -57,13 +57,13 @@ class TestWalkForwardValidator:
     def test_insufficient_data_returns_error(self):
         bars = _make_bars(50)
         v = WalkForwardValidator(train_window=100, test_window=20)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         assert "error" in result
 
     def test_sufficient_data_returns_windows(self):
         bars = _make_bars(400)
         v = WalkForwardValidator(train_window=100, test_window=20)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         assert "error" not in result
         assert result["n_windows"] > 0
         assert "avg_return_pct" in result
@@ -72,7 +72,7 @@ class TestWalkForwardValidator:
     def test_windows_have_metrics(self):
         bars = _make_bars(400)
         v = WalkForwardValidator(train_window=100, test_window=20)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         for w in result["windows"]:
             assert "train_bars" in w
             assert "test_bars" in w
@@ -95,13 +95,13 @@ class TestCPCVValidator:
     def test_insufficient_data_returns_error(self):
         bars = _make_bars(50)
         v = CPCVValidator(n_groups=4, k_test=1)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         assert "error" in result
 
     def test_sufficient_data_returns_paths(self):
         bars = _make_bars(400)
         v = CPCVValidator(n_groups=4, k_test=1)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         assert "error" not in result
         assert result["n_paths"] > 0
         assert "pbo" in result
@@ -110,7 +110,7 @@ class TestCPCVValidator:
     def test_paths_have_metrics(self):
         bars = _make_bars(400)
         v = CPCVValidator(n_groups=4, k_test=1)
-        result = v.validate(TestWFStrategy, bars)
+        result = v.validate(WFStrategy, bars)
         for p in result["paths"]:
             assert "train_bars" in p
             assert "test_bars" in p

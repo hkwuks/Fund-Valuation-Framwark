@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { ValuationResult, FundData } from './types';
+import type { ValuationResult } from './types';
 
 interface ValuationHistoryItem {
   fundCode: string;
@@ -10,7 +10,7 @@ interface ValuationHistoryItem {
 }
 
 class ValuationUI {
-  private container: HTMLElement;
+  private container!: HTMLElement;
   private history: ValuationHistoryItem[] = [];
 
   init(container: HTMLElement) {

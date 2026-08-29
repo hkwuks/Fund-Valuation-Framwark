@@ -156,6 +156,15 @@ export interface StrategyInfo {
   param_ranges?: StrategyParam[]
 }
 
+export interface StrategyParams {
+  name: string
+  type: string
+  description: string
+  default_params: Record<string, unknown>
+  param_ranges: Record<string, { min?: number; max?: number }>
+  param_choices?: Record<string, string[]>
+}
+
 export interface StrategyParam {
   name: string
   label: string
@@ -179,6 +188,49 @@ export interface FactorExposureData {
 export interface FactorExposureResult {
   success: boolean
   data: FactorExposureData
+}
+
+export interface FactorMeta {
+  name: string
+  display_name: string
+  category: string
+  domain: string
+  description: string
+  direction: number
+  params: Record<string, any>
+  formula: string
+  min_history_days: number
+  reference: string
+  fund_types: string[]
+}
+
+export interface FactorEvaluateRequest {
+  factor_name: string
+  fund_codes: string[]
+  start_date: string
+  end_date: string
+}
+
+export interface FactorEvaluationReport {
+  factor_name: string
+  category: string
+  evaluation_period: string[]
+  n_periods: number
+  avg_n_stocks: number
+  rank_ic_mean: number
+  ic_ir: number
+  ic_positive_ratio: number
+  group_mean_returns: number[]
+  long_short_spread: number
+  long_short_t_stat: number
+  monotonicity_score: number
+  ic_decay: number[]
+  decay_half_life: number
+  fm_beta_mean: number
+  fm_beta_t_stat: number
+  factor_turnover: number
+  top_quarter_turnover: number
+  verdict: string
 }
 
 // ── 回测分析 ──
@@ -299,7 +351,12 @@ export const fundQuantApi = {
     fund_codes: string[]; start_date: string; end_date: string; initial_capital?: number;
   }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/run-vectorized', req),
 
-// — 策略资产配置信号（以策略为中心） —
+  // — 因子研究 —
+  getFactorList: () => get<{ success: boolean; data: FactorMeta[] }>('/factor/list'),
+  evaluateFactor: (req: FactorEvaluateRequest) =>
+    post<{ success: boolean; data: FactorEvaluationReport }>('/factor/evaluate', req),
+
+  // — 策略资产配置信号（以策略为中心） —
   getStrategyAllocation: (() => {
     const cache = new Map<string, { exp: number; data: StrategyAllocationResult }>()
     const inflight = new Map<string, Promise<{ success: boolean; data: StrategyAllocationResult }>>()
@@ -336,6 +393,8 @@ export const fundQuantApi = {
 
   getStrategyList: () =>
     get<{ success: boolean; data: StrategyInfo[] }>('/strategy/list'),
+  getStrategyParams: (name: string) =>
+    get<{ success: boolean; data: StrategyParams }>(`/strategy/params/${name}`),
 
   // — 新增：策略暴露接口 —
   getFactorExposure: (fund_code: string) =>

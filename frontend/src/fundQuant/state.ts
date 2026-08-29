@@ -57,7 +57,7 @@ export interface LoadingState {
 
 export interface ResearchState {
   visible: boolean
-  activeTab: 'exposure'
+  activeTab: 'exposure' | 'evaluation'
   fundCode: string | null
   signal?: SignalSummary | null
 }

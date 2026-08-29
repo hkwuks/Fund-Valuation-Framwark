@@ -40,6 +40,12 @@ class TestFundQuantAPI:
         assert data["name"] == "multi_factor"
         assert "default_params" in data
 
+    def test_strategy_params_expose_declared_choices(self, client):
+        res = client.get("/api/fund-quant/strategy/params/all_weather_aurora")
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["param_choices"]["mode"] == ["fixed", "risk_parity"]
+
     def test_strategy_params_not_found(self, client):
         res = client.get("/api/fund-quant/strategy/params/nonexistent")
         assert res.status_code == 404
@@ -88,3 +94,58 @@ class TestFundQuantAPI:
     def test_data_status(self, client):
         res = client.get("/api/fund-quant/data/status")
         assert res.status_code == 200
+
+    def test_factor_list(self, client):
+        res = client.get("/api/fund-quant/factor/list")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["success"] is True
+        names = {factor["name"] for factor in data["data"]}
+        assert {"calendar_return", "sharpe_ratio", "max_drawdown"}.issubset(names)
+
+    @pytest.mark.parametrize("payload", [
+        {"factor_name": "sharpe_ratio", "fund_codes": [],
+         "start_date": "2022-01-01", "end_date": "2024-01-01"},
+        {"factor_name": "sharpe_ratio", "fund_codes": ["000001"],
+         "start_date": "2024-01-01", "end_date": "2022-01-01"},
+    ])
+    def test_factor_evaluate_validation(self, client, payload):
+        res = client.post("/api/fund-quant/factor/evaluate", json=payload)
+        assert res.status_code == 400
+
+    def test_factor_evaluate_unknown_factor(self, client):
+        res = client.post("/api/fund-quant/factor/evaluate", json={
+            "factor_name": "does_not_exist",
+            "fund_codes": ["000001"],
+            "start_date": "2022-01-01",
+            "end_date": "2024-01-01",
+        })
+        assert res.status_code == 404
+
+    def test_factor_evaluate_success(self, client, monkeypatch):
+        from backend.core.factor.evaluation import EvaluationEngine
+        from backend.core.factor.models import FactorEvaluationReport
+        from datetime import date
+
+        def fake_run(self, factor, symbols, start, end):
+            return FactorEvaluationReport(
+                factor_name=factor.meta.name,
+                domain="fund",
+                category=factor.meta.category,
+                evaluation_period=(start, end),
+                n_periods=2,
+                rank_ic_mean=0.25,
+            )
+
+        monkeypatch.setattr(EvaluationEngine, "run", fake_run)
+        res = client.post("/api/fund-quant/factor/evaluate", json={
+            "factor_name": "sharpe_ratio",
+            "fund_codes": ["000001", "000002"],
+            "start_date": date(2022, 1, 1).isoformat(),
+            "end_date": date(2024, 1, 1).isoformat(),
+        })
+        assert res.status_code == 200
+        data = res.json()["data"]
+        assert data["factor_name"] == "sharpe_ratio"
+        assert data["evaluation_period"] == ["2022-01-01", "2024-01-01"]
+        assert data["n_periods"] == 2

@@ -28,18 +28,6 @@ function savePersistentCache(code: string, data: any, ttl?: number) {
   } catch { /* quota exceeded — ignore */ }
 }
 
-function clearExpiredCache() {
-  const prefixLen = LOCAL_CACHE_PREFIX.length;
-  for (let i = localStorage.length - 1; i >= 0; i--) {
-    const key = localStorage.key(i);
-    if (key?.startsWith(LOCAL_CACHE_PREFIX)) {
-      try {
-        const entry = JSON.parse(localStorage.getItem(key)!);
-        if (Date.now() - entry.ts >= entry.ttl) localStorage.removeItem(key);
-      } catch { localStorage.removeItem(key); }
-    }
-  }
-}
 // =====
 
 interface CacheConfig {
@@ -310,7 +298,6 @@ class MarketDataUI {
     this.marketData = {};
     this.isDataLoaded = false;
     // 清除所有持久缓存
-    const prefixLen = LOCAL_CACHE_PREFIX.length;
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
       if (key?.startsWith(LOCAL_CACHE_PREFIX)) localStorage.removeItem(key);

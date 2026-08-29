@@ -1,6 +1,8 @@
 import { PanelBase } from '../layout'
-import { fundQuantApi, type AuroraBacktestResult } from '../api'
+import { fundQuantApi, type AuroraBacktestResult, type StrategyParams } from '../api'
 import { state } from '../state'
+
+const PARAMS_KEY_PREFIX = 'fundQuant.strategyParams.'
 
 /**
  * 策略回测面板 — 用 AuroraCore 统一引擎跑 etf_rotation / all_weather
@@ -29,15 +31,22 @@ export class StrategyBacktest extends PanelBase {
             <option value="risk_parity_aurora">风险平价</option>
             <option value="hrp_aurora">层次风险平价(HRP)</option>
             <option value="max_diversification_aurora">最大多元化(MDP)</option>
+            <option value="dynamic_risk_parity_aurora">动态风险平价</option>
+            <option value="vol_targeting_aurora">波动率目标</option>
+            <option value="trend_following_aurora">趋势跟踪</option>
+            <option value="gmv_aurora">最小方差(GMV)</option>
           </select>
           <select class="sb-mode" style="display:none;">
             <option value="fixed">固定权重</option>
             <option value="risk_parity">风险平价</option>
           </select>
           <input class="sb-start" type="date" value="2021-01-01" style="font-size:11px;padding:2px 4px;">
+          <button class="btn btn-sm btn-ghost sb-params">参数</button>
+          <button class="btn btn-sm btn-ghost sb-params-reset" hidden>重置</button>
           <button class="btn btn-sm btn-primary sb-run" style="font-weight:600;">▶ 回测</button>
         </div>
       </div>
+      <div class="sb-params-body" hidden></div>
       <div class="sb-body">
         <div class="sb-metrics"></div>
         <div class="sb-msg" style="font-size:12px;color:var(--text-tertiary);padding:8px;">选择策略后点击「回测」</div>
@@ -49,11 +58,16 @@ export class StrategyBacktest extends PanelBase {
     const strategySel = this.el?.querySelector('.sb-strategy') as HTMLSelectElement
     const modeSel = this.el?.querySelector('.sb-mode') as HTMLSelectElement
     const runBtn = this.el?.querySelector('.sb-run') as HTMLButtonElement
+    const paramsBtn = this.el?.querySelector('.sb-params') as HTMLButtonElement
+    const resetBtn = this.el?.querySelector('.sb-params-reset') as HTMLButtonElement
 
     strategySel?.addEventListener('change', () => {
       modeSel!.style.display = strategySel.value === 'all_weather_aurora' ? '' : 'none'
+      this.hideParams()
     })
 
+    paramsBtn?.addEventListener('click', () => void this.toggleParams())
+    resetBtn?.addEventListener('click', () => void this.resetParams())
     runBtn?.addEventListener('click', () => this.run())
   }
 
@@ -73,8 +87,8 @@ export class StrategyBacktest extends PanelBase {
         this.showError('基金池为空')
         return
       }
-      const params: Record<string, any> = {}
-      if (strategy === 'all_weather_aurora') params.mode = modeSel?.value || 'fixed'
+      const params = this.readParams()
+      if (strategy === 'all_weather_aurora' && params.mode === undefined) params.mode = modeSel?.value || 'fixed'
       if (strategy === 'black_litterman_aurora') {
         const views = (state.get('blViews') as any[]) || []
         if (views.length) params.views = views
@@ -99,6 +113,99 @@ export class StrategyBacktest extends PanelBase {
     }
   }
 
+  private async toggleParams(): Promise<void> {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    const strategy = (this.el?.querySelector('.sb-strategy') as HTMLSelectElement | null)?.value
+    if (!body || !strategy) return
+    if (!body.hidden) {
+      this.hideParams()
+      return
+    }
+    body.hidden = false
+    body.textContent = '加载参数中…'
+    try {
+      const response = await fundQuantApi.getStrategyParams(strategy)
+      this.renderParams(response.data)
+    } catch (error) {
+      body.textContent = `参数加载失败：${error instanceof Error ? error.message : '未知错误'}`
+    }
+  }
+
+  private renderParams(strategy: StrategyParams): void {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    const resetBtn = this.el?.querySelector('.sb-params-reset') as HTMLButtonElement | null
+    if (!body) return
+    const saved = this.loadParams(strategy.name)
+    const params = Object.entries(strategy.default_params)
+      .filter(([name, value]) => typeof value === 'number' || typeof value === 'boolean' || Boolean(strategy.param_choices?.[name]))
+      .map(([name, value]) => {
+        const current = saved[name] ?? value
+        const choices = strategy.param_choices?.[name]
+        if (choices) {
+          return `<label>${name} <select data-param="${name}">${choices.map(choice =>
+            `<option value="${choice}"${current === choice ? ' selected' : ''}>${choice}</option>`).join('')}</select></label>`
+        }
+        if (typeof value === 'boolean') {
+          return `<label>${name} <input data-param="${name}" type="checkbox"${current ? ' checked' : ''}></label>`
+        }
+        if (typeof value === 'number') {
+          const range = strategy.param_ranges[name] || {}
+          const step = Number.isInteger(value) ? 1 : 'any'
+          return `<label>${name} <input data-param="${name}" type="number" value="${current}" min="${range.min ?? ''}" max="${range.max ?? ''}" step="${step}"></label>`
+        }
+        return ''
+      })
+      .filter(Boolean)
+    body.innerHTML = params.length ? params.join('') : '该策略没有可编辑的参数'
+    body.onchange = () => this.saveParams(strategy.name, this.readParams())
+    if (resetBtn) resetBtn.hidden = params.length === 0
+  }
+
+  private readParams(): Record<string, unknown> {
+    const params: Record<string, unknown> = {}
+    this.el?.querySelectorAll<HTMLInputElement | HTMLSelectElement>('.sb-params-body [data-param]').forEach(input => {
+      const name = input.dataset.param!
+      if (input instanceof HTMLInputElement && input.type === 'checkbox') params[name] = input.checked
+      else if (input instanceof HTMLInputElement && input.type === 'number' && input.value !== '') params[name] = Number(input.value)
+      else if (input.value !== '') params[name] = input.value
+    })
+    return params
+  }
+
+  private storageKey(strategy: string): string {
+    return PARAMS_KEY_PREFIX + strategy
+  }
+
+  private loadParams(strategy: string): Record<string, unknown> {
+    try {
+      const saved = localStorage.getItem(this.storageKey(strategy))
+      return saved ? JSON.parse(saved) : {}
+    } catch { return {} }
+  }
+
+  private saveParams(strategy: string, params: Record<string, unknown>): void {
+    try { localStorage.setItem(this.storageKey(strategy), JSON.stringify(params)) } catch { /* 存储不可用时忽略 */ }
+  }
+
+  private async resetParams(): Promise<void> {
+    const strategy = (this.el?.querySelector('.sb-strategy') as HTMLSelectElement | null)?.value
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    if (!strategy || !body) return
+    try { localStorage.removeItem(this.storageKey(strategy)) } catch { /* 存储不可用时忽略 */ }
+    body.textContent = '加载参数中…'
+    try {
+      const response = await fundQuantApi.getStrategyParams(strategy)
+      this.renderParams(response.data)
+    } catch (error) {
+      body.textContent = `参数加载失败：${error instanceof Error ? error.message : '未知错误'}`
+    }
+  }
+
+  private hideParams(): void {
+    const body = this.el?.querySelector('.sb-params-body') as HTMLElement | null
+    if (body) body.hidden = true
+  }
+
   private renderMetrics(d: AuroraBacktestResult, base: AuroraBacktestResult | null): void {
     const metricsEl = this.el?.querySelector('.sb-metrics')
     const msgEl = this.el?.querySelector('.sb-msg')
@@ -111,6 +218,10 @@ export class StrategyBacktest extends PanelBase {
       risk_parity_aurora: '风险平价',
       hrp_aurora: '层次风险平价(HRP)',
       max_diversification_aurora: '最大多元化(MDP)',
+      dynamic_risk_parity_aurora: '动态风险平价',
+      vol_targeting_aurora: '波动率目标',
+      trend_following_aurora: '趋势跟踪',
+      gmv_aurora: '最小方差(GMV)',
     }
     const stratName = names[d.strategy] || d.strategy
     const name = d.strategy === 'all_weather_aurora' ? `${stratName}(${d.mode || 'fixed'})` : stratName

@@ -488,6 +488,7 @@ class AllWeatherAurora(Strategy):
         "bond_vol_multiplier": "auto",
         "leverage": 1.0,
     }
+    param_choices = {"mode": ["fixed", "risk_parity"]}
     min_history_days = 60
 
     def __init__(self):
@@ -835,20 +836,24 @@ class _AuroraAllocationBase(Strategy):
         """波动率目标叠加层 — 高波降仓、低波加仓
 
         仅当 params.vol_target > 0 时生效。scale = target / realized，
-        上限 2.0 防止过度杠杆。
+        上限 max_scale 防止过度杠杆。窗口/上下限可配（vol_targeting_aurora 用）。
         """
         target = self.params.get("vol_target", 0)
         if not target or target <= 0:
             return weights
 
-        # 用 60 天窗口估算组合实现波动率
+        window_days = int(self.params.get("window_days", 60))
+        max_scale = float(self.params.get("max_scale", 2.0))
+        min_scale = float(self.params.get("min_scale", 0.1))
+
+        # 用 window_days 天窗口估算组合实现波动率
         portfolio_navs = []
         for code, w in weights.items():
             if w <= 0:
                 continue
             series = nav_series.get(code, [])
-            if len(series) >= 60:
-                portfolio_navs.append((np.array(series[-60:], dtype=np.float64), w))
+            if len(series) >= window_days:
+                portfolio_navs.append((np.array(series[-window_days:], dtype=np.float64), w))
 
         if not portfolio_navs:
             return weights
@@ -862,8 +867,8 @@ class _AuroraAllocationBase(Strategy):
         if realized_vol <= 0.01:
             return weights
 
-        scale = min(target / realized_vol, 2.0)
-        scale = max(scale, 0.1)  # 最低保留 10%
+        scale = min(target / realized_vol, max_scale)
+        scale = max(scale, min_scale)  # 最低保留 min_scale 仓位
         return {c: w * scale for c, w in weights.items()}
 
     def _rebalance(self, date_str: str):
@@ -995,6 +1000,166 @@ class AuroraRiskParity(_AuroraAllocationBase):
         return result.get("weights", {})
 
 
+# ── 动态风险平价（AuroraCore 版）──
+
+@StrategyRegistry.register("dynamic_risk_parity_aurora")
+class AuroraDynamicRiskParity(_AuroraAllocationBase):
+    """动态风险平价 — 每次再平衡只用最近 window_months 个月滚动协方差
+
+    静态 RP 用全程 3 年协方差；动态版截断到滚动窗口，权重跟随近期波动结构
+    变化（MDPI 2026：滚动窗口 RP 夏普 1.418 / 回撤 27.7%，均优于静态）。
+    求解仍复用 RiskParityStrategy（Ledoit-Wolf + SLSQP）。
+    """
+    name = "dynamic_risk_parity_aurora"
+    strategy_type = "allocation"
+    description = "动态风险平价: 最近N月滚动协方差 + Ledoit-Wolf + SLSQP, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "window_months": 12,        # 滚动窗口（PRD 推荐 12 个月）
+        "shrinkage": "auto",
+        "max_weight": 0.4,
+        "min_weight": 0.05,
+        "min_weight_bond": 0.10,
+        "bond_vol_multiplier": "auto",
+        "fee_penalty_threshold": 0.02,
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.risk_parity import RiskParityStrategy
+        n = self.params.get("window_months", 12) * 21  # 月→交易日
+        truncated = {c: s[-n:] for c, s in nav_series.items() if len(s) >= 60}
+        if len(truncated) < 2:
+            return {}
+        strategy = RiskParityStrategy(params=dict(self.params))
+        result = strategy.optimize(fund_codes=codes, nav_series=truncated)
+        return result.get("weights", {})
+
+
+# ── 波动率目标（AuroraCore 版）──
+
+@StrategyRegistry.register("vol_targeting_aurora")
+class AuroraVolTargeting(_AuroraAllocationBase):
+    """波动率目标 — 等权打底 + 反比缩放钉住目标波动率
+
+    _compute_weights 返回等权，随后基类 _rebalance 调 _apply_vol_targeting
+    按 60 日实现波动率反比缩放（vol_target=0.12 覆盖基类默认关闭值）。
+    """
+    name = "vol_targeting_aurora"
+    strategy_type = "allocation"
+    description = "波动率目标: 等权打底 + 60日实现波动率反比缩放, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "vol_target": 0.12,          # 年化目标波动率（默认 12%）
+        "max_scale": 2.0,            # 缩放上限，防过度杠杆
+        "min_scale": 0.1,            # 缩放下限，保留最低仓位
+        "window_days": 60,           # 实现波动率估计窗口
+    }
+
+    def _compute_weights(self, nav_series, codes):
+        return {c: 1.0 / len(codes) for c in codes}
+
+
+# ── 趋势跟踪（AuroraCore 版）──
+
+@StrategyRegistry.register("trend_following_aurora")
+class AuroraTrendFollowing(_AuroraAllocationBase):
+    """时间序列动量 — 各基金独立判断趋势，趋势转弱即保留现金"""
+    name = "trend_following_aurora"
+    strategy_type = "allocation"
+    description = "趋势跟踪: 各基金独立时间序列动量 + 收益阈值, 趋弱保留现金"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 200,
+        "buy_threshold": 0.0,
+        "min_history_days": 200,
+    }
+    min_history_days = 200
+
+    def _compute_weights(self, nav_series, codes):
+        """对每只基金独立计算窗口收益；不满足阈值的基金权重为0。"""
+        lookback = int(self.params.get("lookback_days", 200))
+        threshold = float(self.params.get("buy_threshold", 0.0))
+        active = {}
+        for code in codes:
+            series = nav_series.get(code, [])
+            if len(series) <= lookback:
+                continue
+            start, end = float(series[-lookback - 1]), float(series[-1])
+            if start > 0 and (end / start - 1.0) > threshold:
+                active[code] = 1.0
+        if not active:
+            # 返回显式零权重，让基类执行清仓，而不是把空权重当作优化失败直接跳过。
+            return {code: 0.0 for code in codes}
+        weight = 1.0 / len(active)
+        return {code: weight for code in active}
+
+
+# ── 最小方差（AuroraCore 版）──
+
+@StrategyRegistry.register("gmv_aurora")
+class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
+    """全局最小方差 — 仅最小化组合方差，不预测收益"""
+    name = "gmv_aurora"
+    strategy_type = "allocation"
+    description = "全局最小方差(GMV): Ledoit-Wolf协方差 + 长-only约束优化, 走统一引擎"
+    default_params = {
+        "rebalance_freq": "monthly",
+        "rebalance_threshold": 0.05,
+        "lookback_days": 756,
+        "max_weight": 0.4,
+        "min_weight": 0.02,
+    }
+    min_history_days = 60
+
+    def _compute_weights(self, nav_series, codes):
+        from .strategy.allocation.black_litterman import BlackLittermanStrategy
+
+        lookback = int(self.params.get("lookback_days", 756))
+        returns = {}
+        for code in codes:
+            values = [float(v) for v in nav_series.get(code, []) if v and v > 0][-lookback:]
+            if len(values) > 20:
+                arr = np.asarray(values, dtype=np.float64)
+                returns[code] = np.diff(arr) / arr[:-1]
+
+        valid = list(returns)
+        if len(valid) < 2:
+            return {}
+        n_obs = min(len(r) for r in returns.values())
+        if n_obs < 20:
+            return {}
+        matrix = np.column_stack([returns[c][-n_obs:] for c in valid])
+        cov = BlackLittermanStrategy._ledoit_wolf_covariance(matrix)
+        n = len(valid)
+        max_weight = float(self.params.get("max_weight", 0.4))
+        min_weight = float(self.params.get("min_weight", 0.02))
+        max_weight = max(max_weight, 1.0 / n)
+        min_weight = min(min_weight, 1.0 / n)
+        bounds = [(min_weight, max_weight)] * n
+        initial = np.full(n, 1.0 / n)
+
+        try:
+            from scipy.optimize import minimize
+            result = minimize(
+                lambda weights: float(weights @ cov @ weights),
+                initial,
+                method="SLSQP",
+                bounds=bounds,
+                constraints={"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},
+                options={"ftol": 1e-10, "maxiter": 1000},
+            )
+            weights = result.x if result.success else initial
+        except ImportError:
+            weights = initial
+
+        weights = np.clip(weights, min_weight, max_weight)
+        weights /= weights.sum()
+        return {code: round(float(weight), 4) for code, weight in zip(valid, weights)}
+
+
 # ── HRP层次风险平价（AuroraCore 版）──
 
 @StrategyRegistry.register("hrp_aurora")
@@ -1039,6 +1204,70 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
         result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
         return result.get("weights", {})
 
+
+# ── 评级增强选基（AuroraCore 信号版）──
+
+@StrategyRegistry.register("rating_enhanced_aurora")
+class AuroraRatingEnhancedSelection(Strategy):
+    """评级增强选基的 AuroraCore 信号入口。
+
+    复用既有截面评分器，仅在实盘/模拟模式按固定频率刷新排名；历史回测不调用
+    无日期截点的存储层查询，避免引入前视偏差。
+    """
+    name = "rating_enhanced_aurora"
+    strategy_type = "selection"
+    description = "评级增强选基: 按固定频率将截面评分转换为 AuroraCore 信号"
+    default_params = {
+        "fund_type": "all",
+        "top_n": 5,
+        "evaluation_days": 20,
+        "score_threshold": 0.5,
+    }
+
+    def __init__(self):
+        super().__init__()
+        self.params = {**self.default_params}
+        self._current_date = ""
+        self._day_count = 0
+        self._scores: dict[str, float] = {}
+
+    def on_data(self, data):
+        if self.ctx is None or self.ctx.mode == "backtest":
+            return
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+
+        if date_str != self._current_date:
+            self._current_date = date_str
+            self._day_count += 1
+            if (self._day_count - 1) % max(int(self.params["evaluation_days"]), 1) == 0:
+                self._refresh_scores()
+
+        score = self._scores.get(code)
+        if score is None:
+            return
+        direction = Direction.LONG if score >= float(self.params["score_threshold"]) else Direction.HOLD
+        self.ctx.emit(Signal(
+            id="", strategy=self.name, symbol=code, direction=direction,
+            price=float(nav), volume=1.0, confidence=score,
+            reason=f"评级增强评分={score:.4f}",
+        ))
+
+    def _refresh_scores(self):
+        from .strategy.selection.rating_enhanced import RatingEnhancedSelection
+
+        scorer = RatingEnhancedSelection()
+        result = scorer.screen(
+            fund_type=self.params["fund_type"],
+            top_n=int(self.params["top_n"]),
+        )
+        self._scores = {
+            row["fund_code"]: float(row["total_score"])
+            for row in result.get("rankings", [])
+        }
 
 class FundCostModelAdapter(CostModel):
     """Adapt FundCostModel to core.CostModel interface — 薄适配层，逻辑复用 backtest.cost_model"""

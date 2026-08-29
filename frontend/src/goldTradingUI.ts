@@ -33,17 +33,6 @@ const PERIODS = [
   { value: '1', label: '1分钟' },
 ]
 
-// ===== 颜色常量 =====
-const COLORS = {
-  green: '#10b981',
-  red: '#ef4444',
-  orange: '#f59e0b',
-  blue: '#3b82f6',
-  purple: '#8b5cf6',
-  bg: { light: '#ffffff', dark: '#1e293b' },
-  grid: { light: '#e2e8f0', dark: '#334155' },
-  text: { light: '#0f172a', dark: '#e2e8f0' },
-}
 
 function isDark(): boolean {
   return document.body.classList.contains('dark-mode') ||
@@ -75,18 +64,13 @@ export class GoldTradingUI {
   private chart: IChartApi | null = null
   private candlestickSeries: ISeriesApi<'Candlestick'> | null = null
   private volumeSeries: ISeriesApi<'Histogram'> | null = null
-  private ma5Series: ISeriesApi<'Line'> | null = null
-  private ma10Series: ISeriesApi<'Line'> | null = null
-  private ma20Series: ISeriesApi<'Line'> | null = null
-  private ma60Series: ISeriesApi<'Line'> | null = null
+  private maSeries: Record<string, ISeriesApi<'Line'> | null> = {}
   private marketTimer: ReturnType<typeof setInterval> | null = null
   private chartTimer: ReturnType<typeof setInterval> | null = null
   private currentPeriod = 'd'
   private currentBars: any[] = []
   private strategies: any[] = []
   private isWorking = false
-  private chartReady = false
-  private dark = false
   private signalTimer: ReturnType<typeof setInterval> | null = null
   private ctpTimer: ReturnType<typeof setInterval> | null = null
   private riskTimer: ReturnType<typeof setInterval> | null = null
@@ -152,10 +136,7 @@ export class GoldTradingUI {
     this.chart = null
     this.candlestickSeries = null
     this.volumeSeries = null
-    this.ma5Series = null
-    this.ma10Series = null
-    this.ma20Series = null
-    this.ma60Series = null
+    this.maSeries = {}
   }
 
   destroy() {
@@ -624,7 +605,7 @@ export class GoldTradingUI {
       ma5: '#f59e0b', ma10: '#3b82f6', ma20: '#8b5cf6', ma60: '#ec4899',
     }
     ;['ma5', 'ma10', 'ma20', 'ma60'].forEach(key => {
-      (this as any)[`${key}Series`] = this.chart!.addSeries(LineSeries, {
+      this.maSeries[key] = this.chart!.addSeries(LineSeries, {
         color: maColors[key], lineWidth: 1, priceLineVisible: false,
         lastValueVisible: false, crosshairMarkerVisible: false,
       } as any)
@@ -842,7 +823,6 @@ export class GoldTradingUI {
 
   private updateKlineChart(data: any) {
     if (!this.candlestickSeries) {
-      this.dark = isDark()
       this.initChart()
     }
     if (!this.candlestickSeries || !this.chart) return
@@ -878,7 +858,7 @@ export class GoldTradingUI {
 
     // MA指标
     ;['ma5', 'ma10', 'ma20', 'ma60'].forEach(key => {
-      const series = (this as any)[`${key}Series`] as ISeriesApi<'Line'>
+      const series = this.maSeries[key]
       if (!series || !indicators[key]) return
       const lineData: LineData[] = []
       for (let i = 0; i < bars.length; i++) {
@@ -975,7 +955,6 @@ export class GoldTradingUI {
 
     set('ticker-price', formatPrice(price))
     const changeEl = document.getElementById('ticker-change')
-    const pctEl = document.getElementById('ticker-change')
     if (changeEl) {
       const isUp = changePct >= 0
       changeEl.textContent = `${isUp ? '+' : ''}${data.change?.toFixed(2) ?? '--'} (${formatPct(changePct)})`
@@ -1182,7 +1161,6 @@ export class GoldTradingUI {
     const risk = data.report?.risk || {}
     const trades = data.report?.trades || {}
     const cost = data.report?.cost || {}
-    const meta = data.report?.meta || {}
     const ret = perf.total_return ?? 0
     const retClass = ret >= 0 ? 'positive' : 'negative'
 
@@ -1361,7 +1339,7 @@ export class GoldTradingUI {
 
     const scenarios = scv.results || []
     if (scenarios.length > 0) {
-      html += `<div class="val-row"><strong>场景验证:</strong> ${scenarios.map(s => `${s.scenario}: ${s.status === '通过' ? '✅' : '❌'} (Sharpe=${s.report?.sharpe ?? '--'})`).join(' | ')}</div>`
+      html += `<div class="val-row"><strong>场景验证:</strong> ${scenarios.map((s: any) => `${s.scenario}: ${s.status === '通过' ? '✅' : '❌'} (Sharpe=${s.report?.sharpe ?? '--'})`).join(' | ')}</div>`
     }
 
     container.innerHTML = html || '<div class="empty-text">无数据</div>'
@@ -1549,7 +1527,7 @@ export class GoldTradingUI {
             <div class="rm-metric"><span class="rm-label">日内信号</span><span class="rm-value">${rs.today_signal_count ?? 0} 次</span></div>
             <div class="rm-metric"><span class="rm-label">日内盈亏</span><span class="rm-value ${(rs.daily_pnl||0)>=0?'positive':'negative'}">¥${(rs.daily_pnl||0)>=0?'+':''}${(rs.daily_pnl||0).toLocaleString()}</span></div>
             <div class="rm-metric"><span class="rm-label">连续亏损</span><span class="rm-value ${(rs.consecutive_losses||0)>=3?'negative':''}">${rs.consecutive_losses ?? 0} 次</span></div>
-            <div class="rm-metric"><span class="rm-label">回撤限</span><span class="rm-value">${rs.max_drawdown_pct*100 ?? 0}%</span></div>
+            <div class="rm-metric"><span class="rm-label">回撤限</span><span class="rm-value">${(rs.max_drawdown_pct ?? 0) * 100}%</span></div>
             <div class="rm-metric"><span class="rm-label">持仓上限</span><span class="rm-value">${rs.max_position_lots ?? 0} 手</span></div>
           </div>
         </div>`
@@ -1578,7 +1556,6 @@ export class GoldTradingUI {
     const ofEl = document.getElementById('rm-overfitting')
     if (ofEl) {
       const of = d.overfitting || {}
-      const verdict = of.verdict || '--'
       const isOverfit = of.overfitting_detected
       ofEl.innerHTML = `
         <div class="rm-card-title">⚡ 过拟合检测</div>
@@ -1721,32 +1698,6 @@ export class GoldTradingUI {
         <tr><td>模型文件</td><td style="font-size:11px;color:var(--text-tertiary)">${data.model_file || data.model_file || '--'}</td></tr>
         <tr><td>设备</td><td>${data.device || data.device || '--'}</td></tr>
       </table>
-    `
-  }
-
-  private displayRLSignal(signal: any, metrics: any, container: HTMLElement | null) {
-    if (!container) return
-    const body = container.querySelector('.rl-card-body') || container
-    if (!signal || signal.direction === 'hold') {
-      body.innerHTML = '<div class="empty-text">持有观望，暂无交易信号</div>'
-      return
-    }
-    const dirClass = signal.direction === 'long' ? 'bullish' : 'bearish'
-    body.innerHTML = `
-      <div class="signal-card-compact ${dirClass}" style="margin:0">
-        <div class="scc-row">
-          <span class="signal-dir-badge ${signal.direction}">${signal.direction === 'long' ? '做多' : '做空'}</span>
-          <span class="scc-price">¥${formatPrice(signal.price)}</span>
-          ${signal.stop_loss ? `<span class="scc-item">止损 ¥${formatPrice(signal.stop_loss)}</span>` : ''}
-          <span class="scc-item">仓位 ${signal.position ?? 1}手</span>
-        </div>
-        <div class="scc-row" style="margin-top:4px">
-          <span class="scc-item">做多概率 ${(signal.long_prob * 100).toFixed(0)}%</span>
-          <span class="scc-item">做空概率 ${(signal.short_prob * 100).toFixed(0)}%</span>
-          <span class="scc-item">观望概率 ${(signal.hold_prob * 100).toFixed(0)}%</span>
-        </div>
-        ${signal.reason ? `<div class="scc-reason">${signal.reason}</div>` : ''}
-      </div>
     `
   }
 

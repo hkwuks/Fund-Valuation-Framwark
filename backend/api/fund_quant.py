@@ -62,6 +62,13 @@ class EvaluatePoolRequest(BaseModel):
     force: bool = False
 
 
+class FactorEvaluateRequest(BaseModel):
+    factor_name: str
+    fund_codes: List[str]
+    start_date: date
+    end_date: date
+
+
 # ── 初始化 ──
 init_db()
 logger.info("FundQuant 数据库已初始化")
@@ -99,6 +106,7 @@ async def get_strategy_params(name: str):
             "description": getattr(cls, "description", ""),
             "default_params": getattr(cls, "default_params", {}),
             "param_ranges": getattr(cls, "param_ranges", {}),
+            "param_choices": getattr(cls, "param_choices", {}),
         }}
     # 2. 旧 FundStrategyBase（selection 等策略）
     from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry
@@ -112,6 +120,66 @@ async def get_strategy_params(name: str):
         "description": strategy.description,
         "default_params": strategy.default_params,
         "param_ranges": strategy.param_ranges,
+    }}
+
+
+# ── 因子评价 ──
+
+@router.get("/factor/list")
+async def list_factors(domain: Optional[str] = Query("fund"), category: Optional[str] = Query(None)):
+    """列出已注册因子及元数据。"""
+    from ..core.factor.registry import FactorRegistry
+    from ..fund_quant.factors import register_fund_factors
+
+    register_fund_factors()
+    return {"success": True, "data": [
+        {
+            "name": meta.name,
+            "display_name": meta.display_name,
+            "category": meta.category,
+            "domain": meta.domain,
+            "description": meta.description,
+            "direction": meta.direction,
+            "params": meta.params,
+            "formula": meta.formula,
+            "min_history_days": meta.min_history_days,
+            "reference": meta.reference,
+            "fund_types": meta.fund_types,
+        }
+        for meta in FactorRegistry.list(domain=domain, category=category)
+    ]}
+
+
+@router.post("/factor/evaluate")
+async def evaluate_factor(req: FactorEvaluateRequest):
+    """评价单个基金因子（IC、分组收益、FM、衰减和换手率）。"""
+    if not req.fund_codes:
+        raise HTTPException(status_code=400, detail="fund_codes 不能为空")
+    if req.start_date > req.end_date:
+        raise HTTPException(status_code=400, detail="start_date 不能晚于 end_date")
+
+    from ..core.factor.registry import FactorRegistry
+    from ..core.factor.evaluation import EvaluationEngine
+    from ..fund_quant.data.feed import NavFactorFeed
+    from ..fund_quant.factors import register_fund_factors
+
+    register_fund_factors()
+    try:
+        factor_cls = FactorRegistry.get(req.factor_name)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"因子 {req.factor_name} 未找到") from exc
+    meta = factor_cls.meta
+    if meta.domain != "fund":
+        raise HTTPException(status_code=400, detail="仅支持基金域因子")
+
+    feed = NavFactorFeed()
+    report = await asyncio.to_thread(
+        EvaluationEngine(feed).run,
+        factor_cls(), req.fund_codes, req.start_date, req.end_date,
+    )
+    return {"success": True, "data": {
+        **report.__dict__,
+        "evaluation_period": [d.isoformat() for d in report.evaluation_period],
     }}
 
 

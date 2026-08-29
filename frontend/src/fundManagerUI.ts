@@ -12,7 +12,6 @@ class FundManagerUI {
   private sortDirection: 'asc' | 'desc' | null = null;
   private sortColumn: 'change_percent' | 'pe_percentile' = 'change_percent';
   private isInitialized = false;
-  private isValuationLoading = false; // 估值加载中标志
   private static readonly REFRESH_INTERVAL_OPTIONS = [
     { value: 30000, label: '30 秒' },
     { value: 60000, label: '1 分钟' },
@@ -32,7 +31,7 @@ class FundManagerUI {
     this.bindEvents();
 
     // 开始刷新估值（实时更新 UI）
-    await this.refreshValuations(false);
+    await this.refreshValuations();
 
     this.startAutoRefresh();
     this.isInitialized = true;
@@ -192,7 +191,7 @@ class FundManagerUI {
     // 估值分位显示
     const pePercentileDisplay = fund.pe_percentile != null
       ? this.renderPercentileBadge(fund.pe_percentile, fund.pe_value, fund.index_name)
-      : this.renderPercentileNa(fund);
+      : this.renderPercentileNa();
     const pePercentileTitle = fund.pe_percentile != null
       ? `${fund.index_name || '指数'} 当前 PE ${fund.pe_value != null ? fund.pe_value.toFixed(2) : '--'}，历史分位 ${fund.pe_percentile.toFixed(1)}%`
       : this.getPercentileNaTitle(fund);
@@ -326,7 +325,7 @@ class FundManagerUI {
     return '暂无指数估值分位数据';
   }
 
-  private renderPercentileNa(fund: Fund): string {
+  private renderPercentileNa(): string {
     return `<span class="badge badge-secondary" style="font-size: 11px; opacity: 0.7;">不适用</span>`;
   }
 
@@ -549,7 +548,7 @@ class FundManagerUI {
     }
 
     try {
-      await this.refreshValuations(false);
+      await this.refreshValuations();
       toast.success('数据刷新成功');
     } catch (error) {
       console.error('刷新数据失败:', error);
@@ -562,7 +561,7 @@ class FundManagerUI {
     }
   }
 
-  async refreshValuations(fullRender: boolean = true): Promise<void> {
+  async refreshValuations(): Promise<void> {
     const funds = fundManager.getFunds();
     if (funds.length === 0) return;
 
@@ -571,7 +570,6 @@ class FundManagerUI {
       console.log('开始刷新估值，基金代码:', fundCodes);
 
       // 设置加载中标志
-      this.isValuationLoading = true;
 
       // 显示加载状态
       this.showLoadingState();
@@ -631,7 +629,6 @@ class FundManagerUI {
             // 移除加载状态
             this.removeLoadingState();
             // 加载完成后，如果用户已选择排序方向，重新排序以正确显示
-            this.isValuationLoading = false;
             if (this.sortDirection) {
               this.sortAndRender();
             }
@@ -643,7 +640,6 @@ class FundManagerUI {
       console.log('估值刷新完成');
     } catch (error) {
       console.error('刷新估值失败:', error);
-      this.isValuationLoading = false;
       this.removeLoadingState();
     }
   }
@@ -684,7 +680,7 @@ class FundManagerUI {
     const tbody = this.container.querySelector('#fund-table-body');
     if (!tbody) return;
 
-    const row = tbody.querySelector(`tr[data-fund-code="${fundCode}"]`);
+    const row = tbody.querySelector<HTMLElement>(`tr[data-fund-code="${fundCode}"]`);
     if (!row) return;
 
     const fund = fundManager.getFund(fundCode);
@@ -700,7 +696,7 @@ class FundManagerUI {
     const tbody = this.container.querySelector('#fund-table-body');
     if (!tbody) return;
 
-    const row = tbody.querySelector(`tr[data-fund-code="${fundCode}"]`);
+    const row = tbody.querySelector<HTMLElement>(`tr[data-fund-code="${fundCode}"]`);
     if (!row) return;
 
     // 添加错误视觉提示
@@ -718,22 +714,13 @@ class FundManagerUI {
     tbody.innerHTML = funds.map(fund => this.renderFundRow(fund)).join('');
   }
 
-  private updateTableBody(): void {
-    if (!this.container) return;
-    const tbody = this.container.querySelector('#fund-table-body');
-    if (!tbody) return;
-
-    const funds = this.getSortedFunds();
-    tbody.innerHTML = funds.map(fund => this.renderFundRow(fund)).join('');
-  }
-
   startAutoRefresh(): void {
     if (this.refreshInterval) {
       clearInterval(this.refreshInterval);
     }
 
     this.refreshInterval = window.setInterval(() => {
-      this.refreshValuations(false); // 自动刷新时不重新渲染整个表格
+      this.refreshValuations(); // 自动刷新时不重新渲染整个表格
     }, this.refreshIntervalMs);
   }
 

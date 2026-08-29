@@ -1,5 +1,5 @@
 import { api } from './api';
-import { FundData, Holding } from './types';
+import { FundData } from './types';
 
 export const fundInfoUI = {
   init(container: HTMLDivElement) {
@@ -96,7 +96,7 @@ export const fundInfoUI = {
       }
 
       // 渲染基金信息
-      this.renderFundInfo(fundData, holdings, navHistory);
+      this.renderFundInfo(fundData, holdings.data, navHistory.data);
     } catch (error) {
       console.error('加载基金信息失败', error);
       contentDiv.innerHTML = `
