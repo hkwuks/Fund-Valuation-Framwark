@@ -145,7 +145,8 @@ export class DetailPanel extends PanelBase {
     const codes = state.get('fundPool').map(f => f.fund_code)
     if (!codes.length) { body.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;">无基金数据</div>'; return }
     const params = this.allocParams()
-    const allocP = needFetch ? fundQuantApi.getStrategyAllocation(codes, 100000, params) : Promise.resolve(null as any)
+    const capital = state.get('configCapital')
+    const allocP = needFetch ? fundQuantApi.getStrategyAllocation(codes, capital, params) : Promise.resolve(null as any)
     const portfolioP = fundQuantApi.getPortfolioKPI().catch(() => null as any)
     const [allocRes, pRes] = await Promise.all([allocP, portfolioP])
     if (allocRes?.success) this.strategies = allocRes.data.strategies
@@ -321,7 +322,7 @@ export class DetailPanel extends PanelBase {
     const pool = state.get('fundPool')
     const fundName = (code: string) => pool.find(f => f.fund_code === code)?.fund_name || code
     const money = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-    const capital = s.capital || 100000
+    const capital = s.capital || state.get('configCapital')
 
     // 1. 策略权重表格
     const weightRows = entries.map(([code, w]) => {
@@ -349,7 +350,7 @@ export class DetailPanel extends PanelBase {
     return `
       ${blSection}
       <div style="margin-bottom:12px;">
-        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">信心度 <strong>${(s.confidence * 100).toFixed(0)}%</strong> · 总资产 ${money(capital)}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">信心度 <strong>${(s.confidence * 100).toFixed(0)}%</strong> · 配置基准 ${money(capital)}${s.confidence_note ? ` · <span title="${s.confidence_note}" style="border-bottom:1px dotted var(--text-tertiary);cursor:help;">说明</span>` : ''}</div>
         <div style="font-size:11px;color:var(--text-tertiary);">${s.reason || ''}</div>
       </div>
       ${desc ? `<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg-tertiary);border-radius:6px;font-size:11px;line-height:1.6;color:var(--text-secondary);">
@@ -428,7 +429,7 @@ export class DetailPanel extends PanelBase {
     const pool = state.get('fundPool')
     const fundName = (code: string) => pool.find(f => f.fund_code === code)?.fund_name || code
     const money = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-    const capital = s.capital || 100000
+    const capital = s.capital || state.get('configCapital')
 
     const overlay = document.createElement('div')
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;'
@@ -446,7 +447,7 @@ export class DetailPanel extends PanelBase {
 
     dialog.innerHTML = `
       <h3 style="font-size:16px;font-weight:700;margin:0 0 12px;">确认采纳「${name}」策略</h3>
-      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">将按以下比例配置总资产 ${money(capital)}：</div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">将按以下比例配置基准 ${money(capital)}：</div>
       <div style="margin-bottom:16px;">${items}</div>
       <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px;">⚠️ 采纳后将模拟执行调仓操作，建议在模拟交易中验证</div>
       <div style="display:flex;gap:8px;">

@@ -1,6 +1,6 @@
 import { PanelBase } from '../layout'
 import { fundQuantApi, type StrategyAllocationSignal } from '../api'
-import { state } from '../state'
+import { state, persistConfigCapital } from '../state'
 
 const NAME_MAP: Record<string, string> = {
   etf_rotation_aurora: 'ETF动量轮动',
@@ -35,16 +35,38 @@ export class SignalList extends PanelBase {
         <h3>📊 策略列表</h3>
         <button class="btn btn-sm btn-primary btn-refresh-alloc" title="刷新">🔄</button>
       </div>
+      <div style="padding:6px 8px 0;display:flex;align-items:center;gap:6px;">
+        <label for="alloc-capital" style="font-size:11px;color:var(--text-secondary);white-space:nowrap;">配置基准</label>
+        <input id="alloc-capital" type="number" min="0" step="10000" style="width:100%;min-width:0;font-size:12px;padding:3px 6px;border:1px solid var(--border-color);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);" title="用于计算各策略买入金额的基准资金，不会影响你的真实持仓">
+      </div>
       <div class="alloc-list" style="flex:1;min-height:0;overflow-y:auto;padding:8px;"></div>
       <div class="alloc-msg" style="font-size:12px;color:var(--text-tertiary);padding:12px;text-align:center;">加载中…</div>`
     return el
   }
 
   private blUnsub: (() => void) | null = null
+  private capUnsub: (() => void) | null = null
 
   protected afterMount(): void {
     this.el?.querySelector('.btn-refresh-alloc')?.addEventListener('click', () => this.refresh())
+    const capInput = this.el?.querySelector('#alloc-capital') as HTMLInputElement | null
+    if (capInput) {
+      capInput.value = String(state.get('configCapital'))
+      let timer: ReturnType<typeof setTimeout> | null = null
+      capInput.addEventListener('input', () => {
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(() => {
+          const v = parseFloat(capInput.value)
+          if (!Number.isFinite(v) || v <= 0) return
+          persistConfigCapital(v)   // 持久化并广播，右侧详情面板随金额刷新
+          this.refresh()            // 左侧金额列随新基准重算
+        }, 400)
+      })
+    }
     this.blUnsub = state.on('blViews', () => this.refresh())
+    this.capUnsub = state.on('configCapital', () => {
+      if (capInput) capInput.value = String(state.get('configCapital'))
+    })
     this.refresh()
   }
 
@@ -66,7 +88,8 @@ export class SignalList extends PanelBase {
 
     try {
       const params = this.allocParams()
-      const res = await fundQuantApi.getStrategyAllocation(codes, 100000, params)
+      const capital = state.get('configCapital')
+      const res = await fundQuantApi.getStrategyAllocation(codes, capital, params)
       if (!res.success) throw new Error('请求失败')
       this.strategies = res.data.strategies
       if (!this.strategies.length) {
@@ -112,6 +135,7 @@ export class SignalList extends PanelBase {
 
   destroy(): void {
     this.blUnsub?.()
+    this.capUnsub?.()
     super.destroy()
   }
 }

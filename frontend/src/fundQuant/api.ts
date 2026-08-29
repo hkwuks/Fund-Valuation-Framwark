@@ -69,6 +69,7 @@ export interface StrategyAllocationSignal {
   direction: 'buy' | 'hold' | 'sell'
   weights: Record<string, number>
   confidence: number
+  confidence_note?: string
   reason: string
   mode?: string
   capital?: number

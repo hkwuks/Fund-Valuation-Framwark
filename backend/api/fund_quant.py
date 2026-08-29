@@ -345,9 +345,14 @@ def _etf_rotation_current_signal(fund_codes: list[str], params: dict, capital: f
     top_holdings = [{"fund_code": c, "weight": round(weight, 4),
                      "score": round(scores[c], 4)} for c in top]
     buy_amounts = {c: round(capital * weight, 2) for c in top}
+    strength = min(abs(scores[top[0]]) * 10, 1.0)
+    freshness = _data_freshness(nav_dict)
+    conf, conf_note = _confidence_from_freshness(
+        strength, None, freshness,
+    ) if strength > 0 else (0.0, "动量不足，未持仓")
     return {"strategy": "etf_rotation_aurora", "direction": "buy",
             "weights": {c: round(weight, 4) for c in top},
-            "confidence": min(abs(scores[top[0]]) * 10, 1.0),
+            "confidence": conf, "confidence_note": conf_note,
             "capital": round(capital, 2),
             "buy_amounts": buy_amounts,
             "reason": f"动量Top{top_n}: {'  '.join(f'{c}({scores[c]:.3f})' for c in top)}",
@@ -382,8 +387,13 @@ def _all_weather_current_signal(fund_codes: list[str], params: dict, capital: fl
     buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
     mode = strategy.params.get("mode", "fixed")
 
+    strength, strength_note = _weight_signal_strength(weights, template=(mode == "fixed"))
+    # 全天候为固定模板权重，无对齐净值序列可定新鲜度 → 中性 0.6
+    conf, conf_note = _confidence_from_freshness(strength, strength_note, 0.6)
+
     return {"strategy": "all_weather_aurora", "direction": "hold",
-            "weights": weights, "confidence": 0.8, "capital": round(capital, 2),
+            "weights": weights, "confidence": conf, "confidence_note": conf_note,
+            "capital": round(capital, 2),
             "buy_amounts": buy_amounts, "mode": mode,
             "reason": f"全天候({mode}) 配置",
             "top_holdings": top_holdings}
@@ -420,9 +430,13 @@ def _allocation_current_signal_aurora(strategy_name: str, fund_codes: list[str],
     top_holdings = [{"fund_code": c, "weight": w}
                     for c, w in sorted(weights.items(), key=lambda kv: -kv[1]) if w > 0]
     buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
+    strength, strength_note = _weight_signal_strength(weights)
+    freshness = _data_freshness(nav_series)
+    conf, conf_note = _confidence_from_freshness(strength, strength_note, freshness)
     return {"strategy": strategy_name,
             "direction": "buy" if weights else "hold",
-            "weights": weights, "confidence": 0.7, "capital": round(capital, 2),
+            "weights": weights, "confidence": conf, "confidence_note": conf_note,
+            "capital": round(capital, 2),
             "buy_amounts": buy_amounts,
             "reason": f"{strategy_name} 配置",
             "top_holdings": top_holdings}
@@ -436,6 +450,121 @@ def _alloc_cache_key(fund_codes: list[str], params: dict, capital: float) -> str
     import hashlib, json
     raw = json.dumps({"codes": sorted(fund_codes), "params": params, "capital": capital}, sort_keys=True, ensure_ascii=False)
     return hashlib.md5(raw.encode()).hexdigest()
+
+def _data_freshness(data: dict) -> float:
+    """数据新鲜度 0~1 = 有效基金覆盖率 × 净值日期新鲜度。
+
+    - 值含 date 字段（如 _load_recent_navs 的 dict 列表）：最近净值距今越近越高（>60 天 → 0.1）
+    - 纯 float 序列（无日期，如 aurora nav_series）：新鲜度取中性 0.6
+      # ponytail: 无日期也不读库，用中性基准；需要真实日期就把 raw records 传进来
+    """
+    import numpy as np
+    from datetime import date
+    if not data:
+        return 0.2
+    n = len(data)
+    covered = 0
+    latest = None
+    today = date.today()
+    for v in data.values():
+        if not v:
+            continue
+        if isinstance(v[0], dict):
+            dts = [str(r.get("date", ""))[:10] for r in v if r.get("date")]
+            if not dts:
+                continue
+            try:
+                d = date(*map(int, dts[-1].split("-")))  # 数据按日期升序，取最新
+                latest = d if latest is None else max(latest, d)
+            except (ValueError, TypeError):
+                continue
+            covered += 1
+        elif len(v) >= 30:
+            covered += 1
+    if covered == 0:
+        return 0.2
+    coverage = covered / n
+    if latest is not None:
+        recency = float(np.clip(1 - (today - latest).days / 60.0, 0.1, 1.0))
+    else:
+        recency = 0.6  # 纯 float 序列，中性基准
+    return round(coverage * recency, 2)
+
+
+def _weight_signal_strength(weights: dict[str, float], template: bool = False) -> tuple[float, str]:
+    """信号强度 + note。
+
+    - template=True（固定模板权重，如全天候 fixed 模式）：策略设计即确定 → 强度 1.0
+    - 动态权重: max_weight（最大仓位大小，0~1），多只基金时权重越分散→强度越低
+    - 空权重: 0 并附原因
+    """
+    if template:
+        return 1.0, "固定模板权重（策略设计）"
+    wv = [w for w in weights.values() if w > 0] if weights else []
+    if wv:
+        max_w = max(wv)
+        if len(wv) >= 2:
+            max_w *= 1.0 - 0.4 * abs(max_w - sum(wv) / len(wv))
+        return round(max_w, 2), None  # note 交给 freshness 组装
+    return 0, "未持仓（无权重）"
+
+
+def _confidence_from_freshness(strength: float, note: str | None,
+                               freshness: float) -> tuple[float, str]:
+    """组合 confidence = strength × freshness，并拼出可读说明。"""
+    conf = round(strength * freshness, 2)
+    parts = []
+    if strength > 0:
+        parts.append(note or f"信号强度 {strength:.0%}（最大权重）")
+    else:
+        parts.append(note or "无有效权重")
+    parts.append(f"数据新鲜度 {freshness:.0%}")
+    return conf, "；".join(parts)
+
+
+if __name__ == "__main__":
+    # 自检：置信度公式与各分支
+    from datetime import date, timedelta
+
+    def _mk_series(n, uptrend=False):
+        base = 0.9 if not uptrend else 1.0
+        return [base + (0.01 * i if uptrend else 0.0) for i in range(n)]
+
+    # 1) 动态信号：有权重 → strength=max_weight
+    s, note = _weight_signal_strength({"a": 0.6, "b": 0.4})
+    assert 0.3 <= s <= 0.6 and note is None, (s, note)
+
+    # 2) 空权重 hold
+    s2, note2 = _weight_signal_strength({})
+    assert s2 == 0 and "未持仓" in note2, (s2, note2)
+
+    # 3) 模板 fixed → strength=1.0
+    s3, note3 = _weight_signal_strength({"a": 0.4}, template=True)
+    assert s3 == 1.0 and "固定模板" in note3, (s3, note3)
+
+    # 4) freshness: 有日期 → 覆盖率×新鲜度（近期数据接近 1）
+    today = date.today()
+    fd = _data_freshness({"a": [
+        {"date": (today - timedelta(days=2)).isoformat(), "nav": 1.1},
+        {"date": today.isoformat(), "nav": 1.2}]})
+    assert 0.8 <= fd <= 1.0, fd
+
+    # 5) freshness: 过期数据（90 天前）→ 低置信
+    fd_stale = _data_freshness({"a": [{"date": (today - timedelta(days=90)).isoformat(), "nav": 1.0}]})
+    assert fd_stale <= 0.25, fd_stale
+
+    # 6) freshness: 纯 float 序列（数量足够）→ 中性
+    fs = _data_freshness({"a": _mk_series(100)})
+    assert 0.2 <= fs <= 1.0, fs
+
+    # 7) 空数据
+    assert _data_freshness({}) == 0.2
+
+    # 8) 组合公式
+    conf, cnote = _confidence_from_freshness(0.6, None, 0.85)
+    assert conf == 0.51 and "信号强度 60%" in cnote, (conf, cnote)
+
+    print("置信度自检通过 ✓")
 
 def _etf_rotation_from_nav(nav_dict: dict[str, list[dict]], params: dict, capital: float) -> dict:
     """基于已取回的 nav_dict 计算动量，无额外 DB"""
@@ -501,8 +630,12 @@ def _aurora_from_nav(strategy_name: str, nav_series: dict[str, list[float]], val
     weights = result or {}
     top_holdings = [{"fund_code": c, "weight": w} for c, w in sorted(weights.items(), key=lambda kv: -kv[1]) if w > 0]
     buy_amounts = {c: round(capital * w, 2) for c, w in weights.items() if w > 0}
+    strength, strength_note = _weight_signal_strength(weights)
+    freshness = _data_freshness(nav_series)
+    conf, conf_note = _confidence_from_freshness(strength, strength_note, freshness)
     return {"strategy": strategy_name, "direction": "buy" if weights else "hold",
-            "weights": weights, "confidence": 0.7, "capital": round(capital, 2),
+            "weights": weights, "confidence": conf, "confidence_note": conf_note,
+            "capital": round(capital, 2),
             "buy_amounts": buy_amounts, "reason": f"{strategy_name} 配置", "top_holdings": top_holdings}
 
 @router.post("/strategy/allocation/current")

@@ -83,6 +83,7 @@ export interface GlobalState {
   researchPanel: ResearchState
   customParams: Record<string, Record<string, any>>
   blViews: BlView[]
+  configCapital: number  // 策略配置基准金额（用于计算买入金额）
 }
 
 type StateKey = keyof GlobalState
@@ -153,6 +154,15 @@ function loadBlViews(): GlobalState['blViews'] {
   return []
 }
 
+const CAPITAL_KEY = 'config_capital'
+function loadConfigCapital(): number {
+  try {
+    const raw = localStorage.getItem(CAPITAL_KEY)
+    if (raw) { const n = parseFloat(raw); if (Number.isFinite(n) && n > 0) return n }
+  } catch {}
+  return 100000
+}
+
 // 单例
 export const state = new EventEmitter({
   fundPool: [],
@@ -168,6 +178,7 @@ export const state = new EventEmitter({
   researchPanel: { visible: false, activeTab: 'exposure', fundCode: null, signal: null },
   customParams: {},
   blViews: loadBlViews(),
+  configCapital: loadConfigCapital(),
 })
 
 /**
@@ -179,4 +190,10 @@ export function persistBlViews(views: BlView[], notify = false): void {
   try { localStorage.setItem(BL_VIEWS_KEY, JSON.stringify(views)) } catch { /* 存储不可用时忽略 */ }
   if (notify) state.set('blViews', views)
   else state.setSilent('blViews', views)
+}
+
+/** 写入配置基准金额并持久化。 */
+export function persistConfigCapital(capital: number): void {
+  try { localStorage.setItem(CAPITAL_KEY, String(capital)) } catch { /* 忽略 */ }
+  state.set('configCapital', capital)
 }
