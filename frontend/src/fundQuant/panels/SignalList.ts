@@ -29,12 +29,13 @@ export class SignalList extends PanelBase {
   render(): HTMLElement {
     const el = document.createElement('div')
     el.className = 'panel-signallist'
+    el.style.cssText = 'display:flex;flex-direction:column;overflow:hidden;min-height:0;'
     el.innerHTML = `
       <div class="panel-header">
         <h3>📊 策略列表</h3>
         <button class="btn btn-sm btn-primary btn-refresh-alloc" title="刷新">🔄</button>
       </div>
-      <div class="alloc-list" style="padding:8px;"></div>
+      <div class="alloc-list" style="flex:1;min-height:0;overflow-y:auto;padding:8px;"></div>
       <div class="alloc-msg" style="font-size:12px;color:var(--text-tertiary);padding:12px;text-align:center;">加载中…</div>`
     return el
   }
