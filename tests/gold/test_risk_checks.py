@@ -64,7 +64,8 @@ class TestRiskChecker:
         freq_result = checker._check_signal_frequency(
             GoldSignal(signal_id="f1", strategy_id="test", strategy_name="test",
                        symbol="AU0", direction=SignalDirection.LONG,
-                       price=500, volume=1, created_at=datetime.now())
+                       price=500, volume=1, created_at=datetime.now()),
+            checker._get_daily(date.today().isoformat()),
         )
         # With no prior signals today, should pass
         assert freq_result["passed"] is True
