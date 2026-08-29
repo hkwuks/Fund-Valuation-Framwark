@@ -141,3 +141,162 @@ class TestAllWeatherAurora:
         report = _run_all_weather_engine(points, params={"mode": "risk_parity"})
         assert report.total_trades >= 0
         assert len(report.equity_curve) > 1
+
+
+class TestAuroraBacktestExecution:
+    """Fund Aurora 回测撮合与日级权益回归测试。"""
+
+    def test_multifund_order_fills_on_its_next_nav(self):
+        """多基金订单必须在标的基金下一交易日净值成交。"""
+        from core import BacktestEngine, BacktestConfig, FundNavPoint, T1ExecutionEngine
+        from core.signal import Direction, Signal
+        from core.strategy import Strategy
+
+        class BuyAOnce(Strategy):
+            name = "buy_a_once"
+
+            def on_data(self, data):
+                if data.fund_code == "A" and str(data.date) == "2021-01-04":
+                    self.ctx.emit(Signal(id="", strategy=self.name, symbol="A",
+                                         direction=Direction.LONG, price=data.nav, volume=100))
+
+        points = [
+            FundNavPoint(fund_code=code, date=date(2021, 1, day), nav=nav)
+            for day, a_nav, b_nav in [(4, 1.0, 10.0), (5, 1.2, 10.1), (6, 1.3, 10.2)]
+            for code, nav in [("A", a_nav), ("B", b_nav)]
+        ]
+        engine = BacktestEngine(BacktestConfig(initial_capital=1000))
+        execution = T1ExecutionEngine(confirmation_delay=1)
+        engine.set_strategy(BuyAOnce())
+        engine.set_executor(execution)
+        engine.set_data(points)
+        engine.run()
+
+        assert execution.get_trade_log()[0]["price"] == 1.2
+
+    def test_multifund_equity_curve_has_one_point_per_date(self):
+        """多基金回测权益曲线只能按交易日记录。"""
+        from core import BacktestEngine, BacktestConfig, FundNavPoint, T1ExecutionEngine
+        from core.strategy import Strategy
+
+        class NoTrade(Strategy):
+            def on_data(self, data):
+                pass
+
+        points = [
+            FundNavPoint(fund_code=code, date=date(2021, 1, day), nav=1.0)
+            for day in (4, 5, 6)
+            for code in ("A", "B")
+        ]
+        engine = BacktestEngine(BacktestConfig(initial_capital=1000))
+        engine.set_strategy(NoTrade())
+        engine.set_executor(T1ExecutionEngine())
+        engine.set_data(points)
+        report = engine.run()
+
+        assert len(report.equity_curve) == 4  # 初始值 + 3 个交易日
+
+    def test_t1_engine_rejects_buy_beyond_available_cash(self):
+        """基金 T+1 撮合不得将现金余额买成负数。"""
+        from core import FundNavPoint, T1ExecutionEngine
+        from core.signal import Direction, Signal
+
+        execution = T1ExecutionEngine(confirmation_delay=0)
+        execution.set_capital(100)
+        execution.submit(Signal(id="cash", strategy="test", symbol="A",
+                                direction=Direction.LONG, price=1.0, volume=101))
+        execution.on_bar(FundNavPoint(fund_code="A", date=date(2021, 1, 4), nav=1.0))
+        fills = execution.on_bar(FundNavPoint(fund_code="A", date=date(2021, 1, 5), nav=1.0))
+
+        assert len(fills) == 1
+        assert fills[0].volume == 100
+        assert execution.portfolio_value == 100
+
+    def test_rebalance_sells_only_excess_weight(self):
+        """超配调仓只能卖出目标差额，不能清仓。"""
+        import backend.fund_quant.adapter as _adapter  # noqa: F401
+        from core import Position
+        from core.signal import Direction
+        from core.strategy import StrategyRegistry
+
+        strategy = StrategyRegistry.get("risk_parity_aurora")()
+        strategy.params["rebalance_threshold"] = 0
+        strategy._hist = {
+            code: [(f"2021-01-{day:02d}", 10.0) for day in range(1, 21)]
+            for code in ("A", "B")
+        }
+
+        positions = {
+            "A": Position(symbol="A", direction=Direction.LONG, volume=70, avg_price=10),
+            "B": Position(symbol="B", direction=Direction.LONG, volume=30, avg_price=10),
+        }
+
+        class Execution:
+            def get_position(self, symbol):
+                return positions.get(symbol)
+
+        signals = []
+
+        class Context:
+            portfolio_value = 1000
+            execution = Execution()
+
+            def emit(self, signal):
+                signals.append(signal)
+
+        strategy.ctx = Context()
+        strategy._compute_weights = lambda nav_series, codes: {"A": 0.5, "B": 0.5}
+        strategy._rebalance("2021-01-20")
+
+        sell = next(signal for signal in signals if signal.symbol == "A" and signal.direction == Direction.CLOSE_LONG)
+        assert sell.volume == 20
+
+    def test_all_weather_risk_parity_uses_supplied_history(self, monkeypatch):
+        """Aurora 全天候风险平价只能使用回测传入的截至当日历史。"""
+        import backend.fund_quant.strategy.allocation.all_weather as all_weather
+
+        strategy = all_weather.AllWeatherStrategy(params={
+            "mode": "risk_parity",
+            "lookback_days": 20,
+        })
+        nav_series = {
+            "A": [1.0 + i * 0.01 for i in range(21)],
+            "B": [1.0 + i * 0.005 for i in range(21)],
+        }
+
+        def fail_if_database_is_read(*_args, **_kwargs):
+            raise AssertionError("risk parity must not read full database history")
+
+        monkeypatch.setattr(all_weather, "get_nav_history", fail_if_database_is_read, raising=False)
+        result = strategy.optimize(
+            fund_codes=["A", "B"],
+            nav_series=nav_series,
+        )
+
+        assert result["status"] == "success"
+        assert set(result["weights"]) == {"A", "B"}
+
+    def test_gmv_rejects_infeasible_solver_weights(self, monkeypatch):
+        """GMV 不得把不满足约束的求解结果归一化后直接使用。"""
+        from types import SimpleNamespace
+        from scipy import optimize
+        import backend.fund_quant.adapter as adapter
+
+        monkeypatch.setattr(
+            optimize,
+            "minimize",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                success=True,
+                x=np.array([0.4, 0.02, 0.02]),
+            ),
+        )
+        strategy = adapter.AuroraGlobalMinimumVariance()
+        nav_series = {
+            code: [1.0 + (i + offset) * 0.001 for i in range(30)]
+            for offset, code in enumerate(("A", "B", "C"))
+        }
+
+        weights = strategy._compute_weights(nav_series, ["A", "B", "C"])
+
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
+        assert all(0.02 - 1e-6 <= weight <= 0.4 + 1e-6 for weight in weights.values())

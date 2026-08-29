@@ -9,6 +9,10 @@ const NAME_MAP: Record<string, string> = {
   bl_quadrant_aurora: 'BL四象限观点',
   black_litterman_aurora: 'Black-Litterman',
   risk_parity_aurora: '风险平价',
+  dynamic_risk_parity_aurora: '动态风险平价',
+  vol_targeting_aurora: '波动率目标',
+  trend_following_aurora: '趋势跟踪',
+  gmv_aurora: '最小方差(GMV)',
   hrp_aurora: '层次风险平价(HRP)',
   max_diversification_aurora: '最大多元化(MDP)',
 }
@@ -26,6 +30,10 @@ const STRATEGY_DESC: Record<string, string> = {
   bl_quadrant_aurora: 'BL四象限：按宏观环境（增长×通胀四象限）给出各资产观点，再经 Black-Litterman 融合定价。',
   black_litterman_aurora: 'Black-Litterman：以市场均衡收益为基准，融合你的主观观点得到后验收益，再做均值-方差优化。观点是对池内具体基金的相对强弱判断（如"A 跑赢 B 3%"），而非行业或指数层面的判断；未添加有效观点时直接等权配置（学术研究表明等权样本外优于无约束优化）。',
   risk_parity_aurora: '风险平价：让每只基金对组合的风险贡献相等，波动大的配得少、波动小的配得多。',
+  dynamic_risk_parity_aurora: '动态风险平价：用滚动收益与协方差估计风险，按月动态调整各资产的风险预算。',
+  vol_targeting_aurora: '波动率目标：根据组合近期实现波动率放大或收缩整体仓位，稳定组合风险暴露。',
+  trend_following_aurora: '趋势跟踪：只配置长期趋势向上的资产；趋势转弱时降至现金，控制下行风险。',
+  gmv_aurora: '最小方差：基于历史协方差矩阵求解组合最低波动率权重，优先降低整体风险。',
   hrp_aurora: '层次风险平价：用相关性聚类分层后分配风险，比风险平价更抗相关性突变。',
   max_diversification_aurora: '最大多元化：最大化分散比率，优先挑彼此相关性低的基金组合。',
 }
@@ -137,7 +145,8 @@ export class DetailPanel extends PanelBase {
     const codes = state.get('fundPool').map(f => f.fund_code)
     if (!codes.length) { body.innerHTML = '<div style="color:var(--text-tertiary);font-size:12px;">无基金数据</div>'; return }
     const params = this.allocParams()
-    const allocP = needFetch ? fundQuantApi.getStrategyAllocation(codes, 100000, params) : Promise.resolve(null as any)
+    const capital = state.get('configCapital')
+    const allocP = needFetch ? fundQuantApi.getStrategyAllocation(codes, capital, params) : Promise.resolve(null as any)
     const portfolioP = fundQuantApi.getPortfolioKPI().catch(() => null as any)
     const [allocRes, pRes] = await Promise.all([allocP, portfolioP])
     if (allocRes?.success) this.strategies = allocRes.data.strategies
@@ -313,7 +322,7 @@ export class DetailPanel extends PanelBase {
     const pool = state.get('fundPool')
     const fundName = (code: string) => pool.find(f => f.fund_code === code)?.fund_name || code
     const money = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-    const capital = s.capital || 100000
+    const capital = s.capital || state.get('configCapital')
 
     // 1. 策略权重表格
     const weightRows = entries.map(([code, w]) => {
@@ -341,7 +350,7 @@ export class DetailPanel extends PanelBase {
     return `
       ${blSection}
       <div style="margin-bottom:12px;">
-        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">信心度 <strong>${(s.confidence * 100).toFixed(0)}%</strong> · 总资产 ${money(capital)}</div>
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">信心度 <strong>${(s.confidence * 100).toFixed(0)}%</strong> · 配置基准 ${money(capital)}${s.confidence_note ? ` · <span title="${s.confidence_note}" style="border-bottom:1px dotted var(--text-tertiary);cursor:help;">说明</span>` : ''}</div>
         <div style="font-size:11px;color:var(--text-tertiary);">${s.reason || ''}</div>
       </div>
       ${desc ? `<div style="margin-bottom:12px;padding:8px 10px;background:var(--bg-tertiary);border-radius:6px;font-size:11px;line-height:1.6;color:var(--text-secondary);">
@@ -420,7 +429,7 @@ export class DetailPanel extends PanelBase {
     const pool = state.get('fundPool')
     const fundName = (code: string) => pool.find(f => f.fund_code === code)?.fund_name || code
     const money = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
-    const capital = s.capital || 100000
+    const capital = s.capital || state.get('configCapital')
 
     const overlay = document.createElement('div')
     overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;'
@@ -438,7 +447,7 @@ export class DetailPanel extends PanelBase {
 
     dialog.innerHTML = `
       <h3 style="font-size:16px;font-weight:700;margin:0 0 12px;">确认采纳「${name}」策略</h3>
-      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">将按以下比例配置总资产 ${money(capital)}：</div>
+      <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;">将按以下比例配置基准 ${money(capital)}：</div>
       <div style="margin-bottom:16px;">${items}</div>
       <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px;">⚠️ 采纳后将模拟执行调仓操作，建议在模拟交易中验证</div>
       <div style="display:flex;gap:8px;">

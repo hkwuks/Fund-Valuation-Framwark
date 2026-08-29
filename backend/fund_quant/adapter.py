@@ -159,8 +159,8 @@ class FundCostModel(CostModel):
 
     # 兜底默认值（DB 无数据时使用）
     _FALLBACK = {
-        "sub_fee": 0.015, "mgmt_fee": 0.015, "custody_fee": 0.0025,
-        "c_class_service_fee": 0.004,
+        "sub_fee": 0.0, "mgmt_fee": 0.0, "custody_fee": 0.0,
+        "c_class_service_fee": 0.0,
         "redemption_tiers": {7: 1.50, 30: 0.75, 365: 0.50, 730: 0.25, 999999: 0.0},
     }
 
@@ -190,26 +190,17 @@ class FundCostModel(CostModel):
                                            self._FALLBACK["redemption_tiers"])
 
     def calc(self, signal: Signal, fill: Fill) -> float:
-        """计算单笔交易综合成本
+        """计算单笔交易成本。
 
-        开仓: 申购费 + 管理费+托管费（按180日估计）
-        平仓: 赎回费 + 分红税 + 管理费+托管费（按180日估计）
-        FOF: 额外穿透底层费率
+        基金净值已内扣管理费、托管费及 C 类销售服务费；回测只扣申购、赎回和
+        可明确量化的 FOF 穿透费用，避免重复计费。
         """
         amount = fill.price * fill.volume
-        est_days = 180  # 估计持有期
+        holding_days = int(signal.extra.get("holding_days", 0))
 
         if signal.direction in (Direction.LONG, Direction.SHORT):
-            # 开仓: 申购费 + 管理/托管费（前半段）
-            sub = self._get_subscription(amount)
-            daily = self._get_annual_carry(amount) * est_days / 365 / 2
-            return round(sub + daily, 4)
-        else:
-            # 平仓: 赎回费 + 管理/托管费（后半段）+ 分红税
-            red = self._get_redemption(amount, est_days)
-            daily = self._get_annual_carry(amount) * est_days / 365 / 2
-            div_tax = self._get_dividend_tax(amount, est_days)
-            return round(red + daily + div_tax, 4)
+            return round(self._get_subscription(amount), 4)
+        return round(self._get_redemption(amount, holding_days), 4)
 
     def _get_subscription(self, amount: float) -> float:
         """申购费"""
@@ -541,7 +532,6 @@ class AllWeatherAurora(Strategy):
     def _rebalance(self, date_str: str):
         """用 AllWeatherStrategy 算权重 → 调仓至目标"""
         from .strategy.allocation.all_weather import AllWeatherStrategy
-        from .data.storage import get_nav_history
 
         pool = self._pool_codes()
         # 收集截至该日的净值序列
@@ -560,7 +550,7 @@ class AllWeatherAurora(Strategy):
 
         # 调用 AllWeatherStrategy 计算权重
         strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid_codes)
+        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
         weights = result.get("weights", {})
         if not weights:
             return
@@ -614,9 +604,8 @@ class AllWeatherAurora(Strategy):
                 ))
             else:
                 # 卖出超配部分
-                sell_vol = pos.volume if pos else 0
+                sell_vol = min(-diff / price, pos.volume) if pos else 0
                 if sell_vol > 0:
-                    sell_vol = min(sell_vol, pos.volume)
                     self.ctx.emit(Signal(
                         id="", strategy=self.name, symbol=code,
                         direction=Direction.CLOSE_LONG, price=price,
@@ -774,9 +763,8 @@ class AuroraBlQuadrant(Strategy):
                 ))
             else:
                 # 卖出超配部分
-                sell_vol = pos.volume if pos else 0
+                sell_vol = min(-diff / price, pos.volume) if pos else 0
                 if sell_vol > 0:
-                    sell_vol = min(sell_vol, pos.volume)
                     self.ctx.emit(Signal(
                         id="", strategy=self.name, symbol=code,
                         direction=Direction.CLOSE_LONG, price=price,
@@ -858,17 +846,18 @@ class _AuroraAllocationBase(Strategy):
         if not portfolio_navs:
             return weights
 
-        # 加权组合净值序列
+        # 加权组合收益序列：先逐资产计算收益，避免不同净值基数扭曲波动率。
         ref_len = min(len(s) for s, _ in portfolio_navs)
-        combined = sum(w * s[-ref_len:] for s, w in portfolio_navs)
-        daily_ret = np.diff(combined) / combined[:-1]
-        realized_vol = float(np.std(daily_ret) * np.sqrt(252))
+        combined_returns = sum(
+            w * np.diff(s[-ref_len:]) / s[-ref_len:-1]
+            for s, w in portfolio_navs
+        )
+        realized_vol = float(np.std(combined_returns, ddof=1) * np.sqrt(252)) if len(combined_returns) > 1 else 0.0
 
         if realized_vol <= 0.01:
             return weights
 
-        scale = min(target / realized_vol, max_scale)
-        scale = max(scale, min_scale)  # 最低保留 min_scale 仓位
+        scale = max(min_scale, min(target / realized_vol, max_scale))
         return {c: w * scale for c, w in weights.items()}
 
     def _rebalance(self, date_str: str):
@@ -936,9 +925,8 @@ class _AuroraAllocationBase(Strategy):
                     reason=f"{self.name}调仓: 目标权重{weight:.1%}, 当前不足",
                 ))
             else:
-                sell_vol = pos.volume if pos else 0
+                sell_vol = min(-diff / price, pos.volume) if pos else 0
                 if sell_vol > 0:
-                    sell_vol = min(sell_vol, pos.volume)
                     self.ctx.emit(Signal(
                         id="", strategy=self.name, symbol=code,
                         direction=Direction.CLOSE_LONG, price=price,
@@ -1141,6 +1129,14 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
         bounds = [(min_weight, max_weight)] * n
         initial = np.full(n, 1.0 / n)
 
+        def is_feasible(weights):
+            return (
+                np.all(np.isfinite(weights))
+                and abs(float(np.sum(weights)) - 1.0) <= 1e-6
+                and np.all(weights >= min_weight - 1e-6)
+                and np.all(weights <= max_weight + 1e-6)
+            )
+
         try:
             from scipy.optimize import minimize
             result = minimize(
@@ -1151,12 +1147,10 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
                 constraints={"type": "eq", "fun": lambda weights: np.sum(weights) - 1.0},
                 options={"ftol": 1e-10, "maxiter": 1000},
             )
-            weights = result.x if result.success else initial
+            weights = result.x if result.success and is_feasible(result.x) else initial
         except ImportError:
             weights = initial
 
-        weights = np.clip(weights, min_weight, max_weight)
-        weights /= weights.sum()
         return {code: round(float(weight), 4) for code, weight in zip(valid, weights)}
 
 
