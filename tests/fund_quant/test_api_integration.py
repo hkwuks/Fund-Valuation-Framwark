@@ -86,6 +86,14 @@ class TestFundQuantAPI:
         data = res.json()
         assert "strategies" in data.get("data", {})
 
+    def test_allocation_current_includes_registered_aurora_strategies(self, client):
+        res = client.post("/api/fund-quant/strategy/allocation/current",
+                          json={"fund_codes": ["518880", "513100", "510300"]})
+        assert res.status_code == 200
+        names = {strategy["strategy"] for strategy in res.json()["data"]["strategies"]}
+        assert {"dynamic_risk_parity_aurora", "vol_targeting_aurora",
+                "trend_following_aurora", "gmv_aurora"}.issubset(names)
+
     def test_signal_history(self, client):
         res = client.get("/api/fund-quant/signal/history?limit=5")
         assert res.status_code == 200

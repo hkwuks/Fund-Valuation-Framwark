@@ -8,6 +8,10 @@ const NAME_MAP: Record<string, string> = {
   bl_quadrant_aurora: 'BL四象限观点',
   black_litterman_aurora: 'Black-Litterman',
   risk_parity_aurora: '风险平价',
+  dynamic_risk_parity_aurora: '动态风险平价',
+  vol_targeting_aurora: '波动率目标',
+  trend_following_aurora: '趋势跟踪',
+  gmv_aurora: '最小方差(GMV)',
   hrp_aurora: '层次风险平价(HRP)',
   max_diversification_aurora: '最大多元化(MDP)',
 }

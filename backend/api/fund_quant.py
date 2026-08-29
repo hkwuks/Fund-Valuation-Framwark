@@ -550,7 +550,11 @@ async def strategy_allocation_current(req: StrategyAllocationRequest):
     except Exception as e:
         signals.append({"strategy": "all_weather_aurora", "direction": "hold", "weights": {}, "confidence": 0,
                         "reason": f"计算异常: {e}", "top_holdings": [], "buy_amounts": {}})
-    for sn in ("bl_quadrant_aurora", "black_litterman_aurora", "risk_parity_aurora", "hrp_aurora", "max_diversification_aurora"):
+    for sn in (
+        "bl_quadrant_aurora", "black_litterman_aurora", "risk_parity_aurora",
+        "dynamic_risk_parity_aurora", "vol_targeting_aurora", "trend_following_aurora",
+        "gmv_aurora", "hrp_aurora", "max_diversification_aurora",
+    ):
         try:
             signals.append(_aurora_from_nav(sn, nav_series_all, valid_codes_all, req.params, capital))
         except Exception as e:
