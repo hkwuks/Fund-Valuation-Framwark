@@ -167,7 +167,7 @@ function setupTabSwitching() {
     const currentActiveTab = document.querySelector<HTMLButtonElement>('.tab-button.active')
     if (currentActiveTab) {
       const prevTabId = currentActiveTab.dataset.tab
-      if (prevTabId === 'fund-quant') fundQuantUI.onDeactivated?.()
+      if (prevTabId === 'fund-quant') fundQuantUI?.onDeactivated?.()
     }
 
     targetContent.classList.add('active')
@@ -185,7 +185,7 @@ function setupTabSwitching() {
 
     // 通知基金量化Tab恢复刷新
     if (tabId === 'fund-quant') {
-      fundQuantUI.onActivated?.()
+      fundQuantUI?.onActivated?.()
     }
 
     // 添加动画效果

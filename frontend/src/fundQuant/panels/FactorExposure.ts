@@ -29,7 +29,6 @@ export class FactorExposure {
   private el: HTMLElement | null = null
   private chart: echarts.ECharts | null = null
   private historyChart: echarts.ECharts | null = null
-  private currentFund: string | null = null // @ts-ignore
 
   init(el: HTMLElement): void {
     this.el = el
@@ -73,7 +72,6 @@ export class FactorExposure {
   }
 
   show(fundCode: string): void {
-    this.currentFund = fundCode
     this.loadExposure(fundCode)
   }
 

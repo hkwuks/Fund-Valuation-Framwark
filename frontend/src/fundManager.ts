@@ -1,4 +1,4 @@
-import type { Fund, Holding, ValuationResult } from './types';
+import type { Fund, ValuationResult } from './types';
 import { api } from './api';
 import { StorageService } from './storage';
 

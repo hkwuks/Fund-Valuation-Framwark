@@ -1,6 +1,6 @@
 import * as echarts from 'echarts'
 import { PanelBase } from '../layout'
-import { fundQuantApi, type PaperTradeSession, type PaperTradeSummary } from '../api'
+import { fundQuantApi } from '../api'
 import { state } from '../state'
 
 export class PaperTradePanel extends PanelBase {

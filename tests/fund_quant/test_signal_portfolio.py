@@ -118,9 +118,9 @@ class TestPortfolioTracker:
     def test_sell_all_removes_position(self):
         self.tracker.buy("000001", 50000, 1.0)
         self.tracker.sell("000001", 1.0, 1.0)
-        assert "000001" not in self.tracker._portfolio.positions or \
-               self.tracker._portfolio.positions["000001"] == 0
         status = self.tracker.get_status()
+        assert "000001" not in status["positions"]
+        assert status["position_count"] == 0
         assert status["cash"] >= 50000
 
     def test_return_pct(self):
