@@ -683,6 +683,8 @@ class AuroraBlQuadrant(Strategy):
         """判断是否触发再平衡：首次或跨月"""
         cur_month = date_str[:7]
         if self._first_rebalance and len(self._hist) >= 3:
+            if sum(len(self._hist.get(code, [])) >= 20 for code in self._pool_codes()) < 2:
+                return
             self._first_rebalance = False
             self._last_rebalance_month = cur_month
             self._rebalance(date_str)
@@ -811,6 +813,8 @@ class _AuroraAllocationBase(Strategy):
     def _check_rebalance(self, date_str: str):
         cur_month = date_str[:7]
         if self._first_rebalance and len(self._hist) >= 3:
+            if sum(len(self._hist.get(code, [])) >= 20 for code in self._pool_codes()) < 2:
+                return
             self._first_rebalance = False
             self._last_rebalance_month = cur_month
             self._rebalance(date_str)

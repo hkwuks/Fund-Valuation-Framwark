@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Optional
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 项目根目录 (backend/gold/core/config.py → 4层到项目根)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
@@ -8,6 +8,9 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 
 class GoldSettings(BaseSettings):
     """黄金量化系统配置"""
+    model_config = SettingsConfigDict(
+        env_prefix="GOLD_", env_file=".env", extra="ignore",
+    )
 
     # 数据目录
     gold_data_dir: str = str(_PROJECT_ROOT / "data" / "backend" / "gold")
@@ -61,11 +64,6 @@ class GoldSettings(BaseSettings):
     openctp_td_address: str = "tcp://121.37.80.177:20002"
     openctp_user_id: str = ""
     openctp_password: str = ""
-
-    class Config:
-        env_prefix = "GOLD_"
-        env_file = ".env"
-        extra = "ignore"
 
 
 gold_settings = GoldSettings()

@@ -748,13 +748,29 @@ async def strategy_allocation_current(req: StrategyAllocationRequest):
 
 # ── 回测 ──
 
-def _fund_risk_pipeline():
-    """构造历史时序安全的基金默认风控管线。"""
-    from core import RiskPipeline
+def _fund_risk_pipeline(strategy_name: str = ""):
+    """构造历史时序安全的基金风控管线。
+
+    配置策略本身生成目标权重；通用单基金上限会错误拒绝其合法配置，故只保留
+    组合级回撤、日损失、连续亏损与信号频率约束。
+    """
+    from core import (
+        RiskPipeline, MaxDrawdownCheck, DailyLossCheck,
+        ConsecutiveLossCheck, SignalFrequencyCheck,
+    )
     from ..fund_quant.adapter import FundDomainAdapter
 
     pipeline = RiskPipeline()
-    for check in FundDomainAdapter().get_risk_checks("equity"):
+    if strategy_name.endswith("_aurora") and strategy_name not in {"multi_factor_aurora", "index_selection_aurora", "rating_enhanced_aurora"}:
+        checks = [
+            SignalFrequencyCheck(max_per_day=20),
+            MaxDrawdownCheck(drawdown_limit=0.20),
+            DailyLossCheck(limit=0.05),
+            ConsecutiveLossCheck(max_losses=7),
+        ]
+    else:
+        checks = FundDomainAdapter().get_risk_checks("equity")
+    for check in checks:
         pipeline.add(check)
     return pipeline
 
@@ -797,7 +813,7 @@ def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
     engine.set_executor(execution)
     from ..fund_quant.adapter import FundCostModelAdapter
     engine.set_cost_model(FundCostModelAdapter())
-    engine.set_risk(_fund_risk_pipeline())
+    engine.set_risk(_fund_risk_pipeline(strategy_name))
     engine.set_data(all_points)
     report = engine.run()
 
@@ -906,7 +922,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
     engine.set_executor(execution)
     from ..fund_quant.adapter import FundCostModelAdapter
     engine.set_cost_model(FundCostModelAdapter())
-    engine.set_risk(_fund_risk_pipeline())
+    engine.set_risk(_fund_risk_pipeline(strategy_name))
     engine.set_data(all_points)
 
     report = engine.run()
