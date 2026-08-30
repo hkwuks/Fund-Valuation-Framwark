@@ -713,7 +713,7 @@ def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
 
     nav_dict = {}
     for code in fund_codes:
-        navs = get_nav_history(code)
+        navs = get_nav_history(code, start_date, end_date)
         if navs:
             nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)}
                               for r in navs if r.get("nav")]
@@ -779,6 +779,11 @@ def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
     }
 
 
+def _filter_nav_records(records: list[dict], start_date: str, end_date: str) -> list[dict]:
+    """限制回测净值到请求区间，防止把区间外数据送入引擎。"""
+    return [r for r in records if start_date <= str(r.get("date", "")) <= end_date]
+
+
 def _run_backtest_sync(config_dict: dict) -> str:
     """同步回测任务 — 使用 AuroraCore 统一引擎（BacktestEngine）"""
     from datetime import date, timedelta
@@ -796,7 +801,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
     # 获取净值数据
     nav_dict = {}
     for code in fund_codes:
-        navs = get_nav_history(code)
+        navs = get_nav_history(code, start, end)
         if navs:
             nav_dict[code] = [{"date": r["date"], "nav": r.get("nav", 0)}
                               for r in navs if r.get("nav")]

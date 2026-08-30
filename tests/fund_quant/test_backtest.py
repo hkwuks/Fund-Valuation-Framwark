@@ -12,6 +12,19 @@ from backend.fund_quant.core.models import BacktestConfig, BacktestResult, CostM
 
 
 class TestBacktestEngine:
+    def test_backtest_nav_window_excludes_future_records(self):
+        """Aurora 回测数据必须严格限制在请求区间内。"""
+        from backend.api.fund_quant import _filter_nav_records
+
+        records = [
+            {"date": "2023-12-31", "nav": 1.0},
+            {"date": "2024-01-02", "nav": 1.1},
+            {"date": "2024-06-30", "nav": 1.2},
+            {"date": "2024-07-01", "nav": 1.3},
+        ]
+
+        assert _filter_nav_records(records, "2024-01-01", "2024-06-30") == records[1:3]
+
     def test_empty_nav_returns_failed(self):
         cfg = BacktestConfig(strategy_name="test", fund_codes=["000001"],
                              start_date="2020-01-01", end_date="2020-12-31")
@@ -104,8 +117,29 @@ class TestBacktestEngine:
         engine.submit_order("000001", "buy", 1000, date(2020, 1, 2))
         assert len(engine._trade_log) == 0  # 订单还未确认
 
+    def test_multi_fund_benchmark_uses_nav_returns(self):
+        """信息比率基准必须来自基金净值，而不是人为线性序列。"""
+        engine = FundBacktester()
+        engine._equity_curve = [
+            {"date": "2020-01-02", "total_value": 100000},
+            {"date": "2020-01-03", "total_value": 100000},
+            {"date": "2020-01-06", "total_value": 100000},
+        ]
+        engine._nav_data = {
+            "A": [
+                {"date": "2020-01-02", "nav": 1.0},
+                {"date": "2020-01-03", "nav": 1.1},
+                {"date": "2020-01-06", "nav": 1.1},
+            ],
+            "B": [
+                {"date": "2020-01-02", "nav": 2.0},
+                {"date": "2020-01-03", "nav": 2.0},
+                {"date": "2020-01-06", "nav": 2.2},
+            ],
+        }
 
-class TestSimPosition:
+        assert engine._benchmark_returns() == pytest.approx([0.05, 0.05])
+
     def test_position_value(self):
         pos = SimPosition("000001", 1000, date(2024, 1, 1), 1.0)
         assert pos.current_value(1.05) == 1050.0

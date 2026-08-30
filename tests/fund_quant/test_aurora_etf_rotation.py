@@ -300,3 +300,28 @@ class TestAuroraBacktestExecution:
 
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
         assert all(0.02 - 1e-6 <= weight <= 0.4 + 1e-6 for weight in weights.values())
+
+    def test_black_litterman_historical_run_does_not_read_current_scale(self, monkeypatch):
+        """历史 BL 回测没有时点规模数据时必须使用等权市场先验。"""
+        from backend.fund_quant.strategy.allocation.black_litterman import BlackLittermanStrategy
+
+        nav_series = {
+            "A": [1.0 + i * 0.001 for i in range(30)],
+            "B": [1.0 + i * 0.002 for i in range(30)],
+        }
+
+        def fail_if_current_metadata_is_read(*_args, **_kwargs):
+            raise AssertionError("historical BL must not read current fund scale")
+
+        monkeypatch.setattr(
+            "backend.fund_quant.data.storage.get_fund_meta",
+            fail_if_current_metadata_is_read,
+        )
+        result = BlackLittermanStrategy().optimize(
+            ["A", "B"],
+            nav_series=nav_series,
+        )
+
+        assert result["status"] == "success"
+        assert result["method"] == "equal_weight"
+        assert result["weights"] == {"A": 0.5, "B": 0.5}
