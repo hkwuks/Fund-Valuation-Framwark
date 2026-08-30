@@ -143,6 +143,62 @@ class TestFundQuantAPI:
             "end_date": "2024-01-01",
         })
 
+    def test_aurora_backtest_persists_benchmark_return(self, monkeypatch):
+        import backend.api.fund_quant as fund_quant
+        from types import SimpleNamespace
+
+        saved = {}
+
+        class SpyEngine:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def set_strategy(self, _strategy):
+                pass
+
+            def set_executor(self, _executor):
+                pass
+
+            def set_cost_model(self, _model):
+                pass
+
+            def set_risk(self, _pipeline):
+                pass
+
+            def set_data(self, _data):
+                pass
+
+            def run(self):
+                return SimpleNamespace(
+                    equity_curve=[{"equity": 100000}],
+                    total_trades=0,
+                )
+
+        class Strategy:
+            def __init__(self):
+                self.params = {}
+
+        monkeypatch.setattr("core.BacktestEngine", SpyEngine)
+        monkeypatch.setattr(fund_quant, "get_nav_history", lambda *_args, **_kwargs: [
+            {"date": "2024-01-01", "nav": 1.0},
+            {"date": "2024-01-02", "nav": 1.1},
+        ])
+        monkeypatch.setattr(fund_quant, "save_backtest_result", lambda result: saved.setdefault("result", result))
+        monkeypatch.setattr(
+            "core.strategy.StrategyRegistry.get",
+            staticmethod(lambda _name: Strategy),
+        )
+
+        fund_quant._run_backtest_sync({
+            "backtest_id": "benchmark-return-test",
+            "strategy_name": "all_weather_aurora",
+            "fund_codes": ["A"],
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-02",
+        })
+
+        assert saved["result"].benchmark_return == pytest.approx(0.1)
+
     def test_selection_screen(self, client):
         res = client.post("/api/fund-quant/selection/score",
                           json={"fund_type": "stock"})

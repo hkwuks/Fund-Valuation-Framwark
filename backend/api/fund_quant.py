@@ -863,6 +863,31 @@ def _filter_nav_records(records: list[dict], start_date: str, end_date: str) -> 
     return [r for r in records if start_date <= str(r.get("date", "")) <= end_date]
 
 
+def _equal_weight_benchmark_return(fund_codes: list[str], start_date: str, end_date: str) -> float | None:
+    """按共同可观测交易日计算基金池等权基准收益。"""
+    by_code = {}
+    for code in fund_codes:
+        values = {
+            r["date"]: float(r["nav"])
+            for r in get_nav_history(code, start_date, end_date)
+            if r.get("nav") and float(r["nav"]) > 0
+        }
+        if values:
+            by_code[code] = values
+    if not by_code:
+        return None
+
+    dates = sorted(set().union(*(values.keys() for values in by_code.values())))
+    cumulative = 1.0
+    for previous, current in zip(dates, dates[1:]):
+        daily = [values[current] / values[previous] - 1
+                 for values in by_code.values()
+                 if previous in values and current in values]
+        if daily:
+            cumulative *= 1 + float(np.mean(daily))
+    return cumulative - 1.0
+
+
 def _run_backtest_sync(config_dict: dict) -> str:
     """同步回测任务 — 使用 AuroraCore 统一引擎（BacktestEngine）"""
     from datetime import date, timedelta
@@ -965,6 +990,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
 
     # Calmar
     calmar = ann_return / mdd if mdd > 0 else 0
+    benchmark_return = _equal_weight_benchmark_return(fund_codes, start, end)
 
     # 保存结果
     from ..fund_quant.core.models import BacktestResult as BResult, BacktestConfig as BConfig
@@ -986,6 +1012,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
         calmar_ratio=round(calmar, 4),
         win_rate=round(win_rate, 4),
         total_trades=report.total_trades,
+        benchmark_return=round(benchmark_return, 4) if benchmark_return is not None else None,
         equity_curve=eq,
     )
     result.backtest_id = backtest_id
@@ -1074,6 +1101,7 @@ async def walk_forward_backtest(req: WalkForwardRequest):
             "sharpe_ratio": stored.get("sharpe_ratio", 0),
             "max_drawdown": stored.get("max_drawdown", 0),
             "total_trades": stored.get("total_trades", 0),
+            "benchmark_return": stored.get("benchmark_return"),
         }
 
     result = await asyncio.to_thread(
