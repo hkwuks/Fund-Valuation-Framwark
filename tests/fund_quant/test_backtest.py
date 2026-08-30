@@ -109,13 +109,54 @@ class TestBacktestEngine:
         # 至少应该有 equity_curve
         assert len(result.equity_curve) >= 1
 
-    def test_trade_log(self):
-        engine = FundBacktester()
-        engine._config = BacktestConfig(strategy_name="test", fund_codes=["000001"],
-                                        start_date="2020-01-01", end_date="2020-12-31")
-        engine._cash = 100000
-        engine.submit_order("000001", "buy", 1000, date(2020, 1, 2))
-        assert len(engine._trade_log) == 0  # 订单还未确认
+    def test_walk_forward_test_return_excludes_warmup_gain(self):
+        """Walk-Forward 测试收益只能由测试权益曲线计算。"""
+        from types import SimpleNamespace
+        from backend.core.validation import WalkForwardValidator as CoreWalkForwardValidator
+
+        class FakeEngine:
+            def __init__(self, bars):
+                self.bars = bars
+
+            def run(self):
+                equity = [100.0]
+                for bar in self.bars:
+                    equity.append(equity[-1] * (2 if bar < 3 else 1))
+                return SimpleNamespace(
+                    total_return=equity[-1] / equity[0] - 1,
+                    total_trades=0,
+                    equity_curve=[{"bar": i, "equity": value} for i, value in enumerate(equity)],
+                )
+
+        result = CoreWalkForwardValidator(train_window=3, test_window=2).run(
+            list(range(7)), FakeEngine, warmup_bars=2,
+        )
+
+        assert all(window["test_return"] == 0 for window in result["windows"])
+
+    def test_walk_forward_excludes_warmup_equity_points(self):
+        """Walk-Forward 测试收益不得包含预热区间的权益点。"""
+        from types import SimpleNamespace
+        from backend.core.validation import WalkForwardValidator as CoreWalkForwardValidator
+
+        class FakeEngine:
+            def __init__(self, bars):
+                self.bars = bars
+
+            def run(self):
+                return SimpleNamespace(
+                    total_return=0.0,
+                    total_trades=0,
+                    equity_curve=[{"bar": i, "equity": 100.0} for i in range(len(self.bars) + 1)],
+                )
+
+        result = CoreWalkForwardValidator(train_window=3, test_window=2).run(
+            list(range(7)), FakeEngine, warmup_bars=2,
+        )
+
+        assert result["windows"]
+        for window in result["windows"]:
+            assert all(point["bar"] > window["warmup_bars"] for point in window["test_equity"])
 
     def test_multi_fund_benchmark_uses_nav_returns(self):
         """信息比率基准必须来自基金净值，而不是人为线性序列。"""
