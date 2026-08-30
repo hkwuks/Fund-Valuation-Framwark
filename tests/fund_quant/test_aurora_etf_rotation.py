@@ -303,6 +303,7 @@ class TestAuroraBacktestExecution:
         """基金历史回测风控不得使用机器当前日期。"""
         from datetime import datetime
         from core import RiskContext, Signal
+        from core.signal import Direction
         from backend.fund_quant.risk.risk_checks import CooldownCheck, MinHoldingCheck
 
         ctx = RiskContext(extra={"as_of_date": date(2024, 1, 10)})

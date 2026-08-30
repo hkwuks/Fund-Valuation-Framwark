@@ -92,7 +92,8 @@ class MinHoldingCheck(RiskCheck):
         buy_date = self._holding_start.get(signal.symbol)
         if buy_date is None:
             return RiskVerdict(passed=True, check_name=self.name)
-        holding = (date.today() - buy_date).days
+        now = ctx.extra.get("as_of_date", date.today())
+        holding = (now - buy_date).days
         if holding >= self._min_days:
             return RiskVerdict(passed=True, check_name=self.name)
         return RiskVerdict(
