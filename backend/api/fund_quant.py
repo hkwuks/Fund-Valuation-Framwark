@@ -110,8 +110,14 @@ async def get_strategy_params(name: str):
     from core.strategy import StrategyRegistry
     import backend.fund_quant.adapter as _adapter  # noqa: F401
     # 1. AuroraCore 统一注册表
-    if name in StrategyRegistry.list_all():
-        cls = StrategyRegistry.get(name)
+    aurora_aliases = {
+        "multi_factor": "multi_factor_aurora",
+        "index_selection": "index_selection_aurora",
+        "rating_enhanced": "rating_enhanced_aurora",
+    }
+    lookup_name = aurora_aliases.get(name, name)
+    if lookup_name in StrategyRegistry.list_all():
+        cls = StrategyRegistry.get(lookup_name)
         return {"success": True, "data": {
             "name": name,
             "type": getattr(cls, "strategy_type", ""),
@@ -1037,6 +1043,7 @@ async def run_backtest(req: BacktestRequest):
 @router.post("/backtest/walk-forward")
 async def walk_forward_backtest(req: WalkForwardRequest):
     """基金 Aurora Walk-Forward 样本外回测。"""
+    import json
     from ..fund_quant.backtest.validation import walk_forward_validator
 
     if not req.fund_codes:
@@ -1056,6 +1063,12 @@ async def walk_forward_backtest(req: WalkForwardRequest):
         }
         backtest_id = _run_backtest_sync(config)
         stored = get_backtest_result(backtest_id) or {}
+        result_json = stored.get("result_json")
+        if result_json:
+            try:
+                stored = {**stored, **json.loads(result_json)}
+            except (TypeError, json.JSONDecodeError):
+                pass
         return {
             "total_return": stored.get("total_return", 0),
             "sharpe_ratio": stored.get("sharpe_ratio", 0),

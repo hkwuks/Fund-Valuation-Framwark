@@ -46,6 +46,11 @@ class TestFundQuantAPI:
         data = res.json()["data"]
         assert data["param_choices"]["mode"] == ["fixed", "risk_parity"]
 
+    def test_legacy_selection_params_resolve_through_aurora(self, client):
+        res = client.get("/api/fund-quant/strategy/params/multi_factor")
+        assert res.status_code == 200
+        assert res.json()["data"]["name"] == "multi_factor"
+
     def test_strategy_params_not_found(self, client):
         res = client.get("/api/fund-quant/strategy/params/nonexistent")
         assert res.status_code == 404

@@ -659,6 +659,8 @@ class BacktestEngine:
 
         for i, bar in enumerate(bars):
             is_day_end = i == len(bars) - 1 or _bar_date(bars[i + 1]) != _bar_date(bar)
+            if i == 0 or _bar_date(bars[i - 1]) != _bar_date(bar):
+                risk_ctx.daily_signal_count = 0
             # 设置 ATR（期货引擎动态滑点用）
             if hasattr(execution, 'set_atr') and atr_values:
                 execution.set_atr(atr_values[i] if i < len(atr_values) else 0.0)
@@ -693,11 +695,13 @@ class BacktestEngine:
                 portfolio_results = risk_pipeline.run_portfolio(risk_ctx)
                 reject = any(r.level == RiskLevel.REJECT for r in portfolio_results)
                 if reject:
-                    report.equity_curve.append({
-                        "bar": i + 1, "equity": equity,
-                        "close": getattr(bar, "close", getattr(bar, "nav", 0)),
-                        "risk_blocked": True,
-                    })
+                    blocked_equity = execution.portfolio_value if hasattr(execution, "portfolio_value") else equity
+                    if is_day_end:
+                        report.equity_curve.append({
+                            "bar": i + 1, "equity": round(blocked_equity, 2),
+                            "close": getattr(bar, "close", getattr(bar, "nav", 0)),
+                            "date": _bar_date(bar), "risk_blocked": True,
+                        })
                     continue
 
             # Strategy 处理数据

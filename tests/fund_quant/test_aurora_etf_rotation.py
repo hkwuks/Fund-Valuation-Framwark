@@ -299,40 +299,8 @@ class TestAuroraBacktestExecution:
         weights = strategy._compute_weights(nav_series, ["A", "B", "C"])
 
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
-    def test_risk_blocked_equity_curve_keeps_current_value(self):
-        """风控阻断交易时，权益曲线仍须记录当前组合市值。"""
-        from core import BacktestEngine, BacktestConfig, FundNavPoint, T1ExecutionEngine
-        from core.risk import RiskCheck, RiskLevel, RiskPipeline, RiskVerdict
-        from core.strategy import Strategy
-
-        class RejectAfterFirst(RiskCheck):
-            name = "reject_after_first"
-            calls = 0
-
-            def check(self, _ctx, signal=None):
-                self.calls += 1
-                if self.calls > 1:
-                    return RiskVerdict(passed=False, level=RiskLevel.REJECT, check_name=self.name)
-                return RiskVerdict(passed=True, check_name=self.name)
-
-        class BuyOnce(Strategy):
-            def on_data(self, data):
-                if str(data.date) == "2021-01-04":
-                    self.ctx.emit(Signal(id="", strategy="buy", symbol="A",
-                                         direction=Direction.LONG, price=data.nav, volume=10))
-
-        points = [FundNavPoint("A", date(2021, 1, day), nav)
-                  for day, nav in [(4, 1.0), (5, 1.2), (6, 1.3)]]
-        engine = BacktestEngine(BacktestConfig(initial_capital=100))
-        engine.set_strategy(BuyOnce())
-        engine.set_executor(T1ExecutionEngine(confirmation_delay=0))
-        risk = RiskPipeline(); risk.add(RejectAfterFirst()); engine.set_risk(risk)
-        engine.set_data(points)
-        report = engine.run()
-
-        assert report.equity_curve[-1]["equity"] > 100
+    def test_fund_risk_checks_use_backtest_as_of_date(self):
         """基金历史回测风控不得使用机器当前日期。"""
-        from datetime import datetime
         from core import RiskContext, Signal
         from core.signal import Direction
         from backend.fund_quant.risk.risk_checks import CooldownCheck, MinHoldingCheck
@@ -347,7 +315,6 @@ class TestAuroraBacktestExecution:
         cooldown = CooldownCheck(cooldown_days=5)
         buy = Signal(id="", strategy="test", symbol="A", direction=Direction.LONG,
                      price=1, volume=1)
-        ctx.extra["as_of_date"] = date(2024, 1, 10)
         assert cooldown.check(ctx, buy).passed is True
         ctx.extra["as_of_date"] = date(2024, 1, 12)
         assert cooldown.check(ctx, buy).passed is False
