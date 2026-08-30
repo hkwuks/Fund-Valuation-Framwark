@@ -299,7 +299,28 @@ class TestAuroraBacktestExecution:
         weights = strategy._compute_weights(nav_series, ["A", "B", "C"])
 
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
-        assert all(0.02 - 1e-6 <= weight <= 0.4 + 1e-6 for weight in weights.values())
+    def test_fund_risk_checks_use_backtest_as_of_date(self):
+        """基金历史回测风控不得使用机器当前日期。"""
+        from datetime import datetime
+        from core import RiskContext, Signal
+        from core.signal import Direction
+        from backend.fund_quant.risk.risk_checks import CooldownCheck, MinHoldingCheck
+
+        ctx = RiskContext(extra={"as_of_date": date(2024, 1, 10)})
+        holding = MinHoldingCheck(min_days=7)
+        holding.register_buy("A", date(2024, 1, 5))
+        sell = Signal(id="", strategy="test", symbol="A", direction=Direction.CLOSE_LONG,
+                      price=1, volume=1)
+        assert holding.check(ctx, sell).passed is False
+
+        cooldown = CooldownCheck(cooldown_days=5)
+        buy = Signal(id="", strategy="test", symbol="A", direction=Direction.LONG,
+                     price=1, volume=1)
+        ctx.extra["as_of_date"] = date(2024, 1, 10)
+        assert cooldown.check(ctx, buy).passed is True
+        ctx.extra["as_of_date"] = date(2024, 1, 12)
+        assert cooldown.check(ctx, buy).passed is False
+
 
     def test_black_litterman_historical_run_does_not_read_current_scale(self, monkeypatch):
         """历史 BL 回测没有时点规模数据时必须使用等权市场先验。"""

@@ -122,16 +122,22 @@ class WalkForwardValidator:
             test_engine = engine_factory(combined)
             test_report = test_engine.run()
 
-            # 过滤预热区间的权益曲线
             warmup_len = len(warmup)
-            test_equity = [e for e in test_report.equity_curve if e["bar"] >= warmup_len]
+            test_equity = [e for e in test_report.equity_curve if e["bar"] > warmup_len]
+
+            test_values = [e["equity"] for e in test_equity]
+            test_return = (
+                test_values[-1] / test_values[0] - 1
+                if len(test_values) > 1 and test_values[0] > 0
+                else 0.0
+            )
 
             results.append({
                 "train_bars": len(train_bars),
                 "test_bars": len(test_bars),
                 "warmup_bars": len(warmup),
                 "train_return": train_report.total_return,
-                "test_return": test_report.total_return,
+                "test_return": test_return,
                 "train_trades": train_report.total_trades,
                 "test_trades": test_report.total_trades,
                 "train_equity": train_report.equity_curve,

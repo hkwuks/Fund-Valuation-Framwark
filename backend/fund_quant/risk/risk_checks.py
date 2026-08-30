@@ -60,7 +60,8 @@ class CooldownCheck(RiskCheck):
         if signal is None:
             return RiskVerdict(passed=True, check_name=self.name)
         key = signal.symbol
-        now = datetime.now()
+        as_of_date = ctx.extra.get("as_of_date")
+        now = datetime.combine(as_of_date, datetime.min.time()) if as_of_date else datetime.now()
         history = self._signal_history.get(key, [])
         recent = [t for t in history if (now - t).total_seconds() < self._cooldown * 86400]
         if recent:
@@ -92,7 +93,8 @@ class MinHoldingCheck(RiskCheck):
         buy_date = self._holding_start.get(signal.symbol)
         if buy_date is None:
             return RiskVerdict(passed=True, check_name=self.name)
-        holding = (date.today() - buy_date).days
+        now = ctx.extra.get("as_of_date", date.today())
+        holding = (now - buy_date).days
         if holding >= self._min_days:
             return RiskVerdict(passed=True, check_name=self.name)
         return RiskVerdict(
