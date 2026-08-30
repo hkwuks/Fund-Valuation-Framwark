@@ -760,6 +760,27 @@ class FundBacktester:
         self._pending_orders.append(order)
         return True
 
+    def _benchmark_returns(self) -> list[float]:
+        """按交易日等权合成基金池净值收益，作为可比基准。"""
+        by_code = {}
+        for code, records in self._nav_data.items():
+            values = {
+                r["date"]: float(r["nav"])
+                for r in records
+                if r.get("nav") and float(r["nav"]) > 0
+            }
+            if values:
+                by_code[code] = values
+
+        dates = sorted(set().union(*(values.keys() for values in by_code.values()))) if by_code else []
+        returns = []
+        for previous, current in zip(dates, dates[1:]):
+            daily = [values[current] / values[previous] - 1 for values in by_code.values()
+                     if previous in values and current in values]
+            if daily:
+                returns.append(float(np.mean(daily)))
+        return returns
+
     # ── 报告生成 ──
 
     def _calc_fund_total_shares(self, fund_code: str) -> float:
@@ -802,8 +823,8 @@ class FundBacktester:
         avg_loss = abs(np.mean([t["proceeds"] - t.get("cost", 0) for t in losses])) if losses else 1.0
         profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
 
-        # 信息比率 (用等权基准近似)
-        benchmark_returns = [r / n_days for r in range(n_days - 1)]  # ponytail: 直线上涨基准
+        # 信息比率（使用基金池等权净值收益作为可比基准）
+        benchmark_returns = self._benchmark_returns()
         if len(returns) > 1 and len(benchmark_returns) > 1:
             excess = np.array(returns[:len(benchmark_returns)]) - np.array(benchmark_returns)
             tracking_error = np.std(excess, ddof=1) * np.sqrt(252)

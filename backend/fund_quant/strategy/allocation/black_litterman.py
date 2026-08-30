@@ -64,8 +64,8 @@ class BlackLittermanStrategy(FundStrategyBase):
         # 2. Ledoit-Wolf 协方差
         cov = self._ledoit_wolf_covariance(all_returns)
 
-        # 3. 均衡收益 Π = δ * Σ * w_mkt
-        w_mkt = self._market_weights(codes)
+        # 3. 均衡收益 Π = δ * Σ * w_mkt。历史回测没有时点规模数据，不能读取当前规模。
+        w_mkt = self._market_weights(codes, use_current_metadata=nav_series is None)
         delta = self.params["risk_aversion"]
         pi = delta * cov @ w_mkt
 
@@ -161,8 +161,12 @@ class BlackLittermanStrategy(FundStrategyBase):
 
     # ── 市场权重 ──────────────────────────────────────────────
 
-    def _market_weights(self, codes: List[str]) -> np.ndarray:
-        """市场权重: 基于规模(scale)的加权; 无数据时等权"""
+    def _market_weights(self, codes: List[str],
+                        use_current_metadata: bool = True) -> np.ndarray:
+        """市场权重: 基于规模的加权；历史回测无时点规模时使用等权。"""
+        if not use_current_metadata:
+            return np.ones(len(codes)) / len(codes)
+
         from ...data.storage import get_fund_meta
 
         n = len(codes)
