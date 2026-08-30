@@ -672,6 +672,17 @@ class BacktestEngine:
 
             # 组合级风控（每日一次）
             risk_ctx.extra["as_of_date"] = getattr(bar, "date", getattr(bar, "datetime", None))
+            if hasattr(execution, "portfolio_value"):
+                positions = {
+                    p.symbol: p.volume * p.avg_price
+                    for p in (execution.positions() if execution else [])
+                    if p.volume > 0
+                }
+                risk_ctx.extra["portfolio"] = {
+                    "total_value": execution.portfolio_value,
+                    "cash": getattr(execution, "_capital", 0.0),
+                    "positions": positions,
+                }
             if risk_pipeline:
                 # 使用期货引擎的总权益（如有）
                 if hasattr(execution, 'portfolio_value'):

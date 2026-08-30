@@ -52,6 +52,16 @@ class BacktestRequest(BaseModel):
     params: dict = {}
 
 
+class WalkForwardRequest(BaseModel):
+    strategy_name: str
+    fund_codes: List[str]
+    start_date: str
+    end_date: str
+    initial_capital: float = 100000.0
+    params: dict = {}
+    validation: dict = {}
+
+
 class DataCollectRequest(BaseModel):
     fund_codes: List[str]
     years: int = 5
@@ -88,6 +98,8 @@ async def list_strategies():
             "type": getattr(cls, "strategy_type", ""),
             "description": getattr(cls, "description", ""),
             "default_params": getattr(cls, "default_params", {}),
+            "param_ranges": getattr(cls, "param_ranges", {}),
+            "param_choices": getattr(cls, "param_choices", {}),
         })
     return {"success": True, "data": strategies}
 
@@ -189,6 +201,35 @@ async def evaluate_factor(req: FactorEvaluateRequest):
 async def selection_screen(req: SelectionRequest):
     """基金筛选"""
     # 策略选择
+    from core.strategy import StrategyRegistry
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+
+    if req.strategy in {"multi_factor", "multi_factor_aurora"}:
+        strategy = StrategyRegistry.get("multi_factor_aurora")()
+        fund_type = TYPE_COMPAT.get(req.fund_type, req.fund_type)
+        result = await asyncio.to_thread(
+            partial(strategy.screen, fund_type=fund_type, top_n=req.top_n, params=req.params))
+        return {"success": True, "data": result}
+
+    if req.strategy in {"index_selection", "index_selection_aurora"}:
+        strategy = StrategyRegistry.get("index_selection_aurora")()
+        etf_data = await asyncio.to_thread(get_etf_market_data)
+        if etf_data:
+            strategy._state["liquidity_data"] = etf_data.get("liquidity", {})
+            strategy._state["premium_vol_data"] = etf_data.get("premium", {})
+        from ..fund_quant.data.storage import get_all_fund_codes, get_nav_history
+        tracking = {}
+        for code in await asyncio.to_thread(get_all_fund_codes) or []:
+            navs = await asyncio.to_thread(get_nav_history, code, limit=120)
+            te = await asyncio.to_thread(compute_tracking_errors, code,
+                                         [r["nav"] for r in navs if r.get("nav")])
+            if te is not None:
+                tracking[code] = te
+        strategy._state["tracking_errors"] = tracking
+        result = await asyncio.to_thread(
+            partial(strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
+        return {"success": True, "data": result}
+
     if req.strategy == "rating_enhanced":
         from ..fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
         strategy = RatingEnhancedSelection()
@@ -249,9 +290,13 @@ async def selection_screen(req: SelectionRequest):
 @router.post("/selection/score")
 async def selection_score(req: SelectionRequest):
     """基金评分"""
-    from ..fund_quant.strategy.selection.multi_factor import MultiFactorSelection
-    strategy = MultiFactorSelection()
-    result = await asyncio.to_thread(partial(strategy.score, fund_type=req.fund_type, params=req.params))
+    from core.strategy import StrategyRegistry
+    import backend.fund_quant.adapter as _adapter  # noqa: F401
+
+    strategy_name = "index_selection_aurora" if TYPE_COMPAT.get(req.fund_type, req.fund_type) == "index" else "multi_factor_aurora"
+    strategy = StrategyRegistry.get(strategy_name)()
+    result = await asyncio.to_thread(
+        partial(strategy.score, fund_type=req.fund_type, params=req.params))
     return {"success": True, "data": result}
 
 
@@ -861,6 +906,7 @@ def _run_backtest_sync(config_dict: dict) -> str:
     engine.set_executor(execution)
     from ..fund_quant.adapter import FundCostModelAdapter
     engine.set_cost_model(FundCostModelAdapter())
+    engine.set_risk(_fund_risk_pipeline())
     engine.set_data(all_points)
 
     report = engine.run()
@@ -972,7 +1018,42 @@ async def run_backtest(req: BacktestRequest):
     }
 
 
-@router.get("/backtest/result/{backtest_id}")
+@router.post("/backtest/walk-forward")
+async def walk_forward_backtest(req: WalkForwardRequest):
+    """基金 Aurora Walk-Forward 样本外回测。"""
+    from ..fund_quant.backtest.validation import walk_forward_validator
+
+    if not req.fund_codes:
+        raise HTTPException(status_code=400, detail="fund_codes 不能为空")
+    if req.start_date >= req.end_date:
+        raise HTTPException(status_code=400, detail="start_date 必须早于 end_date")
+
+    validator_params = req.validation or {}
+
+    def run_window(config):
+        config = {
+            **config,
+            "strategy_name": req.strategy_name,
+            "fund_codes": req.fund_codes,
+            "initial_capital": req.initial_capital,
+            "params": {**req.params, **config.get("params", {})},
+        }
+        backtest_id = _run_backtest_sync(config)
+        stored = get_backtest_result(backtest_id) or {}
+        return {
+            "total_return": stored.get("total_return", 0),
+            "sharpe_ratio": stored.get("sharpe_ratio", 0),
+            "max_drawdown": stored.get("max_drawdown", 0),
+            "total_trades": stored.get("total_trades", 0),
+        }
+
+    result = await asyncio.to_thread(
+        walk_forward_validator.validate,
+        run_window, req.fund_codes, req.start_date, req.end_date, validator_params,
+    )
+    return {"success": True, "data": result}
+
+
 async def get_backtest(backtest_id: str):
     """获取回测结果"""
     result = await asyncio.to_thread(get_backtest_result, backtest_id)

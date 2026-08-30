@@ -17,6 +17,7 @@ import { DetailPanel } from './panels/DetailPanel'
 import { PaperTradePanel } from './panels/PaperTradePanel'
 import { StrategyBacktest } from './panels/StrategyBacktest'
 import { ResearchPanel } from './research-panel'
+import { fundManager } from '../fundManager'
 
 export class FundQuantDashboard {
   private layout: LayoutManager | null = null
@@ -85,7 +86,6 @@ export class FundQuantDashboard {
 
   private async loadFundPool(): Promise<void> {
     try {
-      const { fundManager } = await import('../fundManager')
       // 等待基金数据加载完成（重试直到有数据或超时）
       let funds: any[] = []
       for (let retry = 0; retry < 10; retry++) {

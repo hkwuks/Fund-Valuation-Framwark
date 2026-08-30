@@ -521,6 +521,8 @@ class AllWeatherAurora(Strategy):
         """判断是否触发再平衡：首次或跨月"""
         cur_month = date_str[:7]
         if self._first_rebalance and len(self._hist) >= 3:
+            if sum(len(self._hist.get(code, [])) >= 20 for code in self._pool_codes()) < 2:
+                return
             self._first_rebalance = False
             self._last_rebalance_month = cur_month
             self._rebalance(date_str)
@@ -1199,7 +1201,77 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
         return result.get("weights", {})
 
 
-# ── 评级增强选基（AuroraCore 信号版）──
+# ── 多因子与指数选基（AuroraCore 注册入口）──
+
+class _AuroraSelectionAdapter(Strategy):
+    """选基策略的 Aurora 注册入口；历史回测保持静默以避免无时点截面的全库查询。"""
+    selection_cls = None
+
+    def __init__(self):
+        super().__init__()
+        self.params = {**self.default_params}
+        self._state: dict = {}
+
+    def screen(self, fund_type="all", top_n=5, params=None):
+        scorer = self.selection_cls()
+        self._copy_state_to(scorer)
+        return scorer.screen(fund_type=fund_type, top_n=top_n, params=params)
+
+    def score(self, fund_type="all", params=None):
+        scorer = self.selection_cls()
+        self._copy_state_to(scorer)
+        return scorer.score(fund_type=fund_type, params=params)
+
+    def _copy_state_to(self, scorer):
+        scorer._state.update(getattr(self, "_state", {}))
+
+    def on_data(self, data):
+        if self.ctx is None or self.ctx.mode == "backtest":
+            return
+        scorer = self.selection_cls()
+        result = scorer.screen(
+            fund_type=self.params.get("fund_type", "all"),
+            top_n=int(self.params.get("top_n", 5)),
+            params=self.params,
+        )
+        scores = {row["fund_code"]: float(row["total_score"])
+                  for row in result.get("rankings", [])}
+        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
+        nav = getattr(data, "nav", getattr(data, "close", 0))
+        if code in scores and nav and nav > 0:
+            self.ctx.emit(Signal(
+                id="", strategy=self.name, symbol=code, direction=Direction.LONG,
+                price=float(nav), volume=1.0, confidence=scores[code],
+                reason=f"选基评分={scores[code]:.4f}",
+            ))
+
+
+@StrategyRegistry.register("multi_factor_aurora")
+class AuroraMultiFactorSelection(_AuroraSelectionAdapter):
+    name = "multi_factor_aurora"
+    strategy_type = "selection"
+    description = "多因子选基: AuroraCore 统一注册入口"
+    default_params = {"fund_type": "all", "top_n": 5}
+
+    @property
+    def selection_cls(self):
+        from .strategy.selection.multi_factor import MultiFactorSelection
+        return MultiFactorSelection
+
+
+@StrategyRegistry.register("index_selection_aurora")
+class AuroraIndexSelection(_AuroraSelectionAdapter):
+    name = "index_selection_aurora"
+    strategy_type = "selection"
+    description = "指数基金五维评分: AuroraCore 统一注册入口"
+    default_params = {"fund_type": "index", "top_n": 5}
+
+    @property
+    def selection_cls(self):
+        from .strategy.selection.index_selection import IndexSelectionStrategy
+        return IndexSelectionStrategy
+
+
 
 @StrategyRegistry.register("rating_enhanced_aurora")
 class AuroraRatingEnhancedSelection(Strategy):
