@@ -826,7 +826,8 @@ class FundBacktester:
         # 信息比率（使用基金池等权净值收益作为可比基准）
         benchmark_returns = self._benchmark_returns()
         if len(returns) > 1 and len(benchmark_returns) > 1:
-            excess = np.array(returns[:len(benchmark_returns)]) - np.array(benchmark_returns)
+            n = min(len(returns), len(benchmark_returns))
+            excess = np.array(returns[-n:]) - np.array(benchmark_returns[-n:])
             tracking_error = np.std(excess, ddof=1) * np.sqrt(252)
             information_ratio = (
                 (ann_return - 0.02) / tracking_error if tracking_error > 0 else 0.0

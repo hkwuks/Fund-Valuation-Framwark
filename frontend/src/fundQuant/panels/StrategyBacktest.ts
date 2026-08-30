@@ -43,6 +43,7 @@ export class StrategyBacktest extends PanelBase {
           <input class="sb-start" type="date" value="2021-01-01" style="font-size:11px;padding:2px 4px;">
           <button class="btn btn-sm btn-ghost sb-params">参数</button>
           <button class="btn btn-sm btn-ghost sb-params-reset" hidden>重置</button>
+          <button class="btn btn-sm btn-ghost sb-walk-forward" style="font-weight:600;">OOS验证</button>
           <button class="btn btn-sm btn-primary sb-run" style="font-weight:600;">▶ 回测</button>
         </div>
       </div>
@@ -58,6 +59,7 @@ export class StrategyBacktest extends PanelBase {
     const strategySel = this.el?.querySelector('.sb-strategy') as HTMLSelectElement
     const modeSel = this.el?.querySelector('.sb-mode') as HTMLSelectElement
     const runBtn = this.el?.querySelector('.sb-run') as HTMLButtonElement
+    const walkForwardBtn = this.el?.querySelector('.sb-walk-forward') as HTMLButtonElement
     const paramsBtn = this.el?.querySelector('.sb-params') as HTMLButtonElement
     const resetBtn = this.el?.querySelector('.sb-params-reset') as HTMLButtonElement
 
@@ -68,6 +70,7 @@ export class StrategyBacktest extends PanelBase {
 
     paramsBtn?.addEventListener('click', () => void this.toggleParams())
     resetBtn?.addEventListener('click', () => void this.resetParams())
+    walkForwardBtn?.addEventListener('click', () => void this.runWalkForward())
     runBtn?.addEventListener('click', () => this.run())
   }
 
@@ -110,6 +113,37 @@ export class StrategyBacktest extends PanelBase {
     } finally {
       this.running = false
       if (btn) btn.textContent = '▶ 回测'
+    }
+  }
+
+  private async runWalkForward(): Promise<void> {
+    const strategy = (this.el?.querySelector('.sb-strategy') as HTMLSelectElement)?.value
+    const start = (this.el?.querySelector('.sb-start') as HTMLInputElement)?.value || '2021-01-01'
+    const codes = state.get('fundPool').map(f => f.fund_code)
+    const msg = this.el?.querySelector('.sb-msg') as HTMLElement | null
+    if (!strategy || !codes.length) {
+      this.showError('基金池为空')
+      return
+    }
+    const button = this.el?.querySelector('.sb-walk-forward') as HTMLButtonElement | null
+    if (button) { button.disabled = true; button.textContent = '验证中…' }
+    try {
+      const response = await fundQuantApi.runWalkForward({
+        strategy_name: strategy,
+        fund_codes: codes,
+        start_date: start,
+        end_date: new Date().toISOString().slice(0, 10),
+        initial_capital: 100000,
+        params: this.readParams(),
+      })
+      const summary = response.data?.summary
+      if (msg) msg.textContent = summary
+        ? `OOS窗口 ${summary.valid_windows}/${summary.total_windows} · 平均收益 ${(summary.avg_return * 100).toFixed(2)}% · 平均Sharpe ${summary.avg_sharpe.toFixed(2)}`
+        : (response.data?.message || 'OOS验证完成')
+    } catch (error) {
+      this.showError(error instanceof Error ? error.message : 'OOS验证失败')
+    } finally {
+      if (button) { button.disabled = false; button.textContent = 'OOS验证' }
     }
   }
 

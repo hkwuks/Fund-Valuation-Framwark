@@ -26,7 +26,14 @@ class TestStrategyRegistry:
             assert gone not in names, f"已废弃策略 {gone} 仍被注册"
         assert expected <= names, f"缺失: {expected - names}"
 
-    def test_strategy_types(self):
+    def test_selection_aurora_adapters_registered(self):
+        """多因子和指数选基也必须有统一 Aurora registry 入口。"""
+        from core.strategy import StrategyRegistry as AuroraRegistry
+        import backend.fund_quant.adapter as _adapter  # noqa: F401
+
+        assert AuroraRegistry.get("multi_factor_aurora") is not None
+        assert AuroraRegistry.get("index_selection_aurora") is not None
+
         strategies = self.registry.list_strategies()
         by_type = {}
         for s in strategies:

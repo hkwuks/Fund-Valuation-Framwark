@@ -301,7 +301,6 @@ class TestAuroraBacktestExecution:
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-4)
     def test_fund_risk_checks_use_backtest_as_of_date(self):
         """基金历史回测风控不得使用机器当前日期。"""
-        from datetime import datetime
         from core import RiskContext, Signal
         from core.signal import Direction
         from backend.fund_quant.risk.risk_checks import CooldownCheck, MinHoldingCheck
@@ -316,7 +315,6 @@ class TestAuroraBacktestExecution:
         cooldown = CooldownCheck(cooldown_days=5)
         buy = Signal(id="", strategy="test", symbol="A", direction=Direction.LONG,
                      price=1, volume=1)
-        ctx.extra["as_of_date"] = date(2024, 1, 10)
         assert cooldown.check(ctx, buy).passed is True
         ctx.extra["as_of_date"] = date(2024, 1, 12)
         assert cooldown.check(ctx, buy).passed is False

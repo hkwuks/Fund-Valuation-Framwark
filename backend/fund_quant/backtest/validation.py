@@ -102,6 +102,7 @@ class WalkForwardValidator:
                 tt = test_result.get("total_trades", 0) if hasattr(test_result, 'get') else (
                     getattr(test_result, 'total_trades', 0)
                 )
+                br = test_result.get("benchmark_return") if hasattr(test_result, 'get') else None
 
                 test_returns.append(tr)
                 test_sharpes.append(ts)
@@ -114,6 +115,8 @@ class WalkForwardValidator:
                     "sharpe_ratio": round(ts, 4) if ts else None,
                     "max_drawdown": round(td, 6),
                     "total_trades": tt,
+                    "benchmark_return": round(float(br), 6) if isinstance(br, (int, float)) else None,
+                    "excess_return": round(tr - float(br), 6) if isinstance(br, (int, float)) else None,
                     "trades_ok": tt >= p["min_train_trades"],
                 })
 
@@ -122,7 +125,7 @@ class WalkForwardValidator:
                 window_results.append({"window": w, "status": "failed", "error": str(e)})
 
         # 计算一致性得分
-        valid_results = [r for r in window_results if r.get("total_return") is not None]
+        valid_results = [r for r in window_results if r.get("status") != "failed" and r.get("total_return") is not None]
 
         if not valid_results:
             return {"method": "walk_forward", "config": p, "windows": [], "summary": {
@@ -140,6 +143,10 @@ class WalkForwardValidator:
 
         # 回撤控制评价
         avg_drawdown = float(np.mean(test_drawdowns)) if test_drawdowns else 1.0
+        benchmark_returns = [r["benchmark_return"] for r in window_results
+                             if isinstance(r.get("benchmark_return"), (int, float))]
+        excess_returns = [r["excess_return"] for r in window_results
+                          if isinstance(r.get("excess_return"), (int, float))]
 
         return {
             "method": "walk_forward",
@@ -151,6 +158,8 @@ class WalkForwardValidator:
                 "avg_return": round(avg_return, 6),
                 "avg_sharpe": round(avg_sharpe, 4),
                 "avg_drawdown": round(avg_drawdown, 6),
+                "avg_benchmark_return": round(float(np.mean(benchmark_returns)), 6) if benchmark_returns else None,
+                "avg_excess_return": round(float(np.mean(excess_returns)), 6) if excess_returns else None,
                 "consistency_score": round(consistency, 4),
                 "min_return": round(float(np.min(test_returns)), 6) if test_returns else 0.0,
                 "max_return": round(float(np.max(test_returns)), 6) if test_returns else 0.0,

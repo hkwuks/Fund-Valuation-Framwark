@@ -229,6 +229,7 @@ class BacktestResult(BaseModel):
     sharpe_ratio: float = 0.0
     calmar_ratio: float = 0.0
     information_ratio: float = 0.0
+    benchmark_return: Optional[float] = None
     win_rate: float = 0.0
     profit_loss_ratio: float = 0.0
     total_trades: int = 0

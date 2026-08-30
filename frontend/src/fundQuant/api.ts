@@ -351,6 +351,10 @@ export const fundQuantApi = {
   runEqualWeightBacktest: (req: {
     fund_codes: string[]; start_date: string; end_date: string; initial_capital?: number;
   }) => post<{ success: boolean; data: AuroraBacktestResult }>('/backtest/run-vectorized', req),
+  runWalkForward: (req: {
+    strategy_name: string; fund_codes: string[]; start_date: string; end_date: string;
+    initial_capital?: number; params?: Record<string, any>; validation?: Record<string, any>;
+  }) => post<{ success: boolean; data: any }>('/backtest/walk-forward', req),
 
   // — 因子研究 —
   getFactorList: () => get<{ success: boolean; data: FactorMeta[] }>('/factor/list'),

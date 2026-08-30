@@ -449,7 +449,7 @@ class ClosedEndCheck(RiskCheck):
                 import datetime
                 est = (datetime.date.fromisoformat(est_str)
                        if isinstance(est_str, str) else est_str)
-                days_since = (date.today() - est).days
+                days_since = (ctx.extra.get("as_of_date", date.today()) - est).days
                 if days_since < 365:
                     return RiskVerdict(
                         passed=False, level=RiskLevel.REJECT,

@@ -1,11 +1,12 @@
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
     APP_NAME: str = "智能理财Agent"
     APP_NAME: str = "智能理财Agent"
     APP_VERSION: str = "1.0.0"
@@ -24,11 +25,5 @@ class Settings(BaseSettings):
     MODEL_DIR: str = str(_PROJECT_ROOT / "data" / "backend" / "models")
     MODEL_MAX_AGE_DAYS: int = 7
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"
-        extra = "ignore"
-
 
 settings = Settings()

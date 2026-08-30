@@ -85,9 +85,6 @@ export class DetailPanel extends PanelBase {
     this.blUnsub = state.on('blViews', async () => {
       const s = state.get('selectedStrategy')
       if (s === 'black_litterman_aurora') await this.loadStrategyDetail(s)
-      // 同时让左侧列表同步刷新（带观点）
-      const sl = document.querySelector('.panel-signallist') ? (await import('./SignalList')).SignalList : null
-      void sl
     })
   }
 
