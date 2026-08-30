@@ -703,6 +703,17 @@ async def strategy_allocation_current(req: StrategyAllocationRequest):
 
 # ── 回测 ──
 
+def _fund_risk_pipeline():
+    """构造历史时序安全的基金默认风控管线。"""
+    from core import RiskPipeline
+    from ..fund_quant.adapter import FundDomainAdapter
+
+    pipeline = RiskPipeline()
+    for check in FundDomainAdapter().get_risk_checks("equity"):
+        pipeline.add(check)
+    return pipeline
+
+
 def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
                         start_date: str, end_date: str,
                         initial_capital: float, params: dict) -> dict:
@@ -741,6 +752,7 @@ def _run_aurora_metrics(strategy_name: str, fund_codes: list[str],
     engine.set_executor(execution)
     from ..fund_quant.adapter import FundCostModelAdapter
     engine.set_cost_model(FundCostModelAdapter())
+    engine.set_risk(_fund_risk_pipeline())
     engine.set_data(all_points)
     report = engine.run()
 

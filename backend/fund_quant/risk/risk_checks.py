@@ -60,7 +60,8 @@ class CooldownCheck(RiskCheck):
         if signal is None:
             return RiskVerdict(passed=True, check_name=self.name)
         key = signal.symbol
-        now = datetime.now()
+        as_of_date = ctx.extra.get("as_of_date")
+        now = datetime.combine(as_of_date, datetime.min.time()) if as_of_date else datetime.now()
         history = self._signal_history.get(key, [])
         recent = [t for t in history if (now - t).total_seconds() < self._cooldown * 86400]
         if recent:

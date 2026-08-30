@@ -671,6 +671,7 @@ class BacktestEngine:
             bus.publish(Event(EventType.BAR_RECEIVED, bar, source="engine"))
 
             # 组合级风控（每日一次）
+            risk_ctx.extra["as_of_date"] = getattr(bar, "date", getattr(bar, "datetime", None))
             if risk_pipeline:
                 # 使用期货引擎的总权益（如有）
                 if hasattr(execution, 'portfolio_value'):
