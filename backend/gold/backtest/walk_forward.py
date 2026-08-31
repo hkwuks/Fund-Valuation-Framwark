@@ -185,7 +185,19 @@ class WalkForwardValidator:
         returns = [w.get("total_return_pct") or 0 for w in windows]
         sharpes = [w.get("sharpe_ratio") or 0 for w in windows]
 
-        return {
+        # 稀疏窗口保护 — 窗口/交易太少时聚合指标不可靠
+        total_trades = sum(w.get("trade_count", 0) for w in windows)
+        n_tested = sum(1 for w in windows if (w.get("trade_count") or 0) > 0)
+        avg_trades_per_window = total_trades / len(windows) if windows else 0.0
+        insufficient = len(windows) < 5 or total_trades < 10
+        reason_parts = []
+        if len(windows) < 5:
+            reason_parts.append(f"窗口数 {len(windows)} < 5")
+        if total_trades < 10:
+            reason_parts.append(f"总交易数 {total_trades} < 10")
+        insufficiency_reason = "; ".join(reason_parts) if reason_parts else ""
+
+        result = {
             "method": "walk_forward",
             "n_windows": len(windows),
             "avg_return_pct": round(np.mean(returns), 2),
@@ -197,12 +209,23 @@ class WalkForwardValidator:
             "positive_window_ratio": round(
                 sum(1 for r in returns if r > 0) / len(returns) * 100, 1
             ),
-            "total_trades": sum(w.get("trade_count", 0) for w in windows),
+            "total_trades": total_trades,
             "windows": windows,
             "aggregated_equity_pct": round(
                 (equity_curves[-1] if equity_curves else 0), 2
             ),
+            # 稀疏数据元数据
+            "insufficient": insufficient,
+            "insufficiency_reason": insufficiency_reason,
+            "avg_trades_per_window": round(avg_trades_per_window, 2),
+            "windows_with_trades": n_tested,
         }
+        # 不统计超额但需报告的不确定性: 平均每窗口交易数太少 → 均值/比率不可信
+        if insufficient:
+            result["statistical_warning"] = (
+                "样本不足: " + (insufficiency_reason or "窗口样本过少")
+            )
+        return result
 
 
 class CPCVValidator:
@@ -332,7 +355,17 @@ class CPCVValidator:
         negative_sharpe = sum(1 for s in sharpes if s <= 0)
         pbo = negative_sharpe / len(sharpes) if sharpes else 1.0
 
-        return {
+        # 稀疏路径保护 — 路径太少时 PBO/聚合指标不可靠
+        total_trades = sum(p.get("trade_count", 0) for p in path_results)
+        insufficient = len(path_results) < 5 or total_trades < 10
+        reason_parts = []
+        if len(path_results) < 5:
+            reason_parts.append(f"路径数 {len(path_results)} < 5")
+        if total_trades < 10:
+            reason_parts.append(f"总交易数 {total_trades} < 10")
+        insufficiency_reason = "; ".join(reason_parts) if reason_parts else ""
+
+        result = {
             "method": "cpcv",
             "n_paths": len(path_results),
             "avg_return_pct": round(np.mean(returns), 2),
@@ -346,6 +379,14 @@ class CPCVValidator:
             ),
             "pbo": round(pbo, 2),
             "pbo_verdict": "高过拟合风险" if pbo > 0.5 else "低过拟合风险",
-            "total_trades": sum(p.get("trade_count", 0) for p in path_results),
+            "total_trades": total_trades,
             "paths": path_results,
+            # 稀疏数据元数据
+            "insufficient": insufficient,
+            "insufficiency_reason": insufficiency_reason,
         }
+        if insufficient:
+            result["statistical_warning"] = (
+                "样本不足: " + (insufficiency_reason or "路径样本过少")
+            )
+        return result

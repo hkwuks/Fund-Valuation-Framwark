@@ -154,6 +154,18 @@ class WalkForwardValidator:
         excess_returns = [r["excess_return"] for r in window_results
                           if isinstance(r.get("excess_return"), (int, float))]
 
+        # 稀疏窗口保护 — 有效窗口/交易太少时一致性得分等聚合不可靠
+        total_trades_list = [t for t in test_trades if t >= 0]
+        n_traded = sum(1 for t in test_trades if t >= p["min_train_trades"])
+        total_trades_all = int(np.sum(total_trades_list)) if total_trades_list else 0
+        insufficient = len(valid_results) < 3 or total_trades_all < 10
+        reason_parts = []
+        if len(valid_results) < 3:
+            reason_parts.append(f"有效窗口数 {len(valid_results)} < 3")
+        if total_trades_all < 10:
+            reason_parts.append(f"总交易数 {total_trades_all} < 10")
+        insufficiency_reason = "; ".join(reason_parts) if reason_parts else ""
+
         return {
             "method": "walk_forward",
             "config": p,
@@ -170,7 +182,11 @@ class WalkForwardValidator:
                 "min_return": round(float(np.min(test_returns)), 6) if test_returns else 0.0,
                 "max_return": round(float(np.max(test_returns)), 6) if test_returns else 0.0,
                 "total_trades_avg": int(np.mean(test_trades)) if test_trades else 0,
-                "windows_passing_min_trades": sum(1 for t in test_trades if t >= p["min_train_trades"]),
+                "windows_passing_min_trades": n_traded,
+                # 稀疏数据元数据
+                "insufficient": insufficient,
+                "insufficiency_reason": insufficiency_reason,
+                "total_trades": total_trades_all,
             },
         }
     @staticmethod
