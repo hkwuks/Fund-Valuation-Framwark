@@ -75,6 +75,35 @@ class FundManagerUI {
                 <label for="total-shares">持有份额</label>
                 <input type="number" id="total-shares" step="0.001" value="1" required />
               </div>
+              <div class="form-group">
+                <label for="market-type">市场类型</label>
+                <select id="market-type" required>
+                  <option value="">请选择</option>
+                  <option value="on_exchange">场内</option>
+                  <option value="off_exchange">场外</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="trade-mode">交易时序</label>
+                <select id="trade-mode" required>
+                  <option value="">请选择</option>
+                  <option value="t0">T+0</option>
+                  <option value="t1">T+1</option>
+                  <option value="t2">T+2</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="subscription-confirm-days">申购确认日</label>
+                <input type="number" id="subscription-confirm-days" min="0" required placeholder="交易日数" />
+              </div>
+              <div class="form-group">
+                <label for="redemption-confirm-days">赎回确认日</label>
+                <input type="number" id="redemption-confirm-days" min="0" required placeholder="交易日数" />
+              </div>
+              <div class="form-group">
+                <label for="cash-arrival-days">资金到账日</label>
+                <input type="number" id="cash-arrival-days" min="0" required placeholder="交易日数" />
+              </div>
               <button type="submit" class="btn btn-primary btn-lg">
                 <span>➕</span> 添加基金
               </button>
@@ -455,12 +484,22 @@ class FundManagerUI {
       const fundName = (form.querySelector('#fund-name') as HTMLInputElement).value;
       const fundType = (form.querySelector('#fund-type') as HTMLInputElement).value;
       const totalShares = parseFloat((form.querySelector('#total-shares') as HTMLInputElement).value);
+      const marketType = (form.querySelector('#market-type') as HTMLSelectElement).value as 'on_exchange' | 'off_exchange';
+      const tradeMode = (form.querySelector('#trade-mode') as HTMLSelectElement).value as 't0' | 't1' | 't2';
+      const subscriptionConfirmDays = parseInt((form.querySelector('#subscription-confirm-days') as HTMLInputElement).value, 10);
+      const redemptionConfirmDays = parseInt((form.querySelector('#redemption-confirm-days') as HTMLInputElement).value, 10);
+      const cashArrivalDays = parseInt((form.querySelector('#cash-arrival-days') as HTMLInputElement).value, 10);
 
       const newFund: Fund = {
         fund_code: fundCode,
         fund_name: fundName,
         fund_type: fundType,
         total_shares: totalShares,
+        market_type: marketType,
+        trade_mode: tradeMode,
+        subscription_confirm_days: subscriptionConfirmDays,
+        redemption_confirm_days: redemptionConfirmDays,
+        cash_arrival_days: cashArrivalDays,
         holdings: [],
       };
 

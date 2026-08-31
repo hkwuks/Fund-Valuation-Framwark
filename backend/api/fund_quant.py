@@ -27,6 +27,7 @@ from ..fund_quant.data.collector import fund_data_collector
 from ..fund_quant.data.quality import data_quality_checker
 from ..fund_quant.signal.output import signal_output_service
 from ..fund_quant.risk.metrics import risk_metrics_calculator
+from ..fund_quant.core.trading import validate_strategy_funds
 
 router = APIRouter(prefix="/fund-quant", tags=["基金量化"])
 
@@ -1942,7 +1943,23 @@ async def run_vectorized_backtest(req: VectorizedBacktestRequest):
 @router.post("/backtest/aurora-run")
 async def run_aurora_backtest(req: VectorizedBacktestRequest):
     """AuroraCore 统一引擎回测（配置策略用）"""
+    funds = []
+    from .funds import load_funds_from_file
     from ..fund_quant.data.storage import get_nav_history
+    managed_funds = {f.get("fund_code"): f for f in await load_funds_from_file()}
+    missing = [code for code in req.fund_codes if code not in managed_funds]
+    if missing:
+        raise HTTPException(status_code=400, detail={
+            "message": "策略仅允许使用基金管理中的持仓基金",
+            "fund_codes": missing,
+        })
+    funds = [managed_funds[code] for code in req.fund_codes]
+    issues = validate_strategy_funds(req.strategy_name, funds)
+    if issues:
+        raise HTTPException(status_code=400, detail={
+            "message": "持仓基金不符合当前策略，请调整持仓或更换策略",
+            "issues": issues,
+        })
     from core import BacktestEngine, BacktestConfig, BacktestReport
     from core import T1ExecutionEngine, FundNavPoint, Direction
     from core.strategy import StrategyRegistry
@@ -1979,7 +1996,13 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
 
     strategy = strategy_cls()
     strategy.params.update(req.params)
-    execution = T1ExecutionEngine(confirmation_delay=1)
+    funds_by_code = {f["fund_code"]: f for f in funds}
+    confirmation_delays = {
+        code: {key: int(funds_by_code[code][key]) for key in ("subscription_confirm_days", "redemption_confirm_days")
+               if funds_by_code[code].get(key) is not None}
+        for code in req.fund_codes
+    }
+    execution = T1ExecutionEngine(confirmation_delay=1, confirmation_delays=confirmation_delays)
     execution.set_capital(req.initial_capital)
 
     engine = BacktestEngine(BacktestConfig(initial_capital=req.initial_capital))

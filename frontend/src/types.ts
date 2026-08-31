@@ -1,6 +1,7 @@
 export type AssetType = 'stock' | 'fund' | 'index' | 'bond';
 
 export type MarketType = 'on_exchange' | 'off_exchange' | 'unknown';
+export type TradeMode = 't0' | 't1' | 't2';
 
 export type ValuationType = 'real_time_price' | 'index_based' | 'holdings_based' | 'hybrid_bond' | 'hybrid_qdii' | 'benchmark_only' | 'not_supported';
 
@@ -34,6 +35,11 @@ export interface Fund {
   nav_date?: string;  // 最新净值日期
   previous_nav?: number;
   holdings: Holding[];
+  market_type?: MarketType;
+  trade_mode?: TradeMode;
+  subscription_confirm_days?: number;
+  redemption_confirm_days?: number;
+  cash_arrival_days?: number;
   estimated_nav?: number;
   estimated_change_percent?: number;
   last_update?: string;

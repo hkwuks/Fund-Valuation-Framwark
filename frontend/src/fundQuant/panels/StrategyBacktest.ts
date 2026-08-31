@@ -87,7 +87,12 @@ export class StrategyBacktest extends PanelBase {
       const end = new Date().toISOString().slice(0, 10)
       const codes = state.get('fundPool').map(f => f.fund_code)
       if (!codes.length) {
-        this.showError('基金池为空')
+        this.showError('持仓基金池为空，请先在基金管理中添加持仓基金')
+        return
+      }
+      const unknown = state.get('fundPool').filter(f => !f.market_type || !f.trade_mode)
+      if (unknown.length) {
+        this.showError(`请先在基金管理中补充交易属性：${unknown.map(f => f.fund_name || f.fund_code).join('、')}`)
         return
       }
       const params = this.readParams()
@@ -122,7 +127,12 @@ export class StrategyBacktest extends PanelBase {
     const codes = state.get('fundPool').map(f => f.fund_code)
     const msg = this.el?.querySelector('.sb-msg') as HTMLElement | null
     if (!strategy || !codes.length) {
-      this.showError('基金池为空')
+      this.showError('持仓基金池为空，请先在基金管理中添加持仓基金')
+      return
+    }
+    const unknown = state.get('fundPool').filter(f => !f.market_type || !f.trade_mode)
+    if (unknown.length) {
+      this.showError(`请先在基金管理中补充交易属性：${unknown.map(f => f.fund_name || f.fund_code).join('、')}`)
       return
     }
     const button = this.el?.querySelector('.sb-walk-forward') as HTMLButtonElement | null

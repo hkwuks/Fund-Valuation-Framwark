@@ -9,6 +9,11 @@ export interface FundInfo {
   fund_code: string
   fund_name: string
   fund_type: string
+  market_type?: 'on_exchange' | 'off_exchange' | 'unknown'
+  trade_mode?: 't0' | 't1' | 't2'
+  subscription_confirm_days?: number
+  redemption_confirm_days?: number
+  cash_arrival_days?: number
 }
 
 export interface SignalSummary {
