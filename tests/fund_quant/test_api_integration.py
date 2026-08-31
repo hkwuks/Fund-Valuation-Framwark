@@ -55,6 +55,10 @@ class TestFundQuantAPI:
         res = client.get("/api/fund-quant/strategy/params/nonexistent")
         assert res.status_code == 404
 
+    def test_strategy_params_unknown_legacy_strategy_not_found(self, client):
+        res = client.get("/api/fund-quant/strategy/params/etf_global_rotation")
+        assert res.status_code == 404
+
     def test_risk_metrics_no_fund(self, client):
         res = client.get("/api/fund-quant/risk/metrics")
         assert res.status_code == 200
@@ -69,21 +73,27 @@ class TestFundQuantAPI:
         assert "data" in res.json()
 
     def test_walk_forward_endpoint(self, client, monkeypatch):
-        import backend.api.fund_quant as fund_quant
+        captured = {}
+
+        def validate(*args, **kwargs):
+            captured["benchmark"] = args[-1]
+            return {"method": "walk_forward", "summary": {"valid_windows": 1}}
 
         monkeypatch.setattr(
             "backend.fund_quant.backtest.validation.walk_forward_validator.validate",
-            lambda *_args, **_kwargs: {"method": "walk_forward", "summary": {"valid_windows": 1}},
+            validate,
         )
         res = client.post("/api/fund-quant/backtest/walk-forward", json={
             "strategy_name": "all_weather_aurora",
             "fund_codes": ["510300", "518880"],
             "start_date": "2020-01-01",
             "end_date": "2024-01-01",
+            "benchmark": "csi300",
         })
 
         assert res.status_code == 200
         assert res.json()["data"]["summary"]["valid_windows"] == 1
+        assert captured["benchmark"] == "csi300"
 
         res = client.get("/api/fund-quant/backtest/list")
         assert res.status_code == 200

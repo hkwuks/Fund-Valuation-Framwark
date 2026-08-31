@@ -60,6 +60,7 @@ class WalkForwardRequest(BaseModel):
     initial_capital: float = 100000.0
     params: dict = {}
     validation: dict = {}
+    benchmark: Optional[str] = None
 
 
 class DataCollectRequest(BaseModel):
@@ -106,7 +107,7 @@ async def list_strategies():
 
 @router.get("/strategy/params/{name}")
 async def get_strategy_params(name: str):
-    """获取策略参数（先查 AuroraCore，再回退旧 FundStrategyBase）"""
+    """获取 AuroraCore 注册策略的参数。"""
     from core.strategy import StrategyRegistry
     import backend.fund_quant.adapter as _adapter  # noqa: F401
     # 1. AuroraCore 统一注册表
@@ -126,19 +127,7 @@ async def get_strategy_params(name: str):
             "param_ranges": getattr(cls, "param_ranges", {}),
             "param_choices": getattr(cls, "param_choices", {}),
         }}
-    # 2. 旧 FundStrategyBase（selection 等策略）
-    from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry
-    old_reg = OldRegistry()
-    strategy = await asyncio.to_thread(old_reg.get_strategy, name)
-    if not strategy:
-        raise HTTPException(status_code=404, detail=f"策略 {name} 未找到")
-    return {"success": True, "data": {
-        "name": strategy.strategy_name,
-        "type": strategy.strategy_type,
-        "description": strategy.description,
-        "default_params": strategy.default_params,
-        "param_ranges": strategy.param_ranges,
-    }}
+    raise HTTPException(status_code=404, detail=f"策略 {name} 未找到")
 
 
 # ── 因子评价 ──
@@ -1106,7 +1095,8 @@ async def walk_forward_backtest(req: WalkForwardRequest):
 
     result = await asyncio.to_thread(
         walk_forward_validator.validate,
-        run_window, req.fund_codes, req.start_date, req.end_date, validator_params,
+        run_window, req.fund_codes, req.start_date, req.end_date,
+        validator_params, req.benchmark,
     )
     return {"success": True, "data": result}
 

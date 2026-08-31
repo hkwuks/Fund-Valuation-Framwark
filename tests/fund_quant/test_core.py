@@ -168,6 +168,27 @@ class TestStorage:
         assert get_nav_history("nonexistent_fund") == []
 
 
+    def test_get_index_history_normalizes_date_and_close(self, monkeypatch):
+        import pandas as pd
+        import backend.fund_quant.data.storage as storage
+
+        monkeypatch.setattr(storage, "_index_nav_cache", {})
+        monkeypatch.setattr(
+            "akshare.stock_zh_index_daily",
+            lambda symbol: pd.DataFrame({"date": ["2024-01-01", "2024-01-02"], "close": [100, 101]}),
+        )
+        history = storage.get_index_history("csi300")
+        assert history == [
+            {"date": "2024-01-01", "close": 100.0},
+            {"date": "2024-01-02", "close": 101.0},
+        ]
+
+    def test_get_index_history_unknown_key_returns_none(self):
+        from backend.fund_quant.data.storage import get_index_history
+
+        assert get_index_history("unknown") is None
+
+
 class TestDataQuality:
     def test_empty_fund(self):
         issues = data_quality_checker.check_nav_quality("nonexistent")

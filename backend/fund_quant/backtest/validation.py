@@ -20,7 +20,8 @@ class WalkForwardValidator:
     def validate(self, run_backtest_fn: Callable,
                  fund_codes: List[str],
                  start_date: str, end_date: str,
-                 params: Optional[dict] = None) -> dict:
+                 params: Optional[dict] = None,
+                 benchmark: Optional[str] = None) -> dict:
         """执行Walk-forward验证"""
         p = {**self.DEFAULT_PARAMS, **(params or {})}
 
@@ -103,6 +104,8 @@ class WalkForwardValidator:
                     getattr(test_result, 'total_trades', 0)
                 )
                 br = test_result.get("benchmark_return") if hasattr(test_result, 'get') else None
+                if benchmark:
+                    br = self._external_benchmark_return(benchmark, fund_codes, w["test_start"], w["test_end"])
 
                 test_returns.append(tr)
                 test_sharpes.append(ts)
@@ -125,10 +128,13 @@ class WalkForwardValidator:
                 window_results.append({"window": w, "status": "failed", "error": str(e)})
 
         # 计算一致性得分
-        valid_results = [r for r in window_results if r.get("status") != "failed" and r.get("total_return") is not None]
+        valid_results = [r for r in window_results
+                         if r.get("status") != "failed"
+                         and r.get("total_return") is not None
+                         and r.get("trades_ok")]
 
         if not valid_results:
-            return {"method": "walk_forward", "config": p, "windows": [], "summary": {
+            return {"method": "walk_forward", "config": p, "windows": window_results, "summary": {
                 "total_windows": len(windows), "valid_windows": 0,
                 "avg_return": 0.0, "avg_sharpe": 0.0, "consistency_score": 0.0,
             }}
@@ -167,6 +173,24 @@ class WalkForwardValidator:
                 "windows_passing_min_trades": sum(1 for t in test_trades if t >= p["min_train_trades"]),
             },
         }
+    @staticmethod
+    def _external_benchmark_return(benchmark: str, fund_codes: List[str],
+                                   start_date: str, end_date: str) -> Optional[float]:
+        from ..data.storage import get_index_history, get_nav_history
+
+        history = get_index_history(benchmark)
+        if not history:
+            return None
+        nav_dates = set()
+        for code in fund_codes:
+            nav_dates.update(r["date"] for r in get_nav_history(code, start_date, end_date)
+                             if r.get("date"))
+        rows = sorted((r["date"], float(r["close"])) for r in history
+                      if start_date <= r["date"] <= end_date and r.get("close"))
+        rows = [(d, close) for d, close in rows if d in nav_dates]
+        if len(rows) < 2:
+            return None
+        return rows[-1][1] / rows[0][1] - 1.0
 
 
 walk_forward_validator = WalkForwardValidator()
