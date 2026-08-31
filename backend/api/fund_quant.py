@@ -107,10 +107,9 @@ async def list_strategies():
 
 @router.get("/strategy/params/{name}")
 async def get_strategy_params(name: str):
-    """获取 AuroraCore 注册策略的参数。"""
+    """获取 AuroraCore 注册策略的参数（legacy selection 名称经别名映射）。"""
     from core.strategy import StrategyRegistry
     import backend.fund_quant.adapter as _adapter  # noqa: F401
-    # 1. AuroraCore 统一注册表
     aurora_aliases = {
         "multi_factor": "multi_factor_aurora",
         "index_selection": "index_selection_aurora",

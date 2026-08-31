@@ -69,7 +69,7 @@ class TestEtfGlobalRotationStrategy:
         """已注册到策略注册表"""
         from backend.fund_quant.strategy.base import StrategyRegistry
         registry = StrategyRegistry()
-        s = registry.get_strategy_class("etf_global_rotation")
+        s = registry.get_strategy("etf_global_rotation")
         assert s is not None
         assert s.strategy_name == "etf_global_rotation"
 
@@ -178,6 +178,6 @@ class TestAllWeatherStrategy:
         """已注册到策略注册表"""
         from backend.fund_quant.strategy.base import StrategyRegistry
         registry = StrategyRegistry()
-        s = registry.get_strategy_class("all_weather")
+        s = registry.get_strategy("all_weather")
         assert s is not None
         assert s.strategy_name == "all_weather"
