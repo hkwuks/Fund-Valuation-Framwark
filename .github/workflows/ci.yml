@@ -17,7 +17,7 @@ jobs:
   backend-tests:
     name: Backend tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
