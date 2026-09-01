@@ -78,27 +78,25 @@ class FundManagerUI {
               <div class="form-group">
                 <label for="purchase-channel">购买渠道</label>
                 <select id="purchase-channel" required>
-                  <option value="">请选择</option>
-                  <option value="tiantian">天天基金</option>
-                  <option value="ant">蚂蚁财富</option>
-                  <option value="broker">券商账户</option>
-                  <option value="bank">银行</option>
-                  <option value="other">其他</option>
+                  <option value="tiantian" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'tiantian' ? 'selected' : ''}>天天基金</option>
+                  <option value="ant" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'ant' ? 'selected' : ''}>蚂蚁财富</option>
+                  <option value="broker" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'broker' ? 'selected' : ''}>券商账户</option>
+                  <option value="bank" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'bank' ? 'selected' : ''}>银行</option>
+                  <option value="other" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'other' ? 'selected' : ''}>其他</option>
                 </select>
               </div>
-
+              <div class="form-group">
+                <label for="market-type">市场类型</label>
                 <select id="market-type" required>
-                  <option value="">请选择</option>
-                  <option value="on_exchange">场内</option>
-                  <option value="off_exchange">场外</option>
+                  <option value="on_exchange" ${this.getSavedFormValue('market-type', 'on_exchange') === 'on_exchange' ? 'selected' : ''}>场内</option>
+                  <option value="off_exchange" ${this.getSavedFormValue('market-type', 'on_exchange') === 'off_exchange' ? 'selected' : ''}>场外</option>
                 </select>
               </div>
               <div class="form-group">
                 <label for="trade-mode">交易时序</label>
                 <select id="trade-mode" required>
-                  <option value="">请选择</option>
                   <option value="t0">T+0</option>
-                  <option value="t1">T+1</option>
+                  <option value="t1" selected>T+1</option>
                   <option value="t2">T+2</option>
                 </select>
               </div>
@@ -211,6 +209,10 @@ class FundManagerUI {
         </div>
       </div>
     `;
+  }
+
+  private getSavedFormValue(name: string, fallback: string): string {
+    return localStorage.getItem(`fund-form.${name}`) || fallback;
   }
 
   private renderFundRow(fund: Fund): string {
@@ -454,6 +456,8 @@ class FundManagerUI {
 
       if (target.id === 'refresh-interval-select') {
         this.handleRefreshIntervalChange(target as HTMLSelectElement);
+      } else if (target.id === 'purchase-channel' || target.id === 'market-type') {
+        localStorage.setItem(`fund-form.${target.id}`, (target as HTMLSelectElement).value);
       }
     });
   }
