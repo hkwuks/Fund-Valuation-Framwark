@@ -174,6 +174,13 @@ class BacktestReport:
                 "end_date": end_date,
                 "total_days": days,
                 "risk_free_rate": risk_free_rate,
+                "n_bars": len(equity_curve),
+                "n_close_trades": len(close_trades),
+                "insufficient": len(equity_curve) < 2 or len(close_trades) < 5,
+                "insufficiency_reason": (
+                    "权益曲线样本不足" if len(equity_curve) < 2
+                    else ("交易数不足" if len(close_trades) < 5 else "")
+                ),
             }
         }
 
@@ -186,5 +193,7 @@ class BacktestReport:
             "trades": {"total_count": 0, "avg_holding_bars": 0, "avg_profit": 0, "avg_loss": 0, "max_single_loss": 0},
             "cost": {"total_commission": 0, "total_slippage": 0, "gross_pnl": 0, "net_pnl": 0},
             "meta": {"capital": capital, "start_date": start_date, "end_date": end_date,
-                    "total_days": 0, "risk_free_rate": risk_free_rate},
+                    "total_days": 0, "risk_free_rate": risk_free_rate,
+                    "n_bars": 0, "n_close_trades": 0,
+                    "insufficient": True, "insufficiency_reason": "权益曲线样本不足"},
         }

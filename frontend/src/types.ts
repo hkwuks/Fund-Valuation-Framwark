@@ -40,6 +40,10 @@ export interface Fund {
   subscription_confirm_days?: number;
   redemption_confirm_days?: number;
   cash_arrival_days?: number;
+  purchase_channel?: 'tiantian' | 'ant' | 'broker' | 'bank' | 'other';
+  trading_profile_source?: string;
+  trading_profile_confidence?: number;
+  trading_profile_needs_confirmation?: boolean;
   estimated_nav?: number;
   estimated_change_percent?: number;
   last_update?: string;

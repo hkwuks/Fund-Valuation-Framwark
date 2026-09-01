@@ -619,6 +619,38 @@ class TestSignificanceCoverage:
         assert report.ci_lower <= report.ci_upper
 
 
+class TestAnalysisProviderSignificanceMeta:
+    """BacktestAnalysisProvider 暴露稀疏/校正元数据"""
+
+    def test_provider_exposes_significance_meta(self):
+        from backend.fund_quant.backtest.analysis_provider import BacktestAnalysisProvider
+        rng = np.random.RandomState(42)
+        rets = (rng.normal(0.0005, 0.01, 500)).tolist()
+        prov = BacktestAnalysisProvider()
+        result = prov.analyze(daily_returns=rets, sharpe=0.5, years=2.0,
+                              total_return=0.2, total_trades=30,
+                              n_comparisons=10)
+        sig = result["significance"]
+        assert "insufficient" in sig
+        assert "insufficiency_reason" in sig
+        assert "adjusted_p_value" in sig
+        assert "is_significant_adjusted" in sig
+        assert sig["n_comparisons"] == 10
+        assert sig["multiple_comparison"] == "bonferroni"
+        assert sig["adjusted_p_value"] >= sig["p_value"]
+
+    def test_provider_sparse_significance_not_misleading(self):
+        from backend.fund_quant.backtest.analysis_provider import BacktestAnalysisProvider
+        rng = np.random.RandomState(0)
+        rets = (0.01 + rng.normal(0, 0.001, 10)).tolist()  # 强正收益但仅 10 样本
+        prov = BacktestAnalysisProvider()
+        result = prov.analyze(daily_returns=rets, sharpe=2.0, years=0.1,
+                              total_return=0.1, total_trades=3)
+        sig = result["significance"]
+        assert sig["insufficient"] is True
+        assert sig["is_significant"] is False
+
+
 class TestOverfittingCoverage:
     """Close overfitting.py remaining paths."""
 

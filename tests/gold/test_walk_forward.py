@@ -91,6 +91,33 @@ class TestWalkForwardValidator:
         assert "error" in result
 
 
+class TestSparseWindowMetadata:
+    """稀疏窗口保护 — 窗口/交易太少时聚合指标应暴露不足元数据"""
+
+    def test_sparse_windows_flagged_insufficient(self):
+        """3 个窗口 (默认 test_window=20, 400 根 bar) -> 窗口数 < 5 应标记不足"""
+        bars = _make_bars(400)
+        v = WalkForwardValidator(train_window=100, test_window=20)
+        result = v.validate(WFStrategy, bars)
+        assert "error" not in result
+        assert "insufficient" in result
+        assert "insufficiency_reason" in result
+        assert "statistical_warning" in result or result.get("insufficient") is False
+        if result["n_windows"] < 5:
+            assert result["insufficient"] is True
+            assert "窗口数" in result["insufficiency_reason"]
+
+    def test_aggregate_metadata_keys_present(self):
+        """聚合结果暴露 avg_trades_per_window 与 windows_with_trades"""
+        bars = _make_bars(600)
+        v = WalkForwardValidator(train_window=100, test_window=20)
+        result = v.validate(WFStrategy, bars)
+        assert "error" not in result
+        assert "avg_trades_per_window" in result
+        assert "windows_with_trades" in result
+        assert result["windows_with_trades"] <= result["n_windows"]
+
+
 class TestCPCVValidator:
     def test_insufficient_data_returns_error(self):
         bars = _make_bars(50)
@@ -121,3 +148,28 @@ class TestCPCVValidator:
         v = CPCVValidatorAdapter(n_groups=4, k_test=1)
         result = v.validate("test_wf_strategy", bars)
         assert "error" not in result
+
+
+class TestSparseCPCVMetadata:
+    """稀疏路径保护 — 路径太少时 PBO/聚合应暴露不足元数据"""
+
+    def test_sparse_paths_flagged_insufficient(self):
+        """CPCV n_groups=4,k=1 -> 4 条路径 < 5 应标记不足"""
+        bars = _make_bars(400)
+        v = CPCVValidator(n_groups=4, k_test=1)
+        result = v.validate(WFStrategy, bars)
+        assert "error" not in result
+        assert "insufficient" in result
+        assert "insufficiency_reason" in result
+        if result["n_paths"] < 5:
+            assert result["insufficient"] is True
+            assert "路径数" in result["insufficiency_reason"]
+
+    def test_dense_paths_not_insufficient(self):
+        """n_groups=6,k=2 -> 15 条路径, 不应因路径数不足"""
+        bars = _make_bars(600)
+        v = CPCVValidator(n_groups=6, k_test=2)
+        result = v.validate(WFStrategy, bars)
+        assert "error" not in result
+        assert result["n_paths"] >= 15
+        assert "路径数" not in result["insufficiency_reason"]

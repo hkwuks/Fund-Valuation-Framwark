@@ -76,19 +76,27 @@ class FundManagerUI {
                 <input type="number" id="total-shares" step="0.001" value="1" required />
               </div>
               <div class="form-group">
+                <label for="purchase-channel">购买渠道</label>
+                <select id="purchase-channel" required>
+                  <option value="tiantian" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'tiantian' ? 'selected' : ''}>天天基金</option>
+                  <option value="ant" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'ant' ? 'selected' : ''}>蚂蚁财富</option>
+                  <option value="broker" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'broker' ? 'selected' : ''}>券商账户</option>
+                  <option value="bank" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'bank' ? 'selected' : ''}>银行</option>
+                  <option value="other" ${this.getSavedFormValue('purchase-channel', 'tiantian') === 'other' ? 'selected' : ''}>其他</option>
+                </select>
+              </div>
+              <div class="form-group">
                 <label for="market-type">市场类型</label>
                 <select id="market-type" required>
-                  <option value="">请选择</option>
-                  <option value="on_exchange">场内</option>
-                  <option value="off_exchange">场外</option>
+                  <option value="on_exchange" ${this.getSavedFormValue('market-type', 'on_exchange') === 'on_exchange' ? 'selected' : ''}>场内</option>
+                  <option value="off_exchange" ${this.getSavedFormValue('market-type', 'on_exchange') === 'off_exchange' ? 'selected' : ''}>场外</option>
                 </select>
               </div>
               <div class="form-group">
                 <label for="trade-mode">交易时序</label>
                 <select id="trade-mode" required>
-                  <option value="">请选择</option>
                   <option value="t0">T+0</option>
-                  <option value="t1">T+1</option>
+                  <option value="t1" selected>T+1</option>
                   <option value="t2">T+2</option>
                 </select>
               </div>
@@ -201,6 +209,10 @@ class FundManagerUI {
         </div>
       </div>
     `;
+  }
+
+  private getSavedFormValue(name: string, fallback: string): string {
+    return localStorage.getItem(`fund-form.${name}`) || fallback;
   }
 
   private renderFundRow(fund: Fund): string {
@@ -444,6 +456,8 @@ class FundManagerUI {
 
       if (target.id === 'refresh-interval-select') {
         this.handleRefreshIntervalChange(target as HTMLSelectElement);
+      } else if (target.id === 'purchase-channel' || target.id === 'market-type') {
+        localStorage.setItem(`fund-form.${target.id}`, (target as HTMLSelectElement).value);
       }
     });
   }
@@ -459,6 +473,7 @@ class FundManagerUI {
       }
 
       const fundData = await api.getFundData(fundCode);
+      const profile = await api.getFundTradingProfile(fundCode);
       if (!fundData) {
         toast.error('未查询到基金信息');
         return;
@@ -467,10 +482,25 @@ class FundManagerUI {
       const fundNameInput = this.container?.querySelector('#fund-name') as HTMLInputElement;
       const fundTypeInput = this.container?.querySelector('#fund-type') as HTMLInputElement;
 
+      const purchaseChannelInput = this.container?.querySelector('#purchase-channel') as HTMLSelectElement;
+      const marketTypeInput = this.container?.querySelector('#market-type') as HTMLSelectElement;
+      const tradeModeInput = this.container?.querySelector('#trade-mode') as HTMLSelectElement;
+      const subscriptionInput = this.container?.querySelector('#subscription-confirm-days') as HTMLInputElement;
+      const redemptionInput = this.container?.querySelector('#redemption-confirm-days') as HTMLInputElement;
+      const cashInput = this.container?.querySelector('#cash-arrival-days') as HTMLInputElement;
+
       if (fundNameInput && fundTypeInput) {
         fundNameInput.value = fundData.fund_name;
         fundTypeInput.value = fundData.fund_type;
-        toast.success('基金信息查询成功，已自动填充到表单');
+        purchaseChannelInput.value = profile.purchase_channel || '';
+        marketTypeInput.value = profile.market_type || '';
+        tradeModeInput.value = profile.trade_mode || '';
+        subscriptionInput.value = profile.subscription_confirm_days?.toString() || '';
+        redemptionInput.value = profile.redemption_confirm_days?.toString() || '';
+        cashInput.value = profile.cash_arrival_days?.toString() || '';
+        toast.success(profile.trading_profile_needs_confirmation
+          ? '已自动识别，交易规则请核对后保存'
+          : '基金信息与交易规则已自动填充');
       }
     } catch (error) {
       console.error('查询基金信息失败:', error);
@@ -484,6 +514,7 @@ class FundManagerUI {
       const fundName = (form.querySelector('#fund-name') as HTMLInputElement).value;
       const fundType = (form.querySelector('#fund-type') as HTMLInputElement).value;
       const totalShares = parseFloat((form.querySelector('#total-shares') as HTMLInputElement).value);
+      const purchaseChannel = (form.querySelector('#purchase-channel') as HTMLSelectElement).value as Fund['purchase_channel'];
       const marketType = (form.querySelector('#market-type') as HTMLSelectElement).value as 'on_exchange' | 'off_exchange';
       const tradeMode = (form.querySelector('#trade-mode') as HTMLSelectElement).value as 't0' | 't1' | 't2';
       const subscriptionConfirmDays = parseInt((form.querySelector('#subscription-confirm-days') as HTMLInputElement).value, 10);
@@ -495,6 +526,7 @@ class FundManagerUI {
         fund_name: fundName,
         fund_type: fundType,
         total_shares: totalShares,
+        purchase_channel: purchaseChannel,
         market_type: marketType,
         trade_mode: tradeMode,
         subscription_confirm_days: subscriptionConfirmDays,

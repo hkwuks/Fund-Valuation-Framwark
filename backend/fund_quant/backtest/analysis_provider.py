@@ -34,8 +34,13 @@ class BacktestAnalysisProvider:
         total_trades: int,
         n_simulations: int = 1000,
         factor_returns: Optional[Dict[str, List[float]]] = None,
+        n_comparisons: int = 1,
     ) -> dict:
-        """对回测结果运行全部分析，返回统一 dict。"""
+        """对回测结果运行全部分析，返回统一 dict。
+
+        Args:
+            n_comparisons: 多重比较校正次数（>1 时对显著性 p-value 做校正）
+        """
         ret = np.array(daily_returns, dtype=float)
         result: dict = {"has_analysis": False}
 
@@ -56,13 +61,22 @@ class BacktestAnalysisProvider:
 
         # 2. 显著性检验
         try:
-            sr = self._significance.test(ret)
+            sr = self._significance.test(ret, n_comparisons=n_comparisons)
             result["significance"] = {
                 "sharpe": round(sr.sharpe, 4),
                 "p_value": round(sr.p_value, 4),
                 "ci_lower": round(sr.ci_lower, 4),
                 "ci_upper": round(sr.ci_upper, 4),
                 "is_significant": sr.is_significant,
+                "n_returns": sr.n_returns,
+                "insufficient": sr.insufficient,
+                "insufficiency_reason": sr.insufficiency_reason,
+                "alpha": sr.alpha,
+                "n_comparisons": n_comparisons,
+                "multiple_comparison": sr.multiple_comparison,
+                "adjusted_p_value": round(sr.adjusted_p_value, 4),
+                "is_significant_adjusted": sr.is_significant_adjusted,
+                "method_notes": sr.method_notes,
             }
         except Exception as e:
             result["significance"] = {"error": str(e)}

@@ -103,6 +103,10 @@ export class FundQuantDashboard {
         subscription_confirm_days: f.subscription_confirm_days,
         redemption_confirm_days: f.redemption_confirm_days,
         cash_arrival_days: f.cash_arrival_days,
+        purchase_channel: f.purchase_channel,
+        trading_profile_source: f.trading_profile_source,
+        trading_profile_confidence: f.trading_profile_confidence,
+        trading_profile_needs_confirmation: f.trading_profile_needs_confirmation,
       })))
       if (funds.length > 0 && !state.get('selectedFund')) {
         state.set('selectedFund', funds[0].fund_code)
