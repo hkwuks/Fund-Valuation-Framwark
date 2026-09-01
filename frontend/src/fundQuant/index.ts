@@ -98,6 +98,11 @@ export class FundQuantDashboard {
         fund_code: f.fund_code,
         fund_name: f.fund_name || '',
         fund_type: f.fund_type || '',
+        market_type: f.market_type || 'unknown',
+        trade_mode: f.trade_mode,
+        subscription_confirm_days: f.subscription_confirm_days,
+        redemption_confirm_days: f.redemption_confirm_days,
+        cash_arrival_days: f.cash_arrival_days,
       })))
       if (funds.length > 0 && !state.get('selectedFund')) {
         state.set('selectedFund', funds[0].fund_code)

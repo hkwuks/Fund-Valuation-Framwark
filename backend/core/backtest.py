@@ -181,8 +181,10 @@ class SimExecutionEngine(ExecutionEngine):
 class T1ExecutionEngine(ExecutionEngine):
     """T+1 确认执行引擎（基金）— 持仓成本平均 + 持有天数跟踪 + 交易日志 + 权益追踪"""
 
-    def __init__(self, confirmation_delay: int = 1):
+    def __init__(self, confirmation_delay: int = 1,
+                 confirmation_delays: dict[str, dict[str, int]] | None = None):
         self._delay = confirmation_delay
+        self._confirmation_delays = confirmation_delays or {}
         self._orders: dict[str, Order] = {}
         self._pending: dict[str, tuple[Signal, int, str | None]] = {}  # signal -> matching bars waited + submit date
         self._positions: dict[str, Position] = {}
@@ -268,7 +270,12 @@ class T1ExecutionEngine(ExecutionEngine):
             if bar_date == submit_date:
                 remaining[oid] = (signal, matched_bars, submit_date)
                 continue
-            if matched_bars + 1 < self._delay:
+            delay = self._confirmation_delays.get(signal.symbol, {}).get(
+                "redemption_confirm_days" if signal.direction in (Direction.CLOSE_LONG, Direction.CLOSE_SHORT)
+                else "subscription_confirm_days",
+                self._delay,
+            )
+            if matched_bars + 1 < delay:
                 remaining[oid] = (signal, matched_bars + 1, submit_date)
                 continue
 

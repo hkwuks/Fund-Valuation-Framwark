@@ -134,9 +134,6 @@ class StrategyRegistry:
             return cls()
         return None
 
-    def get_strategy_class(self, name: str) -> Optional[Type[FundStrategyBase]]:
-        return self._strategies.get(name)
-
     def list_strategies(self) -> List[dict]:
         """列出所有已注册策略"""
         return [
@@ -151,8 +148,3 @@ class StrategyRegistry:
             }
             for cls in self._strategies.values()
         ]
-
-    def list_by_type(self, strategy_type) -> List[dict]:
-        """按类型列出策略"""
-        t = strategy_type.value if hasattr(strategy_type, 'value') else strategy_type
-        return [s for s in self.list_strategies() if s["type"] == t]

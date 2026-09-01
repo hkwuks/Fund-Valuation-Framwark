@@ -380,6 +380,32 @@ INDEX_CODES = {
 
 _index_nav_cache: dict = {}
 
+def get_index_history(index_key: str) -> Optional[list[dict]]:
+    """获取带日期的指数历史，供 OOS 基准按真实交易日对齐。"""
+    code = INDEX_CODES.get(index_key)
+    if not code:
+        return None
+
+    cache_key = f"index_history_{index_key}"
+    if cache_key in _index_nav_cache:
+        return _index_nav_cache[cache_key]
+
+    try:
+        import akshare as ak
+        df = ak.stock_zh_index_daily(symbol=code)
+        history = [
+            {"date": str(row.date)[:10], "close": float(row.close)}
+            for row in df[["date", "close"]].itertuples(index=False)
+            if row.close is not None and float(row.close) > 0
+        ]
+        _index_nav_cache[cache_key] = history
+        return history
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"获取指数历史 {index_key}({code}) 失败: {e}")
+        return None
+
+
 def get_index_nav_prices(index_key: str) -> Optional[list[float]]:
     """获取指数历史收盘价（带内存缓存）
 

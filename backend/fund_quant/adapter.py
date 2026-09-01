@@ -1199,10 +1199,53 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.max_diversification import MaxDiversificationStrategy
-        strategy = MaxDiversificationStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """最大多元化 — 最大化 DR = (w'σ)/sqrt(w'Σw)
+
+        内联自 legacy MaxDiversificationStrategy.optimize 的 nav_series 路径
+        （行为一致：Ledoit-Wolf 协方差 + SLSQP；数据不足时等权回退）。
+        仅消费传入净值，无 DB 访问，天然无前视。
+        """
+        lb = int(self.params.get("lookback_years", 3) * 252)
+        all_returns = {}
+        for code in codes:
+            nav_values = [float(v) for v in nav_series.get(code, []) if v and v > 0][-lb:]
+            if len(nav_values) > 20:
+                arr = np.asarray(nav_values, dtype=np.float64)
+                all_returns[code] = np.diff(arr) / arr[:-1]
+        if len(all_returns) < 2:
+            return {c: 1.0 / len(codes) for c in codes}
+
+        min_len = min(len(r) for r in all_returns.values())
+        aligned = np.column_stack([all_returns[c][-min_len:] for c in all_returns])
+
+        from .strategy.allocation.black_litterman import BlackLittermanStrategy
+        cov = BlackLittermanStrategy._ledoit_wolf_covariance(aligned)
+        vols = np.sqrt(np.diag(cov))
+
+        from scipy.optimize import minimize
+        n = len(all_returns)
+        min_w = float(self.params.get("min_weight", 0.02))
+        max_w = float(self.params.get("max_weight", 0.4))
+        bounds = [(min_w, max_w)] * n
+        w0 = vols / vols.sum()
+        w0 = np.clip(w0, min_w, max_w)
+        w0 = w0 / w0.sum()
+
+        def neg_dr(w):
+            port_vol = np.sqrt(w @ cov @ w)
+            if port_vol <= 0:
+                return 1e10
+            return -(w @ vols) / port_vol
+
+        result = minimize(
+            neg_dr, w0, method="SLSQP", bounds=bounds,
+            constraints={"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+            options={"ftol": 1e-10, "maxiter": 1000},
+        )
+        weights = result.x if result.success else w0
+        weights = np.clip(weights, min_w, max_w)
+        weights = weights / weights.sum()
+        return {code: round(float(w), 4) for code, w in zip(all_returns, weights)}
 
 
 # ── 多因子与指数选基（AuroraCore 注册入口）──

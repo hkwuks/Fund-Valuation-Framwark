@@ -15,7 +15,7 @@ def _load_runner():
 def test_build_report_keeps_benchmark_and_excess_significance():
     runner = _load_runner()
 
-    def validate(_run_window, _codes, _start, _end, _validation):
+    def validate(_run_window, _codes, _start, _end, _validation, _benchmark=None):
         return {
             "summary": {"avg_excess_return": 0.015},
             "windows": [
@@ -33,9 +33,11 @@ def test_build_report_keeps_benchmark_and_excess_significance():
         validate=validate,
         run_window=lambda _config: {},
         n_bootstrap=20,
+        benchmark="csi300",
     )
 
     result = report["results"][0]
+    assert report["benchmark"] == "csi300"
     assert result["oos"]["avg_excess_return"] == 0.015
     assert result["windows"][0]["benchmark_return"] == 0.01
     assert result["significance_excess"]["n_bootstrap"] == 20

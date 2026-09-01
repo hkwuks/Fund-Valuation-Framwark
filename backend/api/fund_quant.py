@@ -27,6 +27,7 @@ from ..fund_quant.data.collector import fund_data_collector
 from ..fund_quant.data.quality import data_quality_checker
 from ..fund_quant.signal.output import signal_output_service
 from ..fund_quant.risk.metrics import risk_metrics_calculator
+from ..fund_quant.core.trading import validate_strategy_funds
 
 router = APIRouter(prefix="/fund-quant", tags=["基金量化"])
 
@@ -60,6 +61,7 @@ class WalkForwardRequest(BaseModel):
     initial_capital: float = 100000.0
     params: dict = {}
     validation: dict = {}
+    benchmark: Optional[str] = None
 
 
 class DataCollectRequest(BaseModel):
@@ -106,10 +108,9 @@ async def list_strategies():
 
 @router.get("/strategy/params/{name}")
 async def get_strategy_params(name: str):
-    """获取策略参数（先查 AuroraCore，再回退旧 FundStrategyBase）"""
+    """获取 AuroraCore 注册策略的参数（legacy selection 名称经别名映射）。"""
     from core.strategy import StrategyRegistry
     import backend.fund_quant.adapter as _adapter  # noqa: F401
-    # 1. AuroraCore 统一注册表
     aurora_aliases = {
         "multi_factor": "multi_factor_aurora",
         "index_selection": "index_selection_aurora",
@@ -126,19 +127,7 @@ async def get_strategy_params(name: str):
             "param_ranges": getattr(cls, "param_ranges", {}),
             "param_choices": getattr(cls, "param_choices", {}),
         }}
-    # 2. 旧 FundStrategyBase（selection 等策略）
-    from ..fund_quant.strategy.base import StrategyRegistry as OldRegistry
-    old_reg = OldRegistry()
-    strategy = await asyncio.to_thread(old_reg.get_strategy, name)
-    if not strategy:
-        raise HTTPException(status_code=404, detail=f"策略 {name} 未找到")
-    return {"success": True, "data": {
-        "name": strategy.strategy_name,
-        "type": strategy.strategy_type,
-        "description": strategy.description,
-        "default_params": strategy.default_params,
-        "param_ranges": strategy.param_ranges,
-    }}
+    raise HTTPException(status_code=404, detail=f"策略 {name} 未找到")
 
 
 # ── 因子评价 ──
@@ -1106,7 +1095,8 @@ async def walk_forward_backtest(req: WalkForwardRequest):
 
     result = await asyncio.to_thread(
         walk_forward_validator.validate,
-        run_window, req.fund_codes, req.start_date, req.end_date, validator_params,
+        run_window, req.fund_codes, req.start_date, req.end_date,
+        validator_params, req.benchmark,
     )
     return {"success": True, "data": result}
 
@@ -1953,7 +1943,23 @@ async def run_vectorized_backtest(req: VectorizedBacktestRequest):
 @router.post("/backtest/aurora-run")
 async def run_aurora_backtest(req: VectorizedBacktestRequest):
     """AuroraCore 统一引擎回测（配置策略用）"""
+    funds = []
+    from .funds import load_funds_from_file
     from ..fund_quant.data.storage import get_nav_history
+    managed_funds = {f.get("fund_code"): f for f in await load_funds_from_file()}
+    missing = [code for code in req.fund_codes if code not in managed_funds]
+    if missing:
+        raise HTTPException(status_code=400, detail={
+            "message": "策略仅允许使用基金管理中的持仓基金",
+            "fund_codes": missing,
+        })
+    funds = [managed_funds[code] for code in req.fund_codes]
+    issues = validate_strategy_funds(req.strategy_name, funds)
+    if issues:
+        raise HTTPException(status_code=400, detail={
+            "message": "持仓基金不符合当前策略，请调整持仓或更换策略",
+            "issues": issues,
+        })
     from core import BacktestEngine, BacktestConfig, BacktestReport
     from core import T1ExecutionEngine, FundNavPoint, Direction
     from core.strategy import StrategyRegistry
@@ -1990,7 +1996,13 @@ async def run_aurora_backtest(req: VectorizedBacktestRequest):
 
     strategy = strategy_cls()
     strategy.params.update(req.params)
-    execution = T1ExecutionEngine(confirmation_delay=1)
+    funds_by_code = {f["fund_code"]: f for f in funds}
+    confirmation_delays = {
+        code: {key: int(funds_by_code[code][key]) for key in ("subscription_confirm_days", "redemption_confirm_days")
+               if funds_by_code[code].get(key) is not None}
+        for code in req.fund_codes
+    }
+    execution = T1ExecutionEngine(confirmation_delay=1, confirmation_delays=confirmation_delays)
     execution.set_capital(req.initial_capital)
 
     engine = BacktestEngine(BacktestConfig(initial_capital=req.initial_capital))

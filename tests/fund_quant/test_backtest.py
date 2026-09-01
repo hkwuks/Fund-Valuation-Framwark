@@ -353,6 +353,60 @@ class TestWalkForward:
         assert result["method"] == "walk_forward"
         assert "summary" in result
         assert result["summary"]["total_windows"] > 0
+    def test_validate_excludes_windows_below_minimum_trades(self):
+        def mock_backtest(_cfg):
+            return {"total_return": 0.08, "sharpe_ratio": 0.8, "max_drawdown": 0.06, "total_trades": 0}
+
+        result = WalkForwardValidator().validate(
+            mock_backtest, ["000001"], "2020-01-01", "2024-12-31",
+            {"train_window_days": 30, "test_window_days": 10, "step_size_days": 10, "min_train_trades": 1},
+        )
+
+        assert result["summary"]["total_windows"] > 0
+        assert result["summary"]["valid_windows"] == 0
+
+    def test_validate_reports_benchmark_and_excess_return(self):
+        def mock_backtest(cfg):  # pylint: disable=unused-argument
+            return {
+                "total_return": 0.08,
+                "sharpe_ratio": 0.8,
+                "max_drawdown": 0.06,
+                "total_trades": 25,
+                "benchmark_return": 0.03,
+            }
+
+        result = WalkForwardValidator().validate(
+            mock_backtest, ["000001"], "2020-01-01", "2024-12-31",
+            {"train_window_days": 30, "test_window_days": 10, "step_size_days": 10},
+        )
+
+        assert result["windows"][0]["benchmark_return"] == 0.03
+        assert result["windows"][0]["excess_return"] == 0.05
+        assert result["summary"]["avg_benchmark_return"] == 0.03
+        assert result["summary"]["avg_excess_return"] == 0.05
+    def test_validate_reports_external_as_of_benchmark(self, monkeypatch):
+        import backend.fund_quant.data.storage as storage
+
+        monkeypatch.setattr(storage, "get_index_history", lambda _key: [
+            {"date": "2020-02-01", "close": 100.0},
+            {"date": "2020-02-05", "close": 110.0},
+        ])
+        monkeypatch.setattr(storage, "get_nav_history", lambda *_args: [
+            {"date": "2020-02-01", "nav": 1.0},
+            {"date": "2020-02-05", "nav": 1.1},
+        ])
+
+        def mock_backtest(_cfg):
+            return {"total_return": 0.08, "sharpe_ratio": 0.8, "max_drawdown": 0.06, "total_trades": 25}
+
+        result = WalkForwardValidator().validate(
+            mock_backtest, ["000001"], "2020-01-01", "2020-03-01",
+            {"train_window_days": 30, "test_window_days": 10, "step_size_days": 10},
+            benchmark="csi300",
+        )
+
+        assert result["windows"][0]["benchmark_return"] == 0.1
+        assert result["windows"][0]["excess_return"] == -0.02
 
 
 class TestCostModelEnhanced:
