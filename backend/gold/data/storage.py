@@ -151,6 +151,12 @@ class GoldDataStore:
         with self._get_conn() as conn:
             query = "SELECT * FROM bars WHERE symbol = ? AND period = ?"
             params = [symbol, period]
+            if symbol == "GC=F":
+                query += " AND exchange = ?"
+                params.append("COMEX")
+            elif symbol == "AU0" or symbol.lower().startswith("au"):
+                query += " AND exchange = ?"
+                params.append("SHFE")
             if start:
                 query += " AND datetime >= ?"
                 params.append(start)
