@@ -459,6 +459,7 @@ class FundManagerUI {
       }
 
       const fundData = await api.getFundData(fundCode);
+      const profile = await api.getFundTradingProfile(fundCode);
       if (!fundData) {
         toast.error('未查询到基金信息');
         return;
@@ -467,10 +468,23 @@ class FundManagerUI {
       const fundNameInput = this.container?.querySelector('#fund-name') as HTMLInputElement;
       const fundTypeInput = this.container?.querySelector('#fund-type') as HTMLInputElement;
 
+      const marketTypeInput = this.container?.querySelector('#market-type') as HTMLSelectElement;
+      const tradeModeInput = this.container?.querySelector('#trade-mode') as HTMLSelectElement;
+      const subscriptionInput = this.container?.querySelector('#subscription-confirm-days') as HTMLInputElement;
+      const redemptionInput = this.container?.querySelector('#redemption-confirm-days') as HTMLInputElement;
+      const cashInput = this.container?.querySelector('#cash-arrival-days') as HTMLInputElement;
+
       if (fundNameInput && fundTypeInput) {
         fundNameInput.value = fundData.fund_name;
         fundTypeInput.value = fundData.fund_type;
-        toast.success('基金信息查询成功，已自动填充到表单');
+        marketTypeInput.value = profile.market_type || '';
+        tradeModeInput.value = profile.trade_mode || '';
+        subscriptionInput.value = profile.subscription_confirm_days?.toString() || '';
+        redemptionInput.value = profile.redemption_confirm_days?.toString() || '';
+        cashInput.value = profile.cash_arrival_days?.toString() || '';
+        toast.success(profile.trading_profile_needs_confirmation
+          ? '已自动识别，交易规则请核对后保存'
+          : '基金信息与交易规则已自动填充');
       }
     } catch (error) {
       console.error('查询基金信息失败:', error);

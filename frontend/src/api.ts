@@ -127,6 +127,12 @@ class ApiService {
   }
 
   // 基金信息相关 API
+  async getFundTradingProfile(fundCode: string): Promise<Fund & { trading_profile_source?: string }> {
+    const response = await this.request<{ success: boolean; message?: string; data: Fund & { trading_profile_source?: string } }>(`/funds/profile/${fundCode}`);
+    if (!response.success) throw new Error(response.message || 'Failed to get trading profile');
+    return response.data;
+  }
+
   async getFundData(fundCode: string): Promise<FundData> {
     const response = await this.request<{ success: boolean; message?: string; data: FundData }>(`/funds/${fundCode}`);
     if (!response.success) {

@@ -4,6 +4,7 @@ from typing import List, Dict, Any
 import json
 import os
 from backend.market_data import market_data_service
+from backend.fund_quant.core.trading import infer_trading_profile
 from loguru import logger
 
 # 基金数据文件路径
@@ -111,6 +112,19 @@ async def add_fund(fund: Dict[str, Any] = Body(...)):
                     "success": False,
                     "message": f"基金已存在: {fund.get('fund_code')}"
                 }
+
+        # 交易属性优先使用可靠资料自动识别；无法确认时保留待人工确认状态。
+        fund.setdefault("market_type", fund.get("market_type", "unknown"))
+        if not fund.get("trade_mode") or fund.get("trading_profile_needs_confirmation", True):
+            quote = None
+            if "ETF" in f"{fund.get('fund_name', '')}{fund.get('fund_type', '')}".upper():
+                try:
+                    quote = await market_data_service.get_etf_realtime_data(fund["fund_code"])
+                except Exception:
+                    quote = None
+            fund.update(infer_trading_profile(
+                fund["fund_code"], fund.get("fund_name", ""), fund.get("fund_type", ""), quote,
+            ))
 
         # 添加新基金
         funds.append(fund)
@@ -286,6 +300,29 @@ async def query_fund_data(fund_code: str):
             "success": False,
             "message": f"查询基金信息失败: {str(e)}"
         }
+
+
+@router.get(
+    "/profile/{fund_code}",
+    summary="自动识别基金交易属性",
+    description="使用基金资料与ETF行情接口识别场内/场外及交易时序，无法确认时标记待人工确认",
+)
+async def get_trading_profile(fund_code: str):
+    fund_data = await market_data_service.get_fund_data(fund_code)
+    if not fund_data:
+        return {"success": False, "message": f"未找到基金信息: {fund_code}"}
+    quote = None
+    if fund_data.market_type.value == "on_exchange":
+        try:
+            quote = await market_data_service.get_etf_realtime_data(fund_code)
+        except Exception:
+            quote = None
+    profile = infer_trading_profile(
+        fund_code, fund_data.fund_name, fund_data.fund_type, quote,
+    )
+    return {"success": True, "data": {
+        **fund_data.model_dump(), **profile,
+    }}
 
 
 @router.get(

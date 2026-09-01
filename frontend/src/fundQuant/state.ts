@@ -14,6 +14,9 @@ export interface FundInfo {
   subscription_confirm_days?: number
   redemption_confirm_days?: number
   cash_arrival_days?: number
+  trading_profile_source?: string
+  trading_profile_confidence?: number
+  trading_profile_needs_confirmation?: boolean
 }
 
 export interface SignalSummary {
