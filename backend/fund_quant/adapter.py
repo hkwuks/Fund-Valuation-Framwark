@@ -1177,10 +1177,95 @@ class AuroraHRP(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.hrp import HRPStrategy
-        strategy = HRPStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """仅用传入 NAV 的 HRP 权重；行为与 legacy nav_series 路径一致。"""
+        if len(codes) < 2:
+            return {code: 1.0 for code in codes}
+
+        lookback = int(self.params.get("lookback_years", 3) * 252)
+        returns = {}
+        for code in codes:
+            values = [float(value) for value in nav_series.get(code, []) if value and value > 0][-lookback:]
+            if len(values) > 20:
+                data = np.asarray(values, dtype=np.float64)
+                returns[code] = np.diff(data) / data[:-1]
+
+        valid_codes = list(returns)
+        if len(valid_codes) < 2:
+            return {code: 1.0 / len(codes) for code in codes}
+
+        n_obs = min(len(values) for values in returns.values())
+        aligned = np.column_stack([returns[code][-n_obs:] for code in valid_codes])
+        corr = np.corrcoef(aligned, rowvar=False)
+        corr = np.nan_to_num(corr, nan=0.0)
+        np.fill_diagonal(corr, 1.0)
+        distance = np.sqrt(0.5 * (1 - np.clip(corr, -1, 1)))
+
+        from scipy.cluster.hierarchy import linkage
+        from scipy.spatial.distance import squareform
+
+        tree = linkage(
+            squareform(distance, checks=False),
+            method=self.params.get("linkage_method", "ward"),
+        )
+        order = self._quasi_diag(tree)
+        ordered_codes = [valid_codes[index] for index in order]
+        weights = self._recursive_bisection(aligned, ordered_codes, valid_codes)
+
+        min_weight = float(self.params.get("min_weight", 0.02))
+        max_weight = float(self.params.get("max_weight", 0.4))
+        values = np.array([weights.get(code, 0.0) for code in valid_codes])
+        values = np.clip(values, min_weight, max_weight)
+        values = values / values.sum()
+        return {
+            code: round(float(weight), 4)
+            for code, weight in zip(valid_codes, values)
+        }
+
+    @staticmethod
+    def _quasi_diag(tree):
+        n = int(tree[-1, 3])
+        order = [n + tree.shape[0] - 1]
+        while True:
+            expanded = []
+            for index in order:
+                if index >= n:
+                    row = int(index - n)
+                    expanded.extend((int(tree[row, 0]), int(tree[row, 1])))
+                else:
+                    expanded.append(index)
+            if expanded == order:
+                return [int(index) for index in order]
+            order = expanded
+
+    @staticmethod
+    def _recursive_bisection(aligned, ordered_codes, all_codes):
+        weights = {code: 1.0 for code in ordered_codes}
+        clusters = [ordered_codes]
+        while clusters:
+            next_clusters = []
+            for cluster in clusters:
+                if len(cluster) <= 1:
+                    continue
+                midpoint = len(cluster) // 2
+                left, right = cluster[:midpoint], cluster[midpoint:]
+                left_var = np.mean([np.var(aligned[:, all_codes.index(code)]) for code in left])
+                right_var = np.mean([np.var(aligned[:, all_codes.index(code)]) for code in right])
+                total_var = left_var + right_var
+                if total_var <= 0:
+                    continue
+                left_allocation = 1.0 - left_var / total_var
+                for code in left:
+                    weights[code] *= left_allocation
+                for code in right:
+                    weights[code] *= 1.0 - left_allocation
+                if len(left) > 1:
+                    next_clusters.append(left)
+                if len(right) > 1:
+                    next_clusters.append(right)
+            clusters = next_clusters
+
+        total = sum(weights.values())
+        return {code: weight / total for code, weight in weights.items()} if total > 0 else weights
 
 
 # ── 最大多元化（AuroraCore 版）──
