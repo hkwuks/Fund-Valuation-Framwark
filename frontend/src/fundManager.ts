@@ -21,6 +21,30 @@ export class FundManager {
       // 只有当后端数据非空时才覆盖本地数据，防止数据丢失
       if (fundsFromFile.length > 0) {
         this.funds = fundsFromFile;
+        // 补齐历史持仓缺失的交易属性；已有人工维护字段不覆盖。
+        const incomplete = this.funds.filter(f => !f.market_type || !f.trade_mode || !f.trading_profile_source);
+        if (incomplete.length) {
+          const enriched = await Promise.all(incomplete.map(async fund => {
+            try {
+              const profile = await api.getFundTradingProfile(fund.fund_code, fund.purchase_channel);
+              const merged = { ...fund };
+              for (const key of ['market_type', 'trade_mode', 'subscription_confirm_days',
+                'redemption_confirm_days', 'cash_arrival_days', 'trading_profile_source',
+                'trading_profile_confidence', 'trading_profile_needs_confirmation'] as const) {
+                if (merged[key] == null && profile[key] != null) merged[key] = profile[key] as never;
+              }
+              return merged;
+            } catch {
+              return fund;
+            }
+          }));
+          const changed = enriched.filter((fund, i) => JSON.stringify(fund) !== JSON.stringify(incomplete[i]));
+          if (changed.length) {
+            await Promise.all(changed.map(fund => api.updateFund(fund.fund_code, fund)));
+            const updates = new Map(changed.map(fund => [fund.fund_code, fund]));
+            this.funds = this.funds.map(fund => updates.get(fund.fund_code) || fund);
+          }
+        }
         // 同步到本地存储
         StorageService.saveFunds(this.funds);
         console.log('已从后端同步数据到本地存储');
