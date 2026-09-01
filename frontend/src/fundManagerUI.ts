@@ -76,7 +76,17 @@ class FundManagerUI {
                 <input type="number" id="total-shares" step="0.001" value="1" required />
               </div>
               <div class="form-group">
-                <label for="market-type">市场类型</label>
+                <label for="purchase-channel">购买渠道</label>
+                <select id="purchase-channel" required>
+                  <option value="">请选择</option>
+                  <option value="tiantian">天天基金</option>
+                  <option value="ant">蚂蚁财富</option>
+                  <option value="broker">券商账户</option>
+                  <option value="bank">银行</option>
+                  <option value="other">其他</option>
+                </select>
+              </div>
+
                 <select id="market-type" required>
                   <option value="">请选择</option>
                   <option value="on_exchange">场内</option>
@@ -468,6 +478,7 @@ class FundManagerUI {
       const fundNameInput = this.container?.querySelector('#fund-name') as HTMLInputElement;
       const fundTypeInput = this.container?.querySelector('#fund-type') as HTMLInputElement;
 
+      const purchaseChannelInput = this.container?.querySelector('#purchase-channel') as HTMLSelectElement;
       const marketTypeInput = this.container?.querySelector('#market-type') as HTMLSelectElement;
       const tradeModeInput = this.container?.querySelector('#trade-mode') as HTMLSelectElement;
       const subscriptionInput = this.container?.querySelector('#subscription-confirm-days') as HTMLInputElement;
@@ -477,6 +488,7 @@ class FundManagerUI {
       if (fundNameInput && fundTypeInput) {
         fundNameInput.value = fundData.fund_name;
         fundTypeInput.value = fundData.fund_type;
+        purchaseChannelInput.value = profile.purchase_channel || '';
         marketTypeInput.value = profile.market_type || '';
         tradeModeInput.value = profile.trade_mode || '';
         subscriptionInput.value = profile.subscription_confirm_days?.toString() || '';
@@ -498,6 +510,7 @@ class FundManagerUI {
       const fundName = (form.querySelector('#fund-name') as HTMLInputElement).value;
       const fundType = (form.querySelector('#fund-type') as HTMLInputElement).value;
       const totalShares = parseFloat((form.querySelector('#total-shares') as HTMLInputElement).value);
+      const purchaseChannel = (form.querySelector('#purchase-channel') as HTMLSelectElement).value as Fund['purchase_channel'];
       const marketType = (form.querySelector('#market-type') as HTMLSelectElement).value as 'on_exchange' | 'off_exchange';
       const tradeMode = (form.querySelector('#trade-mode') as HTMLSelectElement).value as 't0' | 't1' | 't2';
       const subscriptionConfirmDays = parseInt((form.querySelector('#subscription-confirm-days') as HTMLInputElement).value, 10);
@@ -509,6 +522,7 @@ class FundManagerUI {
         fund_name: fundName,
         fund_type: fundType,
         total_shares: totalShares,
+        purchase_channel: purchaseChannel,
         market_type: marketType,
         trade_mode: tradeMode,
         subscription_confirm_days: subscriptionConfirmDays,

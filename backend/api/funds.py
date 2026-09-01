@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Query
 from typing import List, Dict, Any
 import json
 import os
@@ -124,6 +124,7 @@ async def add_fund(fund: Dict[str, Any] = Body(...)):
                     quote = None
             fund.update(infer_trading_profile(
                 fund["fund_code"], fund.get("fund_name", ""), fund.get("fund_type", ""), quote,
+                fund.get("purchase_channel"),
             ))
 
         # 添加新基金
@@ -307,7 +308,9 @@ async def query_fund_data(fund_code: str):
     summary="自动识别基金交易属性",
     description="使用基金资料与ETF行情接口识别场内/场外及交易时序，无法确认时标记待人工确认",
 )
-async def get_trading_profile(fund_code: str):
+async def get_trading_profile(fund_code: str, purchase_channel: str | None = Query(None)):
+    if purchase_channel not in {None, "tiantian", "ant", "broker", "bank", "other"}:
+        return {"success": False, "message": "不支持的购买渠道"}
     fund_data = await market_data_service.get_fund_data(fund_code)
     if not fund_data:
         return {"success": False, "message": f"未找到基金信息: {fund_code}"}
@@ -318,7 +321,7 @@ async def get_trading_profile(fund_code: str):
         except Exception:
             quote = None
     profile = infer_trading_profile(
-        fund_code, fund_data.fund_name, fund_data.fund_type, quote,
+        fund_code, fund_data.fund_name, fund_data.fund_type, quote, purchase_channel,
     )
     return {"success": True, "data": {
         **fund_data.model_dump(), **profile,

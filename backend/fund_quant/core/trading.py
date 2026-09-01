@@ -25,7 +25,8 @@ DEFAULT_RULE = {
 
 
 def infer_trading_profile(fund_code: str, fund_name: str = "", fund_type: str = "",
-                          etf_quote: dict[str, Any] | None = None) -> dict[str, Any]:
+                          etf_quote: dict[str, Any] | None = None,
+                          purchase_channel: str | None = None) -> dict[str, Any]:
     """用现有东方财富基金/F10/ETF行情接口交叉确认交易属性。"""
     is_etf = bool(etf_quote) or "ETF" in f"{fund_name}{fund_type}".upper()
     market_type = "on_exchange" if is_etf else MarketType.UNKNOWN.value
@@ -40,6 +41,7 @@ def infer_trading_profile(fund_code: str, fund_name: str = "", fund_type: str = 
             "cash_arrival_days": 0,
             "trading_profile_source": "东方财富基金资料 + ETF行情",
             "trading_profile_confidence": 0.95 if is_etf else 0.8,
+            "purchase_channel": purchase_channel,
             "trading_profile_needs_confirmation": not is_etf,
         }
     if market_type == "off_exchange":
