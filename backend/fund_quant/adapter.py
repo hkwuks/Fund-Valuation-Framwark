@@ -450,6 +450,158 @@ class AuroraEtfRotation(Strategy):
 
 # ── 全天候策略（AuroraCore 版）──
 
+def _allweather_build_assets(params: dict, fund_codes: list | None) -> tuple[list, dict]:
+    """构建资产列表 — legacy AllWeatherStrategy._build_asset_list 内联。"""
+    template = params["asset_template"]
+    if fund_codes:
+        asset_info = {}
+        for code in fund_codes:
+            if code in template:
+                asset_info[code] = dict(template[code])
+            else:
+                asset_info[code] = {
+                    "name": code, "asset_class": "equity",
+                    "fixed_weight": 1.0 / max(len(fund_codes), 1),
+                }
+        return list(fund_codes), asset_info
+    return list(template.keys()), {c: dict(v) for c, v in template.items()}
+
+
+def _allweather_fixed_weights(params: dict, codes: list, asset_info: dict) -> dict:
+    """固定权重模式 — legacy _optimize_fixed 内联（归一化后按类分配，应用杠杆）。"""
+    class_weights = {}
+    for code in codes:
+        cls = asset_info[code].get("asset_class", "equity")
+        class_weights[cls] = class_weights.get(cls, 0.0) + asset_info[code].get("fixed_weight", 0.0)
+    total = sum(class_weights.values())
+    if total <= 0:
+        return {code: 0.0 for code in codes}
+    for cls in class_weights:
+        class_weights[cls] /= total
+
+    class_counts = {}
+    for code in codes:
+        cls = asset_info[code]["asset_class"]
+        class_counts[cls] = class_counts.get(cls, 0) + 1
+
+    weights = {}
+    for code in codes:
+        cls = asset_info[code]["asset_class"]
+        weights[code] = class_weights[cls] / class_counts.get(cls, 1)
+
+    leverage = params.get("leverage", 1.0)
+    if leverage != 1.0:
+        weights = {code: w * leverage for code, w in weights.items()}
+    return {code: round(float(w), 4) for code, w in weights.items()}
+
+
+def _allweather_ledoit_wolf(X: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 压缩协方差（legacy 同款，sklearn 优先）"""
+    n, p = X.shape
+    if n < 2:
+        return np.cov(X, rowvar=False) if p > 1 else np.array([[np.var(X)]])
+    try:
+        from sklearn.covariance import LedoitWolf
+        return LedoitWolf().fit(X).covariance_
+    except ImportError:
+        sample_cov = np.cov(X, rowvar=False)
+        if n < p:
+            shrinkage = 0.5
+            target = np.eye(p) * np.trace(sample_cov) / p
+            return (1 - shrinkage) * sample_cov + shrinkage * target
+        return sample_cov
+
+
+def _allweather_adjust_bond_vol(cov: np.ndarray, codes: list, asset_info: dict, params: dict) -> np.ndarray:
+    """债券波动率放大 — 按资产模板 asset_class 判定（无 DB）。"""
+    mult = params.get("bond_vol_multiplier", "auto")
+    if mult == "none" or mult == 1.0:
+        return cov
+    cov_copy = cov.copy()
+    for i, code in enumerate(codes):
+        cls = asset_info.get(code, {}).get("asset_class", "")
+        if cls in ("bond_medium", "bond_long", "bond"):
+            factor = 2.0 if mult == "auto" else float(mult)
+            factor = min(factor, 5.0)
+            cov_copy[i, i] *= factor ** 2
+            for j in range(len(codes)):
+                if i != j:
+                    cov_copy[i, j] *= factor
+    return cov_copy
+
+
+def _allweather_risk_parity(params: dict, codes: list, asset_info: dict, nav_series: dict | None) -> dict:
+    """风险平价模式 — legacy _optimize_risk_parity 的 nav_series 路径内联。
+
+    数据不足时回退固定权重；仅消费传入净值（legacy 的 get_nav_history 分支被
+    Aurora 调用移除——回测只传截至当日序列，无前视）。
+    """
+    lookback = params["lookback_days"]
+    all_returns = {}
+    for code in codes:
+        nav_values = [nav for nav in nav_series.get(code, []) if nav and nav > 0] if nav_series else []
+        if len(nav_values) < 20:
+            continue
+        arr = np.array(nav_values[-lookback:], dtype=np.float64)
+        all_returns[code] = np.diff(arr) / arr[:-1]
+
+    valid = list(all_returns)
+    if len(valid) < 2:
+        return _allweather_fixed_weights(params, codes, asset_info)
+
+    min_len = min(len(r) for r in all_returns.values())
+    aligned = np.column_stack([all_returns[c][-min_len:] for c in valid])
+    cov = _allweather_ledoit_wolf(aligned)
+    cov = _allweather_adjust_bond_vol(cov, valid, asset_info, params)
+
+    n = len(valid)
+    max_w = params["max_weight"]
+    min_w = params["min_weight"]
+    if max_w * n < 1.0:
+        max_w = 1.0 / n
+    if min_w * n > 1.0:
+        min_w = 0.9 / n
+    bounds = [(min_w, max_w) for _ in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    w0 = np.array([1.0 / n] * n)
+
+    try:
+        from scipy.optimize import minimize
+
+        def risk_parity_obj(w, cov):
+            port_var = w @ cov @ w
+            if port_var <= 0:
+                return 1e10
+            mrc = cov @ w
+            rc = w * mrc
+            target = np.mean(rc)
+            return float(np.sum((rc - target) ** 2))
+
+        result = minimize(
+            risk_parity_obj, w0, args=(cov,),
+            method="SLSQP", bounds=bounds, constraints=constraints,
+            options={"ftol": 1e-8, "maxiter": 1000},
+        )
+        weights_arr = result.x if result.success else w0
+    except ImportError:
+        weights_arr = w0
+
+    weights_arr = np.clip(weights_arr, min_w, max_w)
+    weights_arr = weights_arr / np.sum(weights_arr)
+
+    weights = {}
+    for i, c in enumerate(valid):
+        weights[c] = float(weights_arr[i])
+    for c in codes:
+        if c not in weights:
+            weights[c] = 0.0
+
+    leverage = params.get("leverage", 1.0)
+    if leverage != 1.0:
+        weights = {c: w * leverage for c, w in weights.items()}
+    return {c: round(float(w), 4) for c, w in weights.items()}
+
+
 @StrategyRegistry.register("all_weather_aurora")
 class AllWeatherAurora(Strategy):
     """桥水全天候策略（AuroraCore 版）— 月度再平衡 + 固定权重/风险平价双模式
@@ -499,11 +651,16 @@ class AllWeatherAurora(Strategy):
         return merged or config_pool
 
     def _compute_weights(self, nav_series=None, codes=None):
-        """固定模板权重（nav_series 不用于计算，仅保持接口一致）"""
-        from .strategy.allocation.all_weather import AllWeatherStrategy
-        strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=None)
-        return result.get("weights", {})
+        """全天候权重 — 内联 legacy AllWeatherStrategy.optimize 逻辑。
+
+        fixed 模式：纯模板权重（无需净值）；risk_parity 模式：仅用传入 nav_series
+        求解（无 DB 回退，避免 legacy 在 nav_series 缺失时读取全库历史的前视）。
+        """
+        codes, asset_info = _allweather_build_assets(self.params, codes)
+        mode = self.params.get("mode", "fixed")
+        if mode == "risk_parity":
+            return _allweather_risk_parity(self.params, codes, asset_info, nav_series)
+        return _allweather_fixed_weights(self.params, codes, asset_info)
 
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
@@ -532,9 +689,7 @@ class AllWeatherAurora(Strategy):
             self._rebalance(date_str)
 
     def _rebalance(self, date_str: str):
-        """用 AllWeatherStrategy 算权重 → 调仓至目标"""
-        from .strategy.allocation.all_weather import AllWeatherStrategy
-
+        """用内联全天候权重 → 调仓至目标（无 DB 前视）"""
         pool = self._pool_codes()
         # 收集截至该日的净值序列
         nav_series: dict[str, list[float]] = {}
@@ -550,10 +705,7 @@ class AllWeatherAurora(Strategy):
         if len(valid_codes) < 2:
             return
 
-        # 调用 AllWeatherStrategy 计算权重
-        strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
-        weights = result.get("weights", {})
+        weights = self._compute_weights(nav_series, valid_codes)
         if not weights:
             return
 
