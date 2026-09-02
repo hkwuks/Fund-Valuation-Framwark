@@ -113,13 +113,17 @@ class RatingEnhancedSelection(FundStrategyBase):
     # ── 综合评分 ────────────────────────────────────────────────
 
     def screen(self, fund_type: str = "stock", top_n: int = 10,
-               params: Optional[dict] = None) -> dict:
+               params: Optional[dict] = None,
+               fund_data: Optional[list] = None) -> dict:
         """评级 + 量化因子 + 估值偏差 综合筛选
 
         Args:
             fund_type: 基金类型筛选
             top_n: 返回前N只基金
             params: 覆盖默认参数
+            fund_data: 可选。调用方预装载的候选基金截面（每项含 nav_values + meta 字段）。
+                注入后跳过 storage 读取，使 Aurora 历史回测可按 as-of 截面调用；
+                不传时回退 storage 全库读取（现有行为不变）。
 
         Returns:
             dict: 含 rankings 列表的筛选结果
@@ -130,22 +134,36 @@ class RatingEnhancedSelection(FundStrategyBase):
             self.params.update(params)
         top_n = self.params.get("top_n", top_n)
 
-        candidates = get_all_fund_codes()
-        if not candidates:
-            return {"strategy": self.strategy_name, "fund_type": fund_type,
-                    "top_n": top_n, "rankings": [], "total_candidates": 0}
+        # ── 候选截面：注入 or storage，统一为 (code, meta, navs) ──
+        if fund_data is not None:
+            candidates_iter = []
+            for item in fund_data:
+                if (item.get("fund_type") and item.get("fund_type") != fund_type
+                        and fund_type != "all"):
+                    continue
+                nav_values = item.get("nav_values") or []
+                navs = [{"nav": float(v)} for v in nav_values if v and v > 0]
+                if len(navs) < self.params["min_history_days"]:
+                    continue
+                candidates_iter.append((item.get("fund_code"), item, navs))
+        else:
+            candidates = get_all_fund_codes()
+            if not candidates:
+                return {"strategy": self.strategy_name, "fund_type": fund_type,
+                        "top_n": top_n, "rankings": [], "total_candidates": 0}
+            candidates_iter = []
+            for code in candidates:
+                meta = get_fund_meta(code)
+                if meta and meta.get("fund_type") != fund_type and fund_type != "all":
+                    continue
+                navs = get_nav_history(code)
+                if len(navs) < self.params["min_history_days"]:
+                    continue
+                candidates_iter.append((code, meta, navs))
 
         # ── 逐基金计算原始因子 ──────────────────────────────
-        fund_data = []
-        for code in candidates:
-            meta = get_fund_meta(code)
-            if meta and meta.get("fund_type") != fund_type and fund_type != "all":
-                continue
-
-            navs = get_nav_history(code)
-            if len(navs) < self.params["min_history_days"]:
-                continue
-
+        scored = []
+        for code, meta, navs in candidates_iter:
             nav_values = [r["nav"] for r in navs if r.get("nav") and r["nav"] > 0]
             if len(nav_values) < self.params["min_history_days"]:
                 continue
@@ -154,7 +172,7 @@ class RatingEnhancedSelection(FundStrategyBase):
             quant = self._calc_quant_factors(nav_values)
             deviation_score = self._calc_deviation_score(nav_values)
 
-            fund_data.append({
+            scored.append({
                 "fund_code": code,
                 "fund_name": (meta.get("fund_name") or "") if meta else "",
                 "meta": meta,
@@ -163,15 +181,15 @@ class RatingEnhancedSelection(FundStrategyBase):
                 "deviation_score": deviation_score,
             })
 
-        if not fund_data:
+        if not scored:
             return {"strategy": self.strategy_name, "fund_type": fund_type,
                     "top_n": top_n, "rankings": [], "total_candidates": 0}
 
         # ── 量化因子 Z-score 归一化 ────────────────────────
         # 收集各因子原始值
-        sharpe_vals = [d["quant"].get("sharpe_ratio", 0) for d in fund_data]
-        dd_vals = [d["quant"].get("max_drawdown", 0) for d in fund_data]
-        excess_vals = [d["quant"].get("excess_return", 0) for d in fund_data]
+        sharpe_vals = [d["quant"].get("sharpe_ratio", 0) for d in scored]
+        dd_vals = [d["quant"].get("max_drawdown", 0) for d in scored]
+        excess_vals = [d["quant"].get("excess_return", 0) for d in scored]
 
         sharpe_scores = self._zscore_map_to_01(sharpe_vals)
         dd_scores = self._zscore_map_to_01(dd_vals, reverse=True)  # 回撤越小越好
@@ -182,7 +200,7 @@ class RatingEnhancedSelection(FundStrategyBase):
         w_quant = self.params["quant_weight"]
         w_deviation = self.params["deviation_weight"]
 
-        for i, d in enumerate(fund_data):
+        for i, d in enumerate(scored):
             quant_score = (sharpe_scores.get(i, 0) * 0.4 +
                            dd_scores.get(i, 0) * 0.3 +
                            excess_scores.get(i, 0) * 0.3)
@@ -192,10 +210,10 @@ class RatingEnhancedSelection(FundStrategyBase):
             d["quant_score"] = quant_score
 
         # ── 排序 ────────────────────────────────────────────
-        fund_data.sort(key=lambda x: x["total_score"], reverse=True)
+        scored.sort(key=lambda x: x["total_score"], reverse=True)
 
         rankings = []
-        for i, d in enumerate(fund_data[:top_n]):
+        for i, d in enumerate(scored[:top_n]):
             rankings.append({
                 "rank": i + 1,
                 "fund_code": d["fund_code"],
@@ -207,13 +225,13 @@ class RatingEnhancedSelection(FundStrategyBase):
                 "factors": {k: round(v, 4) for k, v in d["quant"].items()},
             })
 
-        self._state["last_rankings"] = fund_data[:top_n]
+        self._state["last_rankings"] = scored[:top_n]
 
         return {
             "strategy": self.strategy_name,
             "fund_type": fund_type,
             "top_n": top_n,
-            "total_candidates": len(fund_data),
+            "total_candidates": len(scored),
             "rankings": rankings,
         }
 
