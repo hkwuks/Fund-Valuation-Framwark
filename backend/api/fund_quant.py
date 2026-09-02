@@ -939,6 +939,17 @@ def _run_backtest_sync(config_dict: dict) -> str:
         pool = strategy._pool_codes() if hasattr(strategy, "_pool_codes") else fund_codes
         for code in pool or fund_codes:
             strategy._meta[code] = get_fund_meta(code) or {}
+        # 指数选基需要跟踪误差等外部 _state：对传入池轻量估算（一次，非逐 bar）
+        if isinstance(strategy, _adapter.AuroraIndexSelection):
+            from ..fund_quant.data.storage import get_nav_histories
+            strategy._state["tracking_errors"] = {}
+            if fund_codes:
+                all_navs = get_nav_histories(fund_codes, start, end)
+                for code, navs in all_navs.items():
+                    vals = [r["nav"] for r in navs if r.get("nav")]
+                    te = compute_tracking_errors(code, vals)
+                    if te is not None:
+                        strategy._state["tracking_errors"][code] = te
 
     execution = T1ExecutionEngine(confirmation_delay=1)
     execution.set_capital(initial_capital)
