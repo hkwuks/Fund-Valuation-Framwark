@@ -1797,19 +1797,63 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
 
 # ── 多因子与指数选基（AuroraCore 注册入口）──
 
+def _injected_fund_data(section: dict[str, dict], codes: list[str],
+                        date_str: str) -> list[dict]:
+    """按 as-of 日期把截面 meta + nav_values 构造成 scorer.screen(fund_data=...) 输入。
+
+    section 由 adapter 的 self._meta/_hist 累积而来（nav 均来自 bar 流，无 storage 读）；
+    meta 为 None 时给空 dict，让评分器对其中的可选字段中性降级。
+    """
+    out = []
+    for code in codes:
+        meta = (section[code].get("meta") or {}) if code in section else {}
+        nav_values = [n for d, n in (section[code]["hist"] if code in section else []) if d <= date_str]
+        if not nav_values:
+            continue
+        item = {**meta, "fund_code": code, "fund_type": meta.get("fund_type", ""),
+                "nav_values": nav_values}
+        out.append(item)
+    return out
+
+
 class _AuroraSelectionAdapter(Strategy):
-    """选基策略的 Aurora 注册入口；历史回测保持静默以避免无时点截面的全库查询。"""
+    """选基策略的 Aurora 注册入口。
+
+    实时/模拟：on_data 按固定交易日频次（rebalance_days）重算排名，
+    对高分基金 emit 信号（沿用现有行为）。
+    历史回测：从 bar 流累积多基金净值（无前视），到调仓日把截至当日构造的
+    fund_data 截面注入 scorer.screen(fund_data=...) 重算 Top-N 并 emit 调仓信号；
+    不再静默（此前为避开全库未来读取而关停）。_state 注入字段（如指数跟踪误差）
+    由子类 _preload_state() 提供，API 调用方也走同一入口。
+    """
     selection_cls = None
 
     def __init__(self):
         super().__init__()
         self.params = {**self.default_params}
         self._state: dict = {}
+        self._hist: dict[str, list[tuple[str, float]]] = {}  # code -> [(date, nav)]
+        self._meta: dict[str, dict] = {}
+        self._cur_date = ""
+        self._day_count = 0
+        self._last_rebalance_day = 0
+        self._first_rebalance = True
 
-    def screen(self, fund_type="all", top_n=5, params=None):
+    def _preload_state(self, scorer) -> None:
+        """子类可覆写：把 index 等需要的 _state 数据预注入 scorer"""
+
+    def _pool_codes(self) -> list[str]:
+        config_pool = list(self.params.get("fund_pool", {})) if self.params.get("fund_pool") else []
+        seen = list(self._hist.keys())
+        return list(dict.fromkeys(config_pool + seen))
+
+    def screen(self, fund_type="all", top_n=5, params=None, fund_data=None):
         scorer = self.selection_cls()
         self._copy_state_to(scorer)
-        return scorer.screen(fund_type=fund_type, top_n=top_n, params=params)
+        kwargs = dict(fund_type=fund_type, top_n=top_n, params=params)
+        if fund_data is not None:
+            kwargs["fund_data"] = fund_data
+        return scorer.screen(**kwargs)
 
     def score(self, fund_type="all", params=None):
         scorer = self.selection_cls()
@@ -1819,25 +1863,74 @@ class _AuroraSelectionAdapter(Strategy):
     def _copy_state_to(self, scorer):
         scorer._state.update(getattr(self, "_state", {}))
 
-    def on_data(self, data):
-        if self.ctx is None or self.ctx.mode == "backtest":
-            return
+    def _fund_type(self) -> str:
+        return str(self.params.get("fund_type", "all"))
+
+    def _rebalance(self, date_str: str):
+        """按 as-of 截面重算 Top-N 并 emit 调仓信号（多因子/指数/评级回测 + 指数实盘共用）。"""
         scorer = self.selection_cls()
-        result = scorer.screen(
-            fund_type=self.params.get("fund_type", "all"),
-            top_n=int(self.params.get("top_n", 5)),
-            params=self.params,
-        )
-        scores = {row["fund_code"]: float(row["total_score"])
-                  for row in result.get("rankings", [])}
+        self._copy_state_to(scorer)
+        self._preload_state(scorer)
+        fund_type = self._fund_type()
+        pool = [c for c in self._pool_codes() if c in self._hist and self._hist[c]]
+        section = _injected_fund_data({c: {"meta": self._meta.get(c), "hist": self._hist[c]}
+                                       for c in pool}, pool, date_str)
+        if len(section) < 2:
+            return False
+        result = scorer.screen(fund_type=fund_type, top_n=int(self.params.get("top_n", 5)),
+                               fund_data=section)
+        ranked = [r["fund_code"] for r in result.get("rankings", [])]
+        if not ranked:
+            return False
+        top = set(ranked[:int(self.params.get("top_n", 5))])
+        all_codes = [c for c in self._hist.keys() if c]
+        for code in list(all_codes):
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if code not in top and pos is not None and pos.volume > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.CLOSE_LONG, price=0,
+                    volume=pos.volume, confidence=1.0,
+                    reason=f"{self.name}: 跌出Top-N, 清仓",
+                ))
+        for code in top:
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            if pos is not None and pos.volume > 0:
+                continue
+            hist = self._hist.get(code)
+            nav = hist[-1][1] if hist else 0
+            if not nav or nav <= 0:
+                continue
+            weight = min(float(self.params.get("max_single_weight", 1.0)),
+                         1.0 / max(len(top), 1))
+            target_amt = (self.ctx.portfolio_value or 0) * weight
+            self.ctx.emit(Signal(
+                id="", strategy=self.name, symbol=code,
+                direction=Direction.LONG, price=float(nav),
+                volume=target_amt / nav, confidence=1.0,
+                reason=f"{self.name}: 选基Top-N 评分买入",
+            ))
+        return True
+
+    def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
         nav = getattr(data, "nav", getattr(data, "close", 0))
-        if code in scores and nav and nav > 0:
-            self.ctx.emit(Signal(
-                id="", strategy=self.name, symbol=code, direction=Direction.LONG,
-                price=float(nav), volume=1.0, confidence=scores[code],
-                reason=f"选基评分={scores[code]:.4f}",
-            ))
+        date_str = str(getattr(data, "date", ""))
+        if not code or not nav or nav <= 0:
+            return
+        self._hist.setdefault(code, []).append((date_str, nav))
+        # meta 只经调用方预载（API/回测 runner 在 run 前 set _meta），此处永不读 storage
+        self._meta.setdefault(code, {})
+
+        # 历史回测与实时共用同一截面重放：新交易日计数，每 rebalance_days 调仓日
+        # 用截至当日的基金截面（nav 全来自 bar 流）重算 Top-N 并 emit。
+        if date_str != self._cur_date:
+            self._cur_date = date_str
+            self._day_count += 1
+            freq = max(int(self.params.get("rebalance_days", 20)), 1)
+            if (self._day_count - self._last_rebalance_day) >= freq:
+                if self._rebalance(date_str):
+                    self._last_rebalance_day = self._day_count
 
 
 @StrategyRegistry.register("multi_factor_aurora")
@@ -1845,7 +1938,7 @@ class AuroraMultiFactorSelection(_AuroraSelectionAdapter):
     name = "multi_factor_aurora"
     strategy_type = "selection"
     description = "多因子选基: AuroraCore 统一注册入口"
-    default_params = {"fund_type": "all", "top_n": 5}
+    default_params = {"fund_type": "all", "top_n": 5, "rebalance_days": 20}
 
     @property
     def selection_cls(self):
@@ -1858,76 +1951,45 @@ class AuroraIndexSelection(_AuroraSelectionAdapter):
     name = "index_selection_aurora"
     strategy_type = "selection"
     description = "指数基金五维评分: AuroraCore 统一注册入口"
-    default_params = {"fund_type": "index", "top_n": 5}
+    default_params = {"fund_type": "index", "top_n": 5, "rebalance_days": 20}
 
     @property
     def selection_cls(self):
         from .strategy.selection.index_selection import IndexSelectionStrategy
         return IndexSelectionStrategy
 
+    def _preload_state(self, scorer) -> None:
+        """指数五维评分需要跟踪误差/流动性/折溢价；仅用调用方已注入的 self._state。"""
+        for key in ("tracking_errors", "liquidity_data", "premium_vol_data"):
+            val = self._state.get(key)
+            if val:
+                scorer._state[key] = val
+
 
 
 @StrategyRegistry.register("rating_enhanced_aurora")
-class AuroraRatingEnhancedSelection(Strategy):
+class AuroraRatingEnhancedSelection(_AuroraSelectionAdapter):
     """评级增强选基的 AuroraCore 信号入口。
 
-    复用既有截面评分器，仅在实盘/模拟模式按固定频率刷新排名；历史回测不调用
-    无日期截点的存储层查询，避免引入前视偏差。
+    与 multi_factor/index_selection 共用同一 hist as-of 重放骨架：从 bar 流累积
+    多基金净值（无 storage 读、无前视），每 rebalance_days 个交易日把截至当日
+    构造的 fund_data 截面注入评级增强评分器重算 Top-N 并 emit 调仓信号。
+    实时/模拟模式行为一致，只在分数可用时对高分持仓方向发出信号。
     """
     name = "rating_enhanced_aurora"
     strategy_type = "selection"
-    description = "评级增强选基: 按固定频率将截面评分转换为 AuroraCore 信号"
+    description = "评级增强选基: 固定频率截面评分 → AuroraCore 调仓信号"
     default_params = {
         "fund_type": "all",
         "top_n": 5,
-        "evaluation_days": 20,
+        "rebalance_days": 20,
         "score_threshold": 0.5,
     }
 
-    def __init__(self):
-        super().__init__()
-        self.params = {**self.default_params}
-        self._current_date = ""
-        self._day_count = 0
-        self._scores: dict[str, float] = {}
-
-    def on_data(self, data):
-        if self.ctx is None or self.ctx.mode == "backtest":
-            return
-        code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
-        nav = getattr(data, "nav", getattr(data, "close", 0))
-        date_str = str(getattr(data, "date", ""))
-        if not code or not nav or nav <= 0:
-            return
-
-        if date_str != self._current_date:
-            self._current_date = date_str
-            self._day_count += 1
-            if (self._day_count - 1) % max(int(self.params["evaluation_days"]), 1) == 0:
-                self._refresh_scores()
-
-        score = self._scores.get(code)
-        if score is None:
-            return
-        direction = Direction.LONG if score >= float(self.params["score_threshold"]) else Direction.HOLD
-        self.ctx.emit(Signal(
-            id="", strategy=self.name, symbol=code, direction=direction,
-            price=float(nav), volume=1.0, confidence=score,
-            reason=f"评级增强评分={score:.4f}",
-        ))
-
-    def _refresh_scores(self):
+    @property
+    def selection_cls(self):
         from .strategy.selection.rating_enhanced import RatingEnhancedSelection
-
-        scorer = RatingEnhancedSelection()
-        result = scorer.screen(
-            fund_type=self.params["fund_type"],
-            top_n=int(self.params["top_n"]),
-        )
-        self._scores = {
-            row["fund_code"]: float(row["total_score"])
-            for row in result.get("rankings", [])
-        }
+        return RatingEnhancedSelection
 
 class FundCostModelAdapter(CostModel):
     """Adapt FundCostModel to core.CostModel interface — 薄适配层，逻辑复用 backtest.cost_model"""

@@ -70,31 +70,35 @@ class TestAuroraIndexSelectionAdapter:
 
 
 class TestAuroraRatingEnhancedSelectionRefresh:
-    def test_refresh_uses_injected_screen(self, monkeypatch):
-        """_refresh_scores 走 screen → 注入目标分数集。"""
-        from backend.fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
-
-        monkeypatch.setattr(
-            RatingEnhancedSelection,
-            "screen",
-            lambda *a, **k: {"rankings": [{"fund_code": "000001", "total_score": 0.8}]},
+    def test_rating_adapter_uses_rating_scorer(self):
+        """评级增强 Aurora 适配器与 multi/index 共用统一 hist as-of 重放骨架。"""
+        from backend.fund_quant.adapter import (
+            _AuroraSelectionAdapter, AuroraRatingEnhancedSelection,
         )
-        strategy = AuroraRatingEnhancedSelection()
-        strategy._refresh_scores()
-        assert strategy._scores == {"000001": 0.8}
+        assert issubclass(AuroraRatingEnhancedSelection, _AuroraSelectionAdapter)
+        # 统一骨架默认参数：fund_type/top_n/rebalance_days
+        assert AuroraRatingEnhancedSelection.default_params["rebalance_days"] == 20
+        from backend.fund_quant.strategy.selection.rating_enhanced import (
+            RatingEnhancedSelection,
+        )
+        assert AuroraRatingEnhancedSelection().selection_cls is RatingEnhancedSelection
 
-    def test_default_uses_rating_enhanced_scorer(self, monkeypatch):
-        """默认 fund_type=all 走评级增强评分器（非 MultiFactor）。"""
+    def test_screen_forwards_fund_data_to_rating_scorer(self, monkeypatch):
+        """screen(fund_data=...) 转发到评级增强评分器注入路径（不回退 storage）。"""
         from backend.fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
 
         captured = {}
 
-        def fake_screen(self_, fund_type="all", top_n=10):
+        def fake_screen(self_, fund_type="all", top_n=10, params=None, fund_data=None):
             captured["fund_type"] = fund_type
-            return {"rankings": []}
+            captured["fund_data"] = fund_data
+            return {"rankings": [{"fund_code": "000001", "total_score": 0.8}]}
 
         monkeypatch.setattr(RatingEnhancedSelection, "screen", fake_screen)
         strategy = AuroraRatingEnhancedSelection()
-        strategy._refresh_scores()
+        section = [{"fund_code": "000001", "fund_type": "stock",
+                    "nav_values": [1.0] * 80}]
+        result = strategy.screen(fund_type="all", top_n=5, fund_data=section)
+        assert result["rankings"][0]["fund_code"] == "000001"
+        assert captured["fund_data"] is section
         assert captured["fund_type"] == "all"
-        assert strategy._scores == {}

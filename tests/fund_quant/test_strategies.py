@@ -326,9 +326,9 @@ class TestRatingEnhanced:
 
 class TestAuroraRatingEnhanced:
     def test_registered_strategy_emits_core_signal(self, monkeypatch):
-        """Aurora 包装器只在受控刷新时调用遗留评分器并发出核心信号。"""
+        """评级增强 Aurora 策略（live 模式）按 as-of 截面重算并发出核心信号。"""
         import sys as _sys
-        from datetime import date
+        from datetime import date, timedelta
 
         _sys.path.insert(0, "backend")
         from core import Direction as CoreDirection, FundNavPoint, StrategyContext, StrategyRegistry
@@ -336,7 +336,7 @@ class TestAuroraRatingEnhanced:
         from backend.fund_quant.adapter import AuroraRatingEnhancedSelection
         from backend.fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
 
-        monkeypatch.setattr(RatingEnhancedSelection, "screen", lambda *_args, **_kwargs: {
+        monkeypatch.setattr(RatingEnhancedSelection, "screen", lambda *_a, **_k: {
             "rankings": [{"fund_code": "000001", "total_score": 0.75}],
         })
         assert StrategyRegistry.get("rating_enhanced_aurora") is AuroraRatingEnhancedSelection
@@ -346,12 +346,17 @@ class TestAuroraRatingEnhanced:
         bus.subscribe(EventType.SIGNAL_GENERATED, lambda event: signals.append(event.payload))
         strategy = AuroraRatingEnhancedSelection()
         strategy.on_init(StrategyContext(bus, mode="live"))
-        strategy.on_data(FundNavPoint("000001", date(2024, 1, 2), 1.25))
+        # 预载 meta（live 也由调用方注入），跑 30 天双基金直至首个调仓日
+        strategy._meta = {"000001": {"fund_type": "stock"}, "000002": {"fund_type": "stock"}}
+        d0 = date(2024, 1, 1)
+        for code in ("000001", "000002"):
+            for i in range(31):
+                strategy.on_data(FundNavPoint(code, d0 + timedelta(days=i),
+                                              1.25 if code == "000001" else 1.1))
 
-        assert len(signals) == 1
+        assert len(signals) >= 1
         assert signals[0].strategy == "rating_enhanced_aurora"
         assert signals[0].direction is CoreDirection.LONG
-        assert signals[0].confidence == 0.75
 
     """Black-Litterman 配置策略专项测试"""
 

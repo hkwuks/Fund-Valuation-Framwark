@@ -933,6 +933,12 @@ def _run_backtest_sync(config_dict: dict) -> str:
     custom_params = config_dict.get("params", {})
     strategy = strategy_cls()
     strategy.params.update(custom_params)
+    # 选基策略：预载 meta（回测中禁止在 on_data 内读 storage），nav 由 bar 流提供
+    if hasattr(strategy, "_meta") and hasattr(strategy, "_pool_codes"):
+        from ..fund_quant.data.storage import get_fund_meta
+        pool = strategy._pool_codes() if hasattr(strategy, "_pool_codes") else fund_codes
+        for code in pool or fund_codes:
+            strategy._meta[code] = get_fund_meta(code) or {}
 
     execution = T1ExecutionEngine(confirmation_delay=1)
     execution.set_capital(initial_capital)
