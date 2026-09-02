@@ -967,6 +967,123 @@ class AuroraBlackLitterman(_AuroraAllocationBase):
         return result.get("weights", {})
 
 
+# ── 约束风险平价共享求解（legacy RiskParityStrategy.optimize nav_series 路径内联）──
+
+def _rp_ledoit_wolf_covariance(X: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 压缩协方差估计（与 legacy 一致）"""
+    n, p = X.shape
+    if n < 2:
+        return np.cov(X, rowvar=False) if p > 1 else np.array([[np.var(X)]])
+    try:
+        from sklearn.covariance import LedoitWolf
+        return LedoitWolf().fit(X).covariance_
+    except ImportError:
+        sample_cov = np.cov(X, rowvar=False)
+        if n < p:
+            shrinkage = 0.5
+            target = np.eye(p) * np.trace(sample_cov) / p
+            return (1 - shrinkage) * sample_cov + shrinkage * target
+        return sample_cov
+
+
+def _rp_apply_bond_vol_multiplier(cov: np.ndarray, codes: list, params: dict) -> np.ndarray:
+    """债券波动率放大 — bond/money 分类读当前元数据（fund_type 稳定属性，非未来收益）。"""
+    mult = params.get("bond_vol_multiplier", "auto")
+    if mult == "none" or mult == 1.0:
+        return cov
+
+    from backend.fund_quant.data.storage import get_fund_meta
+
+    cov_copy = cov.copy()
+    for i, code in enumerate(codes):
+        meta = get_fund_meta(code)
+        if meta and meta.get("fund_type") in ("bond", "money"):
+            factor = 2.0 if mult == "auto" else float(mult)
+            factor = min(factor, 5.0)
+            cov_copy[i, i] *= factor ** 2
+            for j in range(len(codes)):
+                if i != j:
+                    cov_copy[i, j] *= factor
+    return cov_copy
+
+
+def _rp_optimize_weights(params: dict, fund_codes: list, nav_series: dict) -> dict:
+    """约束风险平价权重 — 仅消费传入 NAV；codes 未覆盖时跳过（无 DB 回退，无前视）。
+
+    与 legacy RiskParityStrategy.optimize(nav_series=...) 行为一致：
+    逆方差初值 + SLSQP 最小化风险贡献方差；数据不足等权回退。
+    """
+    if len(fund_codes) < 2:
+        return {code: 1.0 for code in fund_codes}
+
+    lookback = params.get("lookback_years", 3) * 252
+    all_returns = {}
+    for code in fund_codes:
+        values = nav_series.get(code, [])
+        if not values:
+            continue
+        nav_values = [float(v) for v in values if v and v > 0][-lookback:]
+        if len(nav_values) > 20:
+            nav_arr = np.array(nav_values, dtype=np.float64)
+            all_returns[code] = np.diff(nav_arr) / nav_arr[:-1]
+
+    codes = list(all_returns.keys())
+    if len(codes) < 2:
+        return {code: 1.0 / len(fund_codes) for code in fund_codes}
+
+    min_len = min(len(r) for r in all_returns.values())
+    aligned = np.column_stack([all_returns[c][-min_len:] for c in codes])
+    cov = _rp_ledoit_wolf_covariance(aligned)
+    cov = _rp_apply_bond_vol_multiplier(cov, codes, params)
+
+    n = len(codes)
+    max_w = params["max_weight"]
+    min_w = params["min_weight"]
+    if min_w * n > 1.0:
+        min_w = 0.9 / n
+    if max_w * n < 1.0:
+        max_w = 1.0 / n
+    if n >= 10:
+        max_w = max(max_w, 0.6)
+
+    bounds = [(min_w, max_w) for _ in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+
+    diag_var = np.diag(cov)
+    if np.all(diag_var > 0):
+        w0 = 1.0 / diag_var
+        w0 = w0 / np.sum(w0)
+        w0 = np.clip(w0, min_w, max_w)
+        w0 = w0 / np.sum(w0)
+    else:
+        w0 = np.array([1.0 / n] * n)
+
+    try:
+        from scipy.optimize import minimize
+
+        def risk_parity_objective(w, cov):
+            portfolio_var = w @ cov @ w
+            if portfolio_var <= 0:
+                return 1e10
+            mrc = cov @ w
+            rc = w * mrc
+            target = np.mean(rc)
+            return np.sum((rc - target) ** 2)
+
+        result = minimize(
+            risk_parity_objective, w0, args=(cov,),
+            method="SLSQP", bounds=bounds, constraints=constraints,
+            options={"ftol": 1e-8, "maxiter": 1000},
+        )
+        weights = result.x if result.success else w0
+    except ImportError:
+        weights = w0
+
+    weights = np.clip(weights, min_w, max_w)
+    weights = weights / np.sum(weights)
+    return {code: round(float(w), 4) for code, w in zip(codes, weights)}
+
+
 # ── 风险平价（AuroraCore 版）──
 
 @StrategyRegistry.register("risk_parity_aurora")
@@ -988,10 +1105,8 @@ class AuroraRiskParity(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.risk_parity import RiskParityStrategy
-        strategy = RiskParityStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """约束风险平价 — 内联 legacy RiskParityStrategy.optimize nav_series 路径。"""
+        return _rp_optimize_weights(self.params, codes, nav_series)
 
 
 # ── 动态风险平价（AuroraCore 版）──
@@ -1020,14 +1135,12 @@ class AuroraDynamicRiskParity(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.risk_parity import RiskParityStrategy
-        n = self.params.get("window_months", 12) * 21  # 月→交易日
+        """动态风险平价 — 截断到滚动窗口后复用约束风险平价求解（无 DB 前视）。"""
+        n = self.params.get("window_months", 12) * 21
         truncated = {c: s[-n:] for c, s in nav_series.items() if len(s) >= 60}
         if len(truncated) < 2:
             return {}
-        strategy = RiskParityStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=truncated)
-        return result.get("weights", {})
+        return _rp_optimize_weights(self.params, codes, truncated)
 
 
 # ── 波动率目标（AuroraCore 版）──
