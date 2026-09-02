@@ -18,9 +18,10 @@ export default defineConfig({
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
-        manualChunks: {
-          echarts: ['echarts'],
-          charts: ['lightweight-charts'],
+        manualChunks: (id) => {
+          if (id.includes('/node_modules/echarts/')) return 'echarts'
+          if (id.includes('/node_modules/lightweight-charts/')) return 'charts'
+          return undefined
         },
       },
     },
