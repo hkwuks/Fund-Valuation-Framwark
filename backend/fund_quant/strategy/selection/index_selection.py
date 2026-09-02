@@ -37,29 +37,53 @@ class IndexSelectionStrategy(FundStrategyBase):
         return []
 
     def screen(self, fund_type: str = "index", top_n: int = 10,
-               params: Optional[dict] = None) -> dict:
-        """指数基金筛选 — 5 维度评分"""
+               params: Optional[dict] = None,
+               fund_data: Optional[list] = None) -> dict:
+        """指数基金筛选 — 5 维度评分
+
+        Args:
+            fund_type / top_n / params: 同前
+            fund_data: 可选。调用方预装载的候选指数基金截面（每项含 nav_values + meta 字段）。
+                注入后跳过 storage 读取（消除全库未来读取）；不传则回退 storage 全库读取（现有行为）。
+                跟踪误差/流动性/折溢价仍从 self._state 读取（API 注入）。
+        """
         from ...core.models import TYPE_COMPAT
         from ...data.storage import get_all_fund_codes, get_fund_meta, get_nav_history
 
         if params:
             self.params.update(params)
         top_n = self.params.get("top_n", top_n)
-        candidates = get_all_fund_codes()
-        if not candidates:
-            return self._empty_result(fund_type, top_n)
 
+        # ── 候选截面：注入 or storage，统一为 (code, meta, navs) ──
         filter_type = TYPE_COMPAT.get(fund_type, fund_type)
-        fund_scores = []
-
-        for code in candidates:
-            meta = get_fund_meta(code)
-            if meta and filter_type != "all":
-                mt = TYPE_COMPAT.get(meta.get("fund_type", ""), meta.get("fund_type", ""))
-                if mt != filter_type:
+        sources = []
+        if fund_data is not None:
+            for item in fund_data:
+                code = item.get("fund_code")
+                if not code:
                     continue
+                ft = item.get("fund_type")
+                if ft and filter_type != "all":
+                    mt = TYPE_COMPAT.get(ft, ft)
+                    if mt != filter_type:
+                        continue
+                navs = [{"nav": float(v)} for v in (item.get("nav_values") or [])
+                        if v is not None and v > 0]
+                sources.append((code, item, navs))
+        else:
+            candidates = get_all_fund_codes()
+            if not candidates:
+                return self._empty_result(fund_type, top_n)
+            for code in candidates:
+                meta = get_fund_meta(code)
+                if meta and filter_type != "all":
+                    mt = TYPE_COMPAT.get(meta.get("fund_type", ""), meta.get("fund_type", ""))
+                    if mt != filter_type:
+                        continue
+                sources.append((code, meta, get_nav_history(code)))
 
-            navs = get_nav_history(code)
+        fund_scores = []
+        for code, meta, navs in sources:
             if len(navs) < self.params["min_history_days"]:
                 continue
 

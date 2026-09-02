@@ -450,6 +450,158 @@ class AuroraEtfRotation(Strategy):
 
 # ── 全天候策略（AuroraCore 版）──
 
+def _allweather_build_assets(params: dict, fund_codes: list | None) -> tuple[list, dict]:
+    """构建资产列表 — legacy AllWeatherStrategy._build_asset_list 内联。"""
+    template = params["asset_template"]
+    if fund_codes:
+        asset_info = {}
+        for code in fund_codes:
+            if code in template:
+                asset_info[code] = dict(template[code])
+            else:
+                asset_info[code] = {
+                    "name": code, "asset_class": "equity",
+                    "fixed_weight": 1.0 / max(len(fund_codes), 1),
+                }
+        return list(fund_codes), asset_info
+    return list(template.keys()), {c: dict(v) for c, v in template.items()}
+
+
+def _allweather_fixed_weights(params: dict, codes: list, asset_info: dict) -> dict:
+    """固定权重模式 — legacy _optimize_fixed 内联（归一化后按类分配，应用杠杆）。"""
+    class_weights = {}
+    for code in codes:
+        cls = asset_info[code].get("asset_class", "equity")
+        class_weights[cls] = class_weights.get(cls, 0.0) + asset_info[code].get("fixed_weight", 0.0)
+    total = sum(class_weights.values())
+    if total <= 0:
+        return {code: 0.0 for code in codes}
+    for cls in class_weights:
+        class_weights[cls] /= total
+
+    class_counts = {}
+    for code in codes:
+        cls = asset_info[code]["asset_class"]
+        class_counts[cls] = class_counts.get(cls, 0) + 1
+
+    weights = {}
+    for code in codes:
+        cls = asset_info[code]["asset_class"]
+        weights[code] = class_weights[cls] / class_counts.get(cls, 1)
+
+    leverage = params.get("leverage", 1.0)
+    if leverage != 1.0:
+        weights = {code: w * leverage for code, w in weights.items()}
+    return {code: round(float(w), 4) for code, w in weights.items()}
+
+
+def _allweather_ledoit_wolf(X: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 压缩协方差（legacy 同款，sklearn 优先）"""
+    n, p = X.shape
+    if n < 2:
+        return np.cov(X, rowvar=False) if p > 1 else np.array([[np.var(X)]])
+    try:
+        from sklearn.covariance import LedoitWolf
+        return LedoitWolf().fit(X).covariance_
+    except ImportError:
+        sample_cov = np.cov(X, rowvar=False)
+        if n < p:
+            shrinkage = 0.5
+            target = np.eye(p) * np.trace(sample_cov) / p
+            return (1 - shrinkage) * sample_cov + shrinkage * target
+        return sample_cov
+
+
+def _allweather_adjust_bond_vol(cov: np.ndarray, codes: list, asset_info: dict, params: dict) -> np.ndarray:
+    """债券波动率放大 — 按资产模板 asset_class 判定（无 DB）。"""
+    mult = params.get("bond_vol_multiplier", "auto")
+    if mult == "none" or mult == 1.0:
+        return cov
+    cov_copy = cov.copy()
+    for i, code in enumerate(codes):
+        cls = asset_info.get(code, {}).get("asset_class", "")
+        if cls in ("bond_medium", "bond_long", "bond"):
+            factor = 2.0 if mult == "auto" else float(mult)
+            factor = min(factor, 5.0)
+            cov_copy[i, i] *= factor ** 2
+            for j in range(len(codes)):
+                if i != j:
+                    cov_copy[i, j] *= factor
+    return cov_copy
+
+
+def _allweather_risk_parity(params: dict, codes: list, asset_info: dict, nav_series: dict | None) -> dict:
+    """风险平价模式 — legacy _optimize_risk_parity 的 nav_series 路径内联。
+
+    数据不足时回退固定权重；仅消费传入净值（legacy 的 get_nav_history 分支被
+    Aurora 调用移除——回测只传截至当日序列，无前视）。
+    """
+    lookback = params["lookback_days"]
+    all_returns = {}
+    for code in codes:
+        nav_values = [nav for nav in nav_series.get(code, []) if nav and nav > 0] if nav_series else []
+        if len(nav_values) < 20:
+            continue
+        arr = np.array(nav_values[-lookback:], dtype=np.float64)
+        all_returns[code] = np.diff(arr) / arr[:-1]
+
+    valid = list(all_returns)
+    if len(valid) < 2:
+        return _allweather_fixed_weights(params, codes, asset_info)
+
+    min_len = min(len(r) for r in all_returns.values())
+    aligned = np.column_stack([all_returns[c][-min_len:] for c in valid])
+    cov = _allweather_ledoit_wolf(aligned)
+    cov = _allweather_adjust_bond_vol(cov, valid, asset_info, params)
+
+    n = len(valid)
+    max_w = params["max_weight"]
+    min_w = params["min_weight"]
+    if max_w * n < 1.0:
+        max_w = 1.0 / n
+    if min_w * n > 1.0:
+        min_w = 0.9 / n
+    bounds = [(min_w, max_w) for _ in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    w0 = np.array([1.0 / n] * n)
+
+    try:
+        from scipy.optimize import minimize
+
+        def risk_parity_obj(w, cov):
+            port_var = w @ cov @ w
+            if port_var <= 0:
+                return 1e10
+            mrc = cov @ w
+            rc = w * mrc
+            target = np.mean(rc)
+            return float(np.sum((rc - target) ** 2))
+
+        result = minimize(
+            risk_parity_obj, w0, args=(cov,),
+            method="SLSQP", bounds=bounds, constraints=constraints,
+            options={"ftol": 1e-8, "maxiter": 1000},
+        )
+        weights_arr = result.x if result.success else w0
+    except ImportError:
+        weights_arr = w0
+
+    weights_arr = np.clip(weights_arr, min_w, max_w)
+    weights_arr = weights_arr / np.sum(weights_arr)
+
+    weights = {}
+    for i, c in enumerate(valid):
+        weights[c] = float(weights_arr[i])
+    for c in codes:
+        if c not in weights:
+            weights[c] = 0.0
+
+    leverage = params.get("leverage", 1.0)
+    if leverage != 1.0:
+        weights = {c: w * leverage for c, w in weights.items()}
+    return {c: round(float(w), 4) for c, w in weights.items()}
+
+
 @StrategyRegistry.register("all_weather_aurora")
 class AllWeatherAurora(Strategy):
     """桥水全天候策略（AuroraCore 版）— 月度再平衡 + 固定权重/风险平价双模式
@@ -499,11 +651,16 @@ class AllWeatherAurora(Strategy):
         return merged or config_pool
 
     def _compute_weights(self, nav_series=None, codes=None):
-        """固定模板权重（nav_series 不用于计算，仅保持接口一致）"""
-        from .strategy.allocation.all_weather import AllWeatherStrategy
-        strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=None)
-        return result.get("weights", {})
+        """全天候权重 — 内联 legacy AllWeatherStrategy.optimize 逻辑。
+
+        fixed 模式：纯模板权重（无需净值）；risk_parity 模式：仅用传入 nav_series
+        求解（无 DB 回退，避免 legacy 在 nav_series 缺失时读取全库历史的前视）。
+        """
+        codes, asset_info = _allweather_build_assets(self.params, codes)
+        mode = self.params.get("mode", "fixed")
+        if mode == "risk_parity":
+            return _allweather_risk_parity(self.params, codes, asset_info, nav_series)
+        return _allweather_fixed_weights(self.params, codes, asset_info)
 
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
@@ -532,9 +689,7 @@ class AllWeatherAurora(Strategy):
             self._rebalance(date_str)
 
     def _rebalance(self, date_str: str):
-        """用 AllWeatherStrategy 算权重 → 调仓至目标"""
-        from .strategy.allocation.all_weather import AllWeatherStrategy
-
+        """用内联全天候权重 → 调仓至目标（无 DB 前视）"""
         pool = self._pool_codes()
         # 收集截至该日的净值序列
         nav_series: dict[str, list[float]] = {}
@@ -550,10 +705,7 @@ class AllWeatherAurora(Strategy):
         if len(valid_codes) < 2:
             return
 
-        # 调用 AllWeatherStrategy 计算权重
-        strategy = AllWeatherStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
-        weights = result.get("weights", {})
+        weights = self._compute_weights(nav_series, valid_codes)
         if not weights:
             return
 
@@ -616,6 +768,173 @@ class AllWeatherAurora(Strategy):
                     ))
 
 
+# ── BL 共享求解（legacy BlackLittermanStrategy.optimize nav_series 路径内联）──
+
+def _bl_fetch_returns(params: dict, fund_codes: list, nav_series: dict) -> tuple:
+    """获取对齐后的收益率矩阵 — 仅消费传入 nav_series（无 DB 回退，无前视）。"""
+    lookback = params.get("lookback_days", 756)
+    all_returns = {}
+    for code in fund_codes:
+        nav_values = [float(v) for v in nav_series.get(code, []) if v and v > 0][-lookback:]
+        if len(nav_values) > 20:
+            arr = np.array(nav_values, dtype=np.float64)
+            all_returns[code] = np.diff(arr) / arr[:-1]
+    codes = list(all_returns)
+    if len(codes) < 2:
+        return np.array([]), []
+    min_len = min(len(r) for r in all_returns.values())
+    aligned = np.column_stack([all_returns[c][-min_len:] for c in codes])
+    return aligned, codes
+
+
+def _bl_ledoit_wolf_covariance(X: np.ndarray) -> np.ndarray:
+    n, p = X.shape
+    if n < 2:
+        return np.cov(X, rowvar=False) if p > 1 else np.array([[np.var(X)]])
+    try:
+        from sklearn.covariance import LedoitWolf
+        return LedoitWolf().fit(X).covariance_
+    except ImportError:
+        sample_cov = np.cov(X, rowvar=False)
+        if n < p:
+            shrinkage = 0.5
+            target = np.eye(p) * np.trace(sample_cov) / p
+            return (1 - shrinkage) * sample_cov + shrinkage * target
+        return sample_cov
+
+
+def _bl_posterior_return(cov: np.ndarray, pi: np.ndarray, views: dict, tau: float) -> np.ndarray:
+    """BL 后验预期收益 — legacy _posterior_return 内联。"""
+    tau_sigma = tau * cov
+    try:
+        tau_sigma_inv = np.linalg.inv(tau_sigma)
+    except np.linalg.LinAlgError:
+        tau_sigma_inv = np.linalg.pinv(tau_sigma)
+    P = views["P"]
+    Q = views["Q"]
+    try:
+        omega_inv = np.linalg.inv(views["omegas"])
+    except np.linalg.LinAlgError:
+        omega_inv = np.linalg.pinv(views["omegas"])
+    lhs_inv = np.linalg.inv(tau_sigma_inv + P.T @ omega_inv @ P)
+    rhs = tau_sigma_inv @ pi + P.T @ omega_inv @ Q
+    return lhs_inv @ rhs
+
+
+def _bl_mean_variance(cov: np.ndarray, mu: np.ndarray, codes: list, params: dict) -> dict:
+    """均值-方差优化 — legacy _mean_variance_optimize 内联，返回权重字典。"""
+    n = len(codes)
+    max_w = params["max_weight"]
+    min_w = params["min_weight"]
+    try:
+        from scipy.optimize import minimize
+        bounds = [(min_w, max_w) for _ in range(n)]
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+        w0 = np.array([1.0 / n] * n)
+
+        def objective(w, cov, mu, delta):
+            return -((w @ mu) - 0.5 * delta * (w @ cov @ w))
+
+        result = minimize(
+            objective, w0, args=(cov, mu, params["risk_aversion"]),
+            method="SLSQP", bounds=bounds, constraints=constraints,
+            options={"ftol": 1e-8, "maxiter": 1000},
+        )
+        weights = result.x if result.success else w0
+    except ImportError:
+        weights = np.array([1.0 / n] * n)
+
+    weights = np.clip(weights, min_w, max_w)
+    weights = weights / np.sum(weights)
+    return {code: round(float(w), 4) for code, w in zip(codes, weights)}
+
+
+def _bl_parse_confidence(confidence) -> float:
+    """legacy _parse_confidence 内联：high/mid/low 或 0~1 数值。"""
+    conf_map = {"high": 0.9, "mid": 0.6, "low": 0.3, "高": 0.9, "中": 0.6, "低": 0.3}
+    if isinstance(confidence, str):
+        return conf_map.get(confidence, 0.6)
+    try:
+        f = float(confidence)
+        return max(0.05, min(0.95, f if f <= 1 else f / 100))
+    except Exception:
+        return 0.6
+
+
+def _bl_user_views(params: dict, codes: list, cov: np.ndarray | None) -> tuple[dict, bool]:
+    """用户相对观点 -> (views_dict, has_views)。与 legacy _build_views 用户分支一致。"""
+    user_views = params.get("views") or []
+    if not user_views:
+        return {}, False
+    code_to_idx = {c: i for i, c in enumerate(codes)}
+    n = len(codes)
+    rows, qs, confs = [], [], []
+    for v in user_views:
+        fl = (v.get("fund_long") or v.get("long") or "").strip()
+        fs = (v.get("fund_short") or v.get("short") or "").strip()
+        if not fl or not fs or fl not in code_to_idx or fs not in code_to_idx or fl == fs:
+            continue
+        try:
+            er = float(v.get("excess_return", v.get("excess", 0)))
+        except Exception:
+            continue
+        if abs(er) > 1:
+            er = er / 100
+        if abs(er) < 1e-6:
+            continue
+        q = er / 252
+        row = np.zeros(n)
+        row[code_to_idx[fl]] = 1.0
+        row[code_to_idx[fs]] = -1.0
+        rows.append(row)
+        qs.append(q)
+        confs.append(_bl_parse_confidence(v.get("confidence", "mid")))
+    if not rows:
+        return {}, False
+    P = np.vstack(rows)
+    Q = np.array(qs)
+    confidences = np.array(confs)
+    tau = params["tau"]
+    if cov is not None:
+        diag = np.array([float(p @ cov @ p) for p in P])
+        diag = np.maximum(diag, 1e-12)
+        omegas = np.diag((1.0 / np.maximum(confidences, 0.05) - 1.0) * tau * diag)
+    else:
+        omega = np.eye(len(Q))
+        for i in range(len(Q)):
+            unc = max(1.0 - confidences[i], 0.01)
+            omega[i, i] = unc / tau
+        omegas = omega
+    return {"P": P, "Q": Q, "omegas": omegas, "k": len(rows)}, True
+
+
+def _bl_optimize_weights(params: dict, fund_codes: list, nav_series: dict,
+                         views_fn) -> dict:
+    """Black-Litterman 权重 — legacy optimize 的 nav_series 路径内联。
+
+    views_fn(codes, cov) -> (views_dict, has_views)：注入观点构建（BL 用用户观点，
+    Quadrant 用四象限目标比例）。
+    """
+    if len(fund_codes) < 2:
+        return {code: 1.0 for code in fund_codes}
+
+    all_returns, codes = _bl_fetch_returns(params, fund_codes, nav_series)
+    if len(codes) < 2:
+        return {code: 1.0 / len(fund_codes) for code in fund_codes}
+
+    cov = _bl_ledoit_wolf_covariance(all_returns)
+    # 历史回测无时点规模数据：nav_series 路径一律等权市场权重（无 DB 前视）。
+    w_mkt = np.ones(len(codes)) / len(codes)
+    pi = params["risk_aversion"] * cov @ w_mkt
+
+    views, has_views = views_fn(codes, cov)
+    if not (has_views and views["P"].shape[0] > 0):
+        return {code: round(float(w), 4) for code, w in zip(codes, np.ones(len(codes)) / len(codes))}
+
+    mu = _bl_posterior_return(cov, pi, views, params["tau"])
+    return _bl_mean_variance(cov, mu, codes, params)
+
+
 # ── BL+四象限观点策略（AuroraCore 版）──
 
 @StrategyRegistry.register("bl_quadrant_aurora")
@@ -658,14 +977,48 @@ class AuroraBlQuadrant(Strategy):
         return list(self._hist.keys()) or list(self.params.get("fund_codes", []))
 
     def _compute_weights(self, nav_series=None, codes=None):
-        """通过 BlackLittermanQuadrant 优化器计算权重（保持接口一致）"""
-        from .strategy.allocation.bl_quadrant import BlackLittermanQuadrant
+        """BL 四象限权重 — 内联 legacy BlackLittermanQuadrant.optimize nav_series 路径。"""
         valid = codes or list((nav_series or {}).keys())
         if len(valid) < 2:
             return {}
-        strategy = BlackLittermanQuadrant(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid, nav_series=nav_series or {})
-        return result.get("weights", {})
+        from .strategy.allocation.bl_quadrant import QUADRANT_MAP
+
+        def quadrant_views(codes, cov):
+            quads = [QUADRANT_MAP.get(c, "growth") for c in codes]
+            if cov is None:
+                return {}, False
+            tau = self.params["tau"]
+            confidence = self.params["view_confidence"]
+            g_idx = [i for i, q in enumerate(quads) if q == "growth"]
+            d_idx = [i for i, q in enumerate(quads) if q == "deflation"]
+            i_idx = [i for i, q in enumerate(quads) if q == "inflation"]
+            n_idx = [i for i, q in enumerate(quads) if q == "neutral"]
+            P_list, Q_list = [], []
+            if g_idx and d_idx:
+                p = np.zeros(len(codes))
+                for i in g_idx:
+                    p[i] = 1.0 / len(g_idx)
+                for i in d_idx:
+                    p[i] = -1.0 / len(d_idx)
+                P_list.append(p)
+                Q_list.append(self.params["growth_underperform"] / 252)
+            if i_idx and n_idx:
+                p = np.zeros(len(codes))
+                for i in i_idx:
+                    p[i] = 1.0 / len(i_idx)
+                for i in n_idx:
+                    p[i] = -1.0 / len(n_idx)
+                P_list.append(p)
+                Q_list.append(self.params["inflation_outperform"] / 252)
+            if not P_list:
+                return {}, False
+            P = np.vstack(P_list)
+            Q = np.array(Q_list)
+            diag_PCPT = np.array([p @ cov @ p for p in P_list])
+            omega = np.diag((1.0 / confidence - 1.0) * tau * diag_PCPT)
+            return {"P": P, "Q": Q, "omegas": omega, "k": len(P_list)}, True
+
+        return _bl_optimize_weights(self.params, valid, nav_series or {}, quadrant_views)
 
     def on_data(self, data):
         code = getattr(data, "fund_code", "") or getattr(data, "symbol", "")
@@ -694,8 +1047,6 @@ class AuroraBlQuadrant(Strategy):
             self._rebalance(date_str)
 
     def _rebalance(self, date_str: str):
-        from .strategy.allocation.bl_quadrant import BlackLittermanQuadrant
-
         pool = self._pool_codes()
         # 收集截至该日的净值序列（只用已到数据，无前视）
         nav_series: dict[str, list[float]] = {}
@@ -961,10 +1312,128 @@ class AuroraBlackLitterman(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.black_litterman import BlackLittermanStrategy
-        strategy = BlackLittermanStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """Black-Litterman 权重 — 内联 legacy BlackLittermanStrategy.optimize nav_series 路径。"""
+        return _bl_optimize_weights(
+            self.params, codes, nav_series,
+            lambda cs, cov: _bl_user_views(self.params, cs, cov),
+        )
+
+
+# ── 约束风险平价共享求解（legacy RiskParityStrategy.optimize nav_series 路径内联）──
+
+def _rp_ledoit_wolf_covariance(X: np.ndarray) -> np.ndarray:
+    """Ledoit-Wolf 压缩协方差估计（与 legacy 一致）"""
+    n, p = X.shape
+    if n < 2:
+        return np.cov(X, rowvar=False) if p > 1 else np.array([[np.var(X)]])
+    try:
+        from sklearn.covariance import LedoitWolf
+        return LedoitWolf().fit(X).covariance_
+    except ImportError:
+        sample_cov = np.cov(X, rowvar=False)
+        if n < p:
+            shrinkage = 0.5
+            target = np.eye(p) * np.trace(sample_cov) / p
+            return (1 - shrinkage) * sample_cov + shrinkage * target
+        return sample_cov
+
+
+def _rp_apply_bond_vol_multiplier(cov: np.ndarray, codes: list, params: dict) -> np.ndarray:
+    """债券波动率放大 — bond/money 分类读当前元数据（fund_type 稳定属性，非未来收益）。"""
+    mult = params.get("bond_vol_multiplier", "auto")
+    if mult == "none" or mult == 1.0:
+        return cov
+
+    from backend.fund_quant.data.storage import get_fund_meta
+
+    cov_copy = cov.copy()
+    for i, code in enumerate(codes):
+        meta = get_fund_meta(code)
+        if meta and meta.get("fund_type") in ("bond", "money"):
+            factor = 2.0 if mult == "auto" else float(mult)
+            factor = min(factor, 5.0)
+            cov_copy[i, i] *= factor ** 2
+            for j in range(len(codes)):
+                if i != j:
+                    cov_copy[i, j] *= factor
+    return cov_copy
+
+
+def _rp_optimize_weights(params: dict, fund_codes: list, nav_series: dict) -> dict:
+    """约束风险平价权重 — 仅消费传入 NAV；codes 未覆盖时跳过（无 DB 回退，无前视）。
+
+    与 legacy RiskParityStrategy.optimize(nav_series=...) 行为一致：
+    逆方差初值 + SLSQP 最小化风险贡献方差；数据不足等权回退。
+    """
+    if len(fund_codes) < 2:
+        return {code: 1.0 for code in fund_codes}
+
+    lookback = params.get("lookback_years", 3) * 252
+    all_returns = {}
+    for code in fund_codes:
+        values = nav_series.get(code, [])
+        if not values:
+            continue
+        nav_values = [float(v) for v in values if v and v > 0][-lookback:]
+        if len(nav_values) > 20:
+            nav_arr = np.array(nav_values, dtype=np.float64)
+            all_returns[code] = np.diff(nav_arr) / nav_arr[:-1]
+
+    codes = list(all_returns.keys())
+    if len(codes) < 2:
+        return {code: 1.0 / len(fund_codes) for code in fund_codes}
+
+    min_len = min(len(r) for r in all_returns.values())
+    aligned = np.column_stack([all_returns[c][-min_len:] for c in codes])
+    cov = _rp_ledoit_wolf_covariance(aligned)
+    cov = _rp_apply_bond_vol_multiplier(cov, codes, params)
+
+    n = len(codes)
+    max_w = params["max_weight"]
+    min_w = params["min_weight"]
+    if min_w * n > 1.0:
+        min_w = 0.9 / n
+    if max_w * n < 1.0:
+        max_w = 1.0 / n
+    if n >= 10:
+        max_w = max(max_w, 0.6)
+
+    bounds = [(min_w, max_w) for _ in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+
+    diag_var = np.diag(cov)
+    if np.all(diag_var > 0):
+        w0 = 1.0 / diag_var
+        w0 = w0 / np.sum(w0)
+        w0 = np.clip(w0, min_w, max_w)
+        w0 = w0 / np.sum(w0)
+    else:
+        w0 = np.array([1.0 / n] * n)
+
+    try:
+        from scipy.optimize import minimize
+
+        def risk_parity_objective(w, cov):
+            portfolio_var = w @ cov @ w
+            if portfolio_var <= 0:
+                return 1e10
+            mrc = cov @ w
+            rc = w * mrc
+            target = np.mean(rc)
+            return np.sum((rc - target) ** 2)
+
+        result = minimize(
+            risk_parity_objective, w0, args=(cov,),
+            method="SLSQP", bounds=bounds, constraints=constraints,
+            options={"ftol": 1e-8, "maxiter": 1000},
+        )
+        weights = result.x if result.success else w0
+    except ImportError:
+        weights = w0
+
+    weights = np.clip(weights, min_w, max_w)
+    weights = weights / np.sum(weights)
+    return {code: round(float(w), 4) for code, w in zip(codes, weights)}
 
 
 # ── 风险平价（AuroraCore 版）──
@@ -988,10 +1457,8 @@ class AuroraRiskParity(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.risk_parity import RiskParityStrategy
-        strategy = RiskParityStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """约束风险平价 — 内联 legacy RiskParityStrategy.optimize nav_series 路径。"""
+        return _rp_optimize_weights(self.params, codes, nav_series)
 
 
 # ── 动态风险平价（AuroraCore 版）──
@@ -1020,14 +1487,12 @@ class AuroraDynamicRiskParity(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.risk_parity import RiskParityStrategy
-        n = self.params.get("window_months", 12) * 21  # 月→交易日
+        """动态风险平价 — 截断到滚动窗口后复用约束风险平价求解（无 DB 前视）。"""
+        n = self.params.get("window_months", 12) * 21
         truncated = {c: s[-n:] for c, s in nav_series.items() if len(s) >= 60}
         if len(truncated) < 2:
             return {}
-        strategy = RiskParityStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=truncated)
-        return result.get("weights", {})
+        return _rp_optimize_weights(self.params, codes, truncated)
 
 
 # ── 波动率目标（AuroraCore 版）──
@@ -1109,8 +1574,6 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
     min_history_days = 60
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.black_litterman import BlackLittermanStrategy
-
         lookback = int(self.params.get("lookback_days", 756))
         returns = {}
         for code in codes:
@@ -1126,7 +1589,7 @@ class AuroraGlobalMinimumVariance(_AuroraAllocationBase):
         if n_obs < 20:
             return {}
         matrix = np.column_stack([returns[c][-n_obs:] for c in valid])
-        cov = BlackLittermanStrategy._ledoit_wolf_covariance(matrix)
+        cov = _bl_ledoit_wolf_covariance(matrix)
         n = len(valid)
         max_weight = float(self.params.get("max_weight", 0.4))
         min_weight = float(self.params.get("min_weight", 0.02))
@@ -1177,10 +1640,95 @@ class AuroraHRP(_AuroraAllocationBase):
     }
 
     def _compute_weights(self, nav_series, codes):
-        from .strategy.allocation.hrp import HRPStrategy
-        strategy = HRPStrategy(params=dict(self.params))
-        result = strategy.optimize(fund_codes=codes, nav_series=nav_series)
-        return result.get("weights", {})
+        """仅用传入 NAV 的 HRP 权重；行为与 legacy nav_series 路径一致。"""
+        if len(codes) < 2:
+            return {code: 1.0 for code in codes}
+
+        lookback = int(self.params.get("lookback_years", 3) * 252)
+        returns = {}
+        for code in codes:
+            values = [float(value) for value in nav_series.get(code, []) if value and value > 0][-lookback:]
+            if len(values) > 20:
+                data = np.asarray(values, dtype=np.float64)
+                returns[code] = np.diff(data) / data[:-1]
+
+        valid_codes = list(returns)
+        if len(valid_codes) < 2:
+            return {code: 1.0 / len(codes) for code in codes}
+
+        n_obs = min(len(values) for values in returns.values())
+        aligned = np.column_stack([returns[code][-n_obs:] for code in valid_codes])
+        corr = np.corrcoef(aligned, rowvar=False)
+        corr = np.nan_to_num(corr, nan=0.0)
+        np.fill_diagonal(corr, 1.0)
+        distance = np.sqrt(0.5 * (1 - np.clip(corr, -1, 1)))
+
+        from scipy.cluster.hierarchy import linkage
+        from scipy.spatial.distance import squareform
+
+        tree = linkage(
+            squareform(distance, checks=False),
+            method=self.params.get("linkage_method", "ward"),
+        )
+        order = self._quasi_diag(tree)
+        ordered_codes = [valid_codes[index] for index in order]
+        weights = self._recursive_bisection(aligned, ordered_codes, valid_codes)
+
+        min_weight = float(self.params.get("min_weight", 0.02))
+        max_weight = float(self.params.get("max_weight", 0.4))
+        values = np.array([weights.get(code, 0.0) for code in valid_codes])
+        values = np.clip(values, min_weight, max_weight)
+        values = values / values.sum()
+        return {
+            code: round(float(weight), 4)
+            for code, weight in zip(valid_codes, values)
+        }
+
+    @staticmethod
+    def _quasi_diag(tree):
+        n = int(tree[-1, 3])
+        order = [n + tree.shape[0] - 1]
+        while True:
+            expanded = []
+            for index in order:
+                if index >= n:
+                    row = int(index - n)
+                    expanded.extend((int(tree[row, 0]), int(tree[row, 1])))
+                else:
+                    expanded.append(index)
+            if expanded == order:
+                return [int(index) for index in order]
+            order = expanded
+
+    @staticmethod
+    def _recursive_bisection(aligned, ordered_codes, all_codes):
+        weights = {code: 1.0 for code in ordered_codes}
+        clusters = [ordered_codes]
+        while clusters:
+            next_clusters = []
+            for cluster in clusters:
+                if len(cluster) <= 1:
+                    continue
+                midpoint = len(cluster) // 2
+                left, right = cluster[:midpoint], cluster[midpoint:]
+                left_var = np.mean([np.var(aligned[:, all_codes.index(code)]) for code in left])
+                right_var = np.mean([np.var(aligned[:, all_codes.index(code)]) for code in right])
+                total_var = left_var + right_var
+                if total_var <= 0:
+                    continue
+                left_allocation = 1.0 - left_var / total_var
+                for code in left:
+                    weights[code] *= left_allocation
+                for code in right:
+                    weights[code] *= 1.0 - left_allocation
+                if len(left) > 1:
+                    next_clusters.append(left)
+                if len(right) > 1:
+                    next_clusters.append(right)
+            clusters = next_clusters
+
+        total = sum(weights.values())
+        return {code: weight / total for code, weight in weights.items()} if total > 0 else weights
 
 
 # ── 最大多元化（AuroraCore 版）──
@@ -1218,8 +1766,7 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
         min_len = min(len(r) for r in all_returns.values())
         aligned = np.column_stack([all_returns[c][-min_len:] for c in all_returns])
 
-        from .strategy.allocation.black_litterman import BlackLittermanStrategy
-        cov = BlackLittermanStrategy._ledoit_wolf_covariance(aligned)
+        cov = _bl_ledoit_wolf_covariance(aligned)
         vols = np.sqrt(np.diag(cov))
 
         from scipy.optimize import minimize
