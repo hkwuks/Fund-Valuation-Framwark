@@ -225,28 +225,29 @@ async def selection_screen(req: SelectionRequest):
             partial(strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
-    if req.strategy == "rating_enhanced":
-        from ..fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
-        strategy = RatingEnhancedSelection()
+    if req.strategy in {"rating_enhanced", "rating_enhanced_aurora"}:
+        from ..fund_quant.adapter import AuroraRatingEnhancedSelection
+        strategy = AuroraRatingEnhancedSelection()
         result = await asyncio.to_thread(
             partial(strategy.screen, fund_type=req.fund_type, top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
-    from ..fund_quant.strategy.selection.multi_factor import MultiFactorSelection
-    strategy = MultiFactorSelection()
+    # 其余请求名兜底：任何 selection 名（含 aurora 后缀）都统一走 aurora 适配器
+    from ..fund_quant.adapter import AuroraMultiFactorSelection
+    strategy = AuroraMultiFactorSelection()
 
     # 兼容旧值映射
     fund_type = TYPE_COMPAT.get(req.fund_type, req.fund_type)
 
     # 指数基金使用独立的 5 维度评分策略
     if fund_type == "index":
-        from ..fund_quant.strategy.selection.index_selection import IndexSelectionStrategy
-        idx_strategy = IndexSelectionStrategy()
+        from ..fund_quant.adapter import AuroraIndexSelection
+        strategy = AuroraIndexSelection()
         # 注入 ETF 市场数据
         etf_data = await asyncio.to_thread(get_etf_market_data)
         if etf_data:
-            idx_strategy._state["liquidity_data"] = etf_data.get("liquidity", {})
-            idx_strategy._state["premium_vol_data"] = etf_data.get("premium", {})
+            strategy._state["liquidity_data"] = etf_data.get("liquidity", {})
+            strategy._state["premium_vol_data"] = etf_data.get("premium", {})
         # 对每个候选基金计算跟踪误差
         from ..fund_quant.data.storage import get_all_fund_codes, get_nav_history
         tracking = {}
@@ -257,20 +258,21 @@ async def selection_screen(req: SelectionRequest):
             te = await asyncio.to_thread(compute_tracking_errors, code, nav_vals)
             if te is not None:
                 tracking[code] = te
-        idx_strategy._state["tracking_errors"] = tracking
+        strategy._state["tracking_errors"] = tracking
 
         result = await asyncio.to_thread(
-            partial(idx_strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
+            partial(strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
     # 校验请求的 fund_type 是否在策略适用范围内
     # TYPE_COMPAT 会把 "stock"→"equity" 等旧名映射到新名，而 applicable_fund_types
     # 用的是策略原始类型名，两者都校验，避免误判（否则多因子策略永远返回空）
-    if (req.fund_type not in strategy.applicable_fund_types
-            and fund_type not in strategy.applicable_fund_types):
+    scorer = strategy.selection_cls()
+    applicable = getattr(scorer, "applicable_fund_types", []) or []
+    if (req.fund_type not in applicable and fund_type not in applicable):
         # commodity/fof 等无 selection 策略的类型 → 返回空结果而非 400
         return {"success": True, "data": {
-            "strategy": strategy.strategy_name,
+            "strategy": scorer.strategy_name,
             "fund_type": fund_type,
             "top_n": req.top_n,
             "rankings": [],

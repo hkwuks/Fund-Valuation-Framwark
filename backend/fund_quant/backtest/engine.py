@@ -1,4 +1,9 @@
-"""FundQuant 事件驱动回测引擎 — 完整 T+1 申赎模拟 + 前视偏差防护"""
+"""FundQuant 事件驱动回测引擎 — ⚠️ 已废弃，仅保留供旧测试引用
+
+历史回测全部走统一引擎 `core.backtest.BacktestEngine`（见 backend/api/fund_quant.py
+`_run_backtest_sync` / `_legacy_backtest_metrics`）。本文件是迁移前的事件驱动实现，
+保留 T+1 申赎模拟 + 前视偏差防护的参考语义；不再被任何生产路径调用。
+"""
 from __future__ import annotations
 
 from datetime import datetime, date, timedelta
