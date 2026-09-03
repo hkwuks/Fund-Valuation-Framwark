@@ -27,6 +27,10 @@ DEFAULT_STRATEGIES = [
     "gmv_aurora",
     "hrp_aurora",
     "max_diversification_aurora",
+    # 选基 as-of 注入后可在 Aurora 回测中重放：真实截面下每基金历史 NAV + 预载 meta
+    "multi_factor_aurora",
+    "index_selection_aurora",
+    "rating_enhanced_aurora",
 ]
 DEFAULT_FUND_CODES = ["510300", "510500", "518880"]
 DEFAULT_VALIDATION = {
