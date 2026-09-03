@@ -674,7 +674,7 @@ server: {
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hkwuks/WealthAgent&type=date&legend=top-left&sealed_token=ugUt7g0kbmlxX_n5CevCTurOYzaaFJAXvBaDFvk81lpD4N7zYb5wbyXxkyisyxMZm2E2uFHH9cvA7Q8i84MG0izcZNqaQfgUeIxVEwuvCp_kVtv0BiKaLKkM6s2vhnnZTOaBp8wEnwWGZ2HWqLgvKlLjDWAiBh2GrCl3N7bAMTNrU3MMojGskEP7UK26)](https://www.star-history.com/?repos=hkwuks%2FWealthAgent&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=hkwuks/WealthAgent&type=date&legend=top-left&&sealed_token=b12gMAVqxjYCS22ZjqOjv8UiSZz1qfBf31GHJV9AuGBWjMmnLChWTr1sNBSqYuTvWybJV7P6peTQmNbw21XT6364T_JRlk0RJZDKzQV63hVGAqvEfWRNpjJIVRM5Z8mR4gKndmlitt43xJ8clNTutXwl7shH3gHBCHLH8ReaXNtJmgC9nV_HMPVFaBWj)](https://www.star-history.com/?repos=hkwuks%2FWealthAgent&type=date&legend=top-left)
 
 ---
 
