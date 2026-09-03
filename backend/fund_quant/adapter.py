@@ -1798,11 +1798,14 @@ class AuroraMaxDiversification(_AuroraAllocationBase):
 # ── 多因子与指数选基（AuroraCore 注册入口）──
 
 def _injected_fund_data(section: dict[str, dict], codes: list[str],
-                        date_str: str) -> list[dict]:
+                        date_str: str, scope_fund_type: str | None = None) -> list[dict]:
     """按 as-of 日期把截面 meta + nav_values 构造成 scorer.screen(fund_data=...) 输入。
 
     section 由 adapter 的 self._meta/_hist 累积而来（nav 均来自 bar 流，无 storage 读）；
     meta 为 None 时给空 dict，让评分器对其中的可选字段中性降级。
+    scope_fund_type: 选基池的筛选范围。池子本身是调用方交付的候选集，meta 的 fund_type
+        可能是 None/归一化前的旧值，不该再按单只 meta 的类型把池内成员筛掉；统一打上
+        scope 标签（"all" 表示全品类），让评分器注入路径的 fund_type 过滤放行池内全部成员。
     """
     out = []
     for code in codes:
@@ -1810,7 +1813,8 @@ def _injected_fund_data(section: dict[str, dict], codes: list[str],
         nav_values = [n for d, n in (section[code]["hist"] if code in section else []) if d <= date_str]
         if not nav_values:
             continue
-        item = {**meta, "fund_code": code, "fund_type": meta.get("fund_type", ""),
+        item = {**meta, "fund_code": code,
+                "fund_type": scope_fund_type if scope_fund_type is not None else meta.get("fund_type", ""),
                 "nav_values": nav_values}
         out.append(item)
     return out
@@ -1838,6 +1842,17 @@ class _AuroraSelectionAdapter(Strategy):
         self._day_count = 0
         self._last_rebalance_day = 0
         self._first_rebalance = True
+
+    @staticmethod
+    def _trade_pct(n_picks: int, params: dict) -> float:
+        """单票调仓仓位：选基在当选池内等权（1/n_picks），受 max_single_weight 截断。
+
+        n_picks 是实际当选的 Top-N 成员数（可 < top_n，如池内不足）。等权保证当选
+        成员的盘中金额之和 ≈ 组合权益：依次成交时每单都有现金可扣（T1 引擎按剩余
+        资金截断），末位基金不再出现“整单资金不足被拒”。"""
+        n = max(int(n_picks), 1)
+        cap = float(params.get("max_single_weight", 1.0))
+        return min(1.0 / n, cap)
 
     def _preload_state(self, scorer) -> None:
         """子类可覆写：把 index 等需要的 _state 数据预注入 scorer"""
@@ -1867,14 +1882,23 @@ class _AuroraSelectionAdapter(Strategy):
         return str(self.params.get("fund_type", "all"))
 
     def _rebalance(self, date_str: str):
-        """按 as-of 截面重算 Top-N 并 emit 调仓信号（多因子/指数/评级回测 + 指数实盘共用）。"""
+        """按 as-of 截面重算 Top-N 并 reconcile 到等权目标（多因子/指数/评级共用）。
+
+        - 排名完全来自 bar 流累积的 hist（无 storage 读、无前视）；
+        - meta 的 fund_type 只决定部分评分器输入，不再反向剔除池内候选；
+        - 目标权重 = 当选集合等权（1/|Top-N|，受 max_single_weight 截断），
+          reconcile：超配的卖出释放现金，低配/未持有的买入——与配置类 Aurora
+          适配器同一语义，避免 T+1 引擎“先到的大单占满现金、其余同组挂单被拒”。
+        """
         scorer = self.selection_cls()
         self._copy_state_to(scorer)
         self._preload_state(scorer)
         fund_type = self._fund_type()
         pool = [c for c in self._pool_codes() if c in self._hist and self._hist[c]]
+        scope = "all" if fund_type == "all" else fund_type
         section = _injected_fund_data({c: {"meta": self._meta.get(c), "hist": self._hist[c]}
-                                       for c in pool}, pool, date_str)
+                                       for c in pool}, pool, date_str,
+                                      scope_fund_type=scope)
         if len(section) < 2:
             return False
         result = scorer.screen(fund_type=fund_type, top_n=int(self.params.get("top_n", 5)),
@@ -1882,34 +1906,38 @@ class _AuroraSelectionAdapter(Strategy):
         ranked = [r["fund_code"] for r in result.get("rankings", [])]
         if not ranked:
             return False
-        top = set(ranked[:int(self.params.get("top_n", 5))])
-        all_codes = [c for c in self._hist.keys() if c]
-        for code in list(all_codes):
-            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
-            if code not in top and pos is not None and pos.volume > 0:
-                self.ctx.emit(Signal(
-                    id="", strategy=self.name, symbol=code,
-                    direction=Direction.CLOSE_LONG, price=0,
-                    volume=pos.volume, confidence=1.0,
-                    reason=f"{self.name}: 跌出Top-N, 清仓",
-                ))
-        for code in top:
-            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
-            if pos is not None and pos.volume > 0:
-                continue
-            hist = self._hist.get(code)
-            nav = hist[-1][1] if hist else 0
+        top = ranked[:int(self.params.get("top_n", 5))]
+        top_set = set(top)
+        pct = self._trade_pct(len(top_set), self.params)
+        pv = self.ctx.portfolio_value or 0
+        threshold = float(self.params.get("rebalance_threshold", 0.0)) * pv
+        nav_by_code = {c: hist[-1][1] for c, hist in self._hist.items() if hist}
+        for code in list(nav_by_code):
+            nav = nav_by_code[code]
             if not nav or nav <= 0:
                 continue
-            weight = min(float(self.params.get("max_single_weight", 1.0)),
-                         1.0 / max(len(top), 1))
-            target_amt = (self.ctx.portfolio_value or 0) * weight
-            self.ctx.emit(Signal(
-                id="", strategy=self.name, symbol=code,
-                direction=Direction.LONG, price=float(nav),
-                volume=target_amt / nav, confidence=1.0,
-                reason=f"{self.name}: 选基Top-N 评分买入",
-            ))
+            pos = self.ctx.execution.get_position(code) if self.ctx.execution else None
+            current_amt = pos.volume * nav if pos and pos.volume > 0 else 0
+            target_amt = pv * pct if code in top_set else 0.0
+            diff = target_amt - current_amt
+            if abs(diff) < threshold:
+                continue
+            if diff > 0:
+                self.ctx.emit(Signal(
+                    id="", strategy=self.name, symbol=code,
+                    direction=Direction.LONG, price=float(nav),
+                    volume=diff / nav, confidence=1.0,
+                    reason=f"{self.name}: 选基Top-N 等权加仓({pct:.1%})",
+                ))
+            else:
+                sell_vol = min(-diff / nav, pos.volume if pos else 0)
+                if sell_vol > 0:
+                    self.ctx.emit(Signal(
+                        id="", strategy=self.name, symbol=code,
+                        direction=Direction.CLOSE_LONG, price=float(nav),
+                        volume=sell_vol, confidence=1.0,
+                        reason=f"{self.name}: 跌出/超配Top-N, 减至{pct:.1%}",
+                    ))
         return True
 
     def on_data(self, data):

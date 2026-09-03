@@ -747,16 +747,17 @@ def _fund_risk_pipeline(strategy_name: str = ""):
     """构造历史时序安全的基金风控管线。
 
     配置策略本身生成目标权重；通用单基金上限会错误拒绝其合法配置，故只保留
-    组合级回撤、日损失、连续亏损与信号频率约束。
+    组合级回撤、日损失、连续亏损与信号频率约束。选基策略走同一套组合级约束
+    （其目标仓位由 Top-N 等权决定，见 _AuroraSelectionAdapter._max_position_pct），
+    不再附加单基金/集中度/现金层级检查。
     """
     from core import (
         RiskPipeline, MaxDrawdownCheck, DailyLossCheck,
         ConsecutiveLossCheck, SignalFrequencyCheck,
     )
-    from ..fund_quant.adapter import FundDomainAdapter
 
     pipeline = RiskPipeline()
-    if strategy_name.endswith("_aurora") and strategy_name not in {"multi_factor_aurora", "index_selection_aurora", "rating_enhanced_aurora"}:
+    if strategy_name.endswith("_aurora"):
         checks = [
             SignalFrequencyCheck(max_per_day=20),
             MaxDrawdownCheck(drawdown_limit=0.20),
@@ -764,6 +765,7 @@ def _fund_risk_pipeline(strategy_name: str = ""):
             ConsecutiveLossCheck(max_losses=7),
         ]
     else:
+        from ..fund_quant.adapter import FundDomainAdapter
         checks = FundDomainAdapter().get_risk_checks("equity")
     for check in checks:
         pipeline.add(check)

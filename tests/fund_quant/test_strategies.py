@@ -326,37 +326,56 @@ class TestRatingEnhanced:
 
 class TestAuroraRatingEnhanced:
     def test_registered_strategy_emits_core_signal(self, monkeypatch):
-        """评级增强 Aurora 策略（live 模式）按 as-of 截面重算并发出核心信号。"""
+        """评级增强 Aurora 策略经 BacktestEngine 重放发出核心调仓信号并成交。
+
+        与 test_selection_aurora_replay 同一条回放路径：引擎每 bar 更新 ctx.portfolio_value，
+        _rebalance 按 as-of 截面等权 reconcile 发 LONG，T+1 确认成交（trade log 有 buy）。
+        """
         import sys as _sys
         from datetime import date, timedelta
 
         _sys.path.insert(0, "backend")
-        from core import Direction as CoreDirection, FundNavPoint, StrategyContext, StrategyRegistry
-        from core.event import EventBus, EventType
+        from core import (
+            BacktestConfig, BacktestEngine,
+            FundNavPoint, T1ExecutionEngine, StrategyRegistry,
+            NoCost,
+        )
+        from backend.api.fund_quant import _fund_risk_pipeline
         from backend.fund_quant.adapter import AuroraRatingEnhancedSelection
         from backend.fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
 
+        # 控制 screen → 两只基金都上榜（等权 1/2），保证第一次调仓买 000001
         monkeypatch.setattr(RatingEnhancedSelection, "screen", lambda *_a, **_k: {
-            "rankings": [{"fund_code": "000001", "total_score": 0.75}],
+            "rankings": [{"fund_code": "000001", "total_score": 0.75},
+                         {"fund_code": "000002", "total_score": 0.5}],
         })
         assert StrategyRegistry.get("rating_enhanced_aurora") is AuroraRatingEnhancedSelection
 
-        signals = []
-        bus = EventBus()
-        bus.subscribe(EventType.SIGNAL_GENERATED, lambda event: signals.append(event.payload))
-        strategy = AuroraRatingEnhancedSelection()
-        strategy.on_init(StrategyContext(bus, mode="live"))
-        # 预载 meta（live 也由调用方注入），跑 30 天双基金直至首个调仓日
-        strategy._meta = {"000001": {"fund_type": "stock"}, "000002": {"fund_type": "stock"}}
+        # 与真实数据源一致：按 (date, fund_code) 交错喂 45 个交易日（rebalance_days=20 触发两次）
         d0 = date(2024, 1, 1)
-        for code in ("000001", "000002"):
-            for i in range(31):
-                strategy.on_data(FundNavPoint(code, d0 + timedelta(days=i),
-                                              1.25 if code == "000001" else 1.1))
+        pts = []
+        for i in range(45):
+            for code, nav in (("000001", 1.25), ("000002", 1.1)):
+                pts.append(FundNavPoint(code, d0 + timedelta(days=i), nav))
+        pts.sort(key=lambda p: (p.date, p.fund_code))
 
-        assert len(signals) >= 1
-        assert signals[0].strategy == "rating_enhanced_aurora"
-        assert signals[0].direction is CoreDirection.LONG
+        strategy = AuroraRatingEnhancedSelection()
+        strategy.params.update({"rebalance_days": 20, "top_n": 5})
+        strategy._meta = {"000001": {"fund_code": "000001", "fund_type": "stock"},
+                          "000002": {"fund_code": "000002", "fund_type": "stock"}}
+        execution = T1ExecutionEngine(confirmation_delay=1)
+        execution.set_capital(100000)
+        engine = BacktestEngine(BacktestConfig(initial_capital=100000))
+        engine.set_strategy(strategy)
+        engine.set_executor(execution)
+        engine.set_cost_model(NoCost())
+        engine.set_risk(_fund_risk_pipeline(strategy.name))
+        engine.set_data(pts)
+        report = engine.run()
+
+        assert report.total_trades > 0
+        logs = execution.get_trade_log()
+        assert any(t.get("action") == "buy" for t in logs), f"应有买入成交, got {logs}"
 
     """Black-Litterman 配置策略专项测试"""
 
