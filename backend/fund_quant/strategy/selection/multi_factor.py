@@ -143,10 +143,11 @@ class MultiFactorSelection(FundStrategyBase):
 
         rankings = []
         for i, fs in enumerate(fund_scores[:top_n]):
+            meta_name = fs["meta"].get("fund_name") if fs["meta"] else ""
             rankings.append({
                 "rank": i + 1,
                 "fund_code": fs["fund_code"],
-                "fund_name": fs.get("fund_name") or (fs["meta"]["fund_name"] if fs["meta"] else ""),
+                "fund_name": fs.get("fund_name") or meta_name,
                 "total_score": round(fs["total_score"], 4),
                 "factors": fs["factors"],
             })
@@ -408,7 +409,7 @@ class MultiFactorSelection(FundStrategyBase):
         rankings = [{
             "rank": i + 1,
             "fund_code": fs["fund_code"],
-            "fund_name": fs.get("fund_name") or (fs["meta"]["fund_name"] if fs["meta"] else ""),
+            "fund_name": fs.get("fund_name") or (fs["meta"].get("fund_name") if fs["meta"] else ""),
             "total_score": round(fs["total_score"], 4),
             "factors": fs["factors"],
         } for i, fs in enumerate(fund_scores[:top_n])]

@@ -225,28 +225,29 @@ async def selection_screen(req: SelectionRequest):
             partial(strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
-    if req.strategy == "rating_enhanced":
-        from ..fund_quant.strategy.selection.rating_enhanced import RatingEnhancedSelection
-        strategy = RatingEnhancedSelection()
+    if req.strategy in {"rating_enhanced", "rating_enhanced_aurora"}:
+        from ..fund_quant.adapter import AuroraRatingEnhancedSelection
+        strategy = AuroraRatingEnhancedSelection()
         result = await asyncio.to_thread(
             partial(strategy.screen, fund_type=req.fund_type, top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
-    from ..fund_quant.strategy.selection.multi_factor import MultiFactorSelection
-    strategy = MultiFactorSelection()
+    # 其余请求名兜底：任何 selection 名（含 aurora 后缀）都统一走 aurora 适配器
+    from ..fund_quant.adapter import AuroraMultiFactorSelection
+    strategy = AuroraMultiFactorSelection()
 
     # 兼容旧值映射
     fund_type = TYPE_COMPAT.get(req.fund_type, req.fund_type)
 
     # 指数基金使用独立的 5 维度评分策略
     if fund_type == "index":
-        from ..fund_quant.strategy.selection.index_selection import IndexSelectionStrategy
-        idx_strategy = IndexSelectionStrategy()
+        from ..fund_quant.adapter import AuroraIndexSelection
+        strategy = AuroraIndexSelection()
         # 注入 ETF 市场数据
         etf_data = await asyncio.to_thread(get_etf_market_data)
         if etf_data:
-            idx_strategy._state["liquidity_data"] = etf_data.get("liquidity", {})
-            idx_strategy._state["premium_vol_data"] = etf_data.get("premium", {})
+            strategy._state["liquidity_data"] = etf_data.get("liquidity", {})
+            strategy._state["premium_vol_data"] = etf_data.get("premium", {})
         # 对每个候选基金计算跟踪误差
         from ..fund_quant.data.storage import get_all_fund_codes, get_nav_history
         tracking = {}
@@ -257,20 +258,21 @@ async def selection_screen(req: SelectionRequest):
             te = await asyncio.to_thread(compute_tracking_errors, code, nav_vals)
             if te is not None:
                 tracking[code] = te
-        idx_strategy._state["tracking_errors"] = tracking
+        strategy._state["tracking_errors"] = tracking
 
         result = await asyncio.to_thread(
-            partial(idx_strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
+            partial(strategy.screen, fund_type="index", top_n=req.top_n, params=req.params))
         return {"success": True, "data": result}
 
     # 校验请求的 fund_type 是否在策略适用范围内
     # TYPE_COMPAT 会把 "stock"→"equity" 等旧名映射到新名，而 applicable_fund_types
     # 用的是策略原始类型名，两者都校验，避免误判（否则多因子策略永远返回空）
-    if (req.fund_type not in strategy.applicable_fund_types
-            and fund_type not in strategy.applicable_fund_types):
+    scorer = strategy.selection_cls()
+    applicable = getattr(scorer, "applicable_fund_types", []) or []
+    if (req.fund_type not in applicable and fund_type not in applicable):
         # commodity/fof 等无 selection 策略的类型 → 返回空结果而非 400
         return {"success": True, "data": {
-            "strategy": strategy.strategy_name,
+            "strategy": scorer.strategy_name,
             "fund_type": fund_type,
             "top_n": req.top_n,
             "rankings": [],
@@ -747,16 +749,17 @@ def _fund_risk_pipeline(strategy_name: str = ""):
     """构造历史时序安全的基金风控管线。
 
     配置策略本身生成目标权重；通用单基金上限会错误拒绝其合法配置，故只保留
-    组合级回撤、日损失、连续亏损与信号频率约束。
+    组合级回撤、日损失、连续亏损与信号频率约束。选基策略走同一套组合级约束
+    （其目标仓位由 Top-N 等权决定，见 _AuroraSelectionAdapter._max_position_pct），
+    不再附加单基金/集中度/现金层级检查。
     """
     from core import (
         RiskPipeline, MaxDrawdownCheck, DailyLossCheck,
         ConsecutiveLossCheck, SignalFrequencyCheck,
     )
-    from ..fund_quant.adapter import FundDomainAdapter
 
     pipeline = RiskPipeline()
-    if strategy_name.endswith("_aurora") and strategy_name not in {"multi_factor_aurora", "index_selection_aurora", "rating_enhanced_aurora"}:
+    if strategy_name.endswith("_aurora"):
         checks = [
             SignalFrequencyCheck(max_per_day=20),
             MaxDrawdownCheck(drawdown_limit=0.20),
@@ -764,6 +767,7 @@ def _fund_risk_pipeline(strategy_name: str = ""):
             ConsecutiveLossCheck(max_losses=7),
         ]
     else:
+        from ..fund_quant.adapter import FundDomainAdapter
         checks = FundDomainAdapter().get_risk_checks("equity")
     for check in checks:
         pipeline.add(check)
@@ -933,6 +937,23 @@ def _run_backtest_sync(config_dict: dict) -> str:
     custom_params = config_dict.get("params", {})
     strategy = strategy_cls()
     strategy.params.update(custom_params)
+    # 选基策略：预载 meta（回测中禁止在 on_data 内读 storage），nav 由 bar 流提供
+    if hasattr(strategy, "_meta") and hasattr(strategy, "_pool_codes"):
+        from ..fund_quant.data.storage import get_fund_meta
+        pool = strategy._pool_codes() if hasattr(strategy, "_pool_codes") else fund_codes
+        for code in pool or fund_codes:
+            strategy._meta[code] = get_fund_meta(code) or {}
+        # 指数选基需要跟踪误差等外部 _state：对传入池轻量估算（一次，非逐 bar）
+        if isinstance(strategy, _adapter.AuroraIndexSelection):
+            from ..fund_quant.data.storage import get_nav_histories
+            strategy._state["tracking_errors"] = {}
+            if fund_codes:
+                all_navs = get_nav_histories(fund_codes, start, end)
+                for code, navs in all_navs.items():
+                    vals = [r["nav"] for r in navs if r.get("nav")]
+                    te = compute_tracking_errors(code, vals)
+                    if te is not None:
+                        strategy._state["tracking_errors"][code] = te
 
     execution = T1ExecutionEngine(confirmation_delay=1)
     execution.set_capital(initial_capital)
