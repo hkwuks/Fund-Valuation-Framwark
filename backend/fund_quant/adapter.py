@@ -1062,12 +1062,10 @@ class AuroraBlQuadrant(Strategy):
         if len(valid_codes) < 2:
             return
 
-        # 调用 BlackLittermanQuadrant 计算权重（nav_series 避免 DB 前视）
-        strategy = BlackLittermanQuadrant(params=dict(self.params))
-        result = strategy.optimize(fund_codes=valid_codes, nav_series=nav_series)
-        weights = result.get("weights", {})
-        if not weights:
-            return
+        # BL 四象限权重 — 复用本类已内联的 legacy optimize nav_series 等价路径
+        # （_compute_weights 与 legacy BlackLittermanQuadrant.optimize(nav_series=...) 逐位一致，
+        #   见 test_bl_aurora_equivalence；不引 legacy 类名，OOS 曾在此 NameError 全窗口 failed）。
+        weights = self._compute_weights(nav_series, valid_codes)
 
         # 总权益
         pv = self.ctx.portfolio_value or 0
@@ -1531,15 +1529,21 @@ class AuroraTrendFollowing(_AuroraAllocationBase):
     default_params = {
         "rebalance_freq": "monthly",
         "rebalance_threshold": 0.05,
-        "lookback_days": 200,
+        "lookback_days": 60,
         "buy_threshold": 0.0,
-        "min_history_days": 200,
+        "min_history_days": 60,
     }
-    min_history_days = 200
+    min_history_days = 60
 
     def _compute_weights(self, nav_series, codes):
-        """对每只基金独立计算窗口收益；不满足阈值的基金权重为0。"""
-        lookback = int(self.params.get("lookback_days", 200))
+        """对每只基金独立计算窗口收益；不满足阈值的基金权重为0。
+
+        窗口统一为 60 天（= min_history_days / first-rebalance 门槛）：
+        此前 lookback=200 使建仓要求 200+ 点净值，而首次调仓仅需 20 点就触发，
+        首个再平衡日所有基金都 < 200 点 → active 恒空 → 持仓永远为空。
+        回测起点距数据起点不足 200 点的窗口（本 OOS 全部 11 窗）交易数为 0 即源于此。
+        """
+        lookback = int(self.params.get("lookback_days", 60))
         threshold = float(self.params.get("buy_threshold", 0.0))
         active = {}
         for code in codes:
