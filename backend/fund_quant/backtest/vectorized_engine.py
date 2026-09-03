@@ -2,6 +2,9 @@
 
 Full numpy-vectorized computation — no for-loops over trading days.
 Supports any strategy expressible as a weight function f(nav_matrix) -> weight_matrix.
+
+⚠️ 工具端点（非策略回测引擎）：仅 `/backtest/run-vectorized` 的"等权基准对比行"使用；
+无事件循环、无 T+1 结算、无费率/风控。策略回测一律走 core.BacktestEngine（统一引擎）。
 """
 
 from __future__ import annotations
